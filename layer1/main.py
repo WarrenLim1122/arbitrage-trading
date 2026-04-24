@@ -45,7 +45,8 @@ NEWS_WINDOW  = int(os.getenv("NEWS_WINDOW_MINUTES", "30"))
 FAIL_OPEN    = os.getenv("NEWS_FAIL_OPEN", "true").lower() == "true"
 
 ALLOWED_PAIRS: frozenset[str] = frozenset({
-    "XAUUSD", "USDJPY", "BTCUSD", "ETHUSD", "FTSE100",
+    "EURUSD", "GBPUSD", "USDCHF", "USDCAD", "USDJPY",
+    "NZDUSD", "XAUUSD", "XAGUSD", "NAS100",
 })
 
 # ── App ───────────────────────────────────────────────────────────────────

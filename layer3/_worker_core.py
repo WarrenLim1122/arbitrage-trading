@@ -102,11 +102,15 @@ def _save_dd_params() -> None:
 SYMBOL_MAP_PATH = Path(__file__).parent.parent / "config" / "symbol_map.json"
 
 _DEFAULT_SYMBOL_MAP: dict[str, str] = {
-    "XAUUSD":  "XAUUSD",
-    "USDJPY":  "USDJPY",
-    "BTCUSD":  "BTCUSD",
-    "ETHUSD":  "ETHUSD",
-    "FTSE100": "UK100",
+    "EURUSD": "EURUSD",
+    "GBPUSD": "GBPUSD",
+    "USDCHF": "USDCHF",
+    "USDCAD": "USDCAD",
+    "USDJPY": "USDJPY",
+    "NZDUSD": "NZDUSD",
+    "XAUUSD": "XAUUSD",
+    "XAGUSD": "XAGUSD",
+    "NAS100": "NAS100",
 }
 
 _symbol_map: dict[str, str] = {}

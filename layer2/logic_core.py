@@ -91,7 +91,8 @@ ZMQ_REQ_PERS   = _risk["layer3_zmq"]["personal"]["rep"]
 EQUITY_TIMEOUT = 3_000  # ms
 
 ALLOWED_PAIRS: frozenset[str] = frozenset({
-    "XAUUSD", "USDJPY", "BTCUSD", "ETHUSD", "FTSE100",
+    "EURUSD", "GBPUSD", "USDCHF", "USDCAD", "USDJPY",
+    "NZDUSD", "XAUUSD", "XAGUSD", "NAS100",
 })
 
 # RR constants — immutable across all phases
