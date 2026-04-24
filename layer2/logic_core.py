@@ -270,6 +270,12 @@ def _dispatch_force_close(reason: str, *, halt: bool = True, permanent: bool = F
 
 _last_curfew_close_date: date | None = None
 
+_prop_fail_count:      int  = 0
+_pers_fail_count:      int  = 0
+_prop_down:            bool = False
+_pers_down:            bool = False
+_WORKER_DOWN_THRESHOLD: int = 3   # consecutive 30 s misses before alert (~90 s)
+
 
 def _update_day_start(equity: float) -> None:
     with _pf_lock:
@@ -338,6 +344,7 @@ def _equity_monitor_loop() -> None:
 
 def _run_equity_check() -> None:
     global _last_curfew_close_date
+    global _prop_fail_count, _pers_fail_count, _prop_down, _pers_down
 
     with _state_lock:
         p1_halt = _phase_state.get("phase1_permanently_halted", False)
@@ -356,18 +363,67 @@ def _run_equity_check() -> None:
             _last_curfew_close_date = today
         return
 
+    # ── Worker health checks (run every cycle, independent of active state) ──
+    try:
+        _eq_result  = _query_equity(ZMQ_REQ_PROP, "")
+        prop_equity = _eq_result["equity"]
+        if _prop_down:
+            _prop_down = False
+            _prop_fail_count = 0
+            _alert_sync(
+                "<b>Worker Prop — Back Online</b>\n\n"
+                "VPS #2 (worker-prop) is responding again."
+            )
+        else:
+            _prop_fail_count = 0
+    except Exception as exc:
+        _prop_fail_count += 1
+        logger.warning("Monitor: prop equity query failed (%d/%d): %s",
+                       _prop_fail_count, _WORKER_DOWN_THRESHOLD, exc)
+        if _prop_fail_count >= _WORKER_DOWN_THRESHOLD and not _prop_down:
+            _prop_down = True
+            _alert_sync(
+                "<b>Worker Prop — OFFLINE</b>\n\n"
+                f"VPS #2 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
+                "<b>Action:</b>\n"
+                "1. Open VPS #2 noVNC\n"
+                "2. <code>cd C:/arbitrage</code>\n"
+                "3. <code>uv run python layer3/worker_prop.py</code>"
+            )
+        return
+
+    try:
+        _query_equity(ZMQ_REQ_PERS, "")
+        if _pers_down:
+            _pers_down = False
+            _pers_fail_count = 0
+            _alert_sync(
+                "<b>Worker Personal — Back Online</b>\n\n"
+                "VPS #3 (worker-personal) is responding again."
+            )
+        else:
+            _pers_fail_count = 0
+    except Exception as exc:
+        _pers_fail_count += 1
+        logger.warning("Monitor: personal equity query failed (%d/%d): %s",
+                       _pers_fail_count, _WORKER_DOWN_THRESHOLD, exc)
+        if _pers_fail_count >= _WORKER_DOWN_THRESHOLD and not _pers_down:
+            _pers_down = True
+            _alert_sync(
+                "<b>Worker Personal — OFFLINE</b>\n\n"
+                f"VPS #3 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
+                "<b>Action:</b>\n"
+                "1. Open VPS #3 noVNC\n"
+                "2. <code>cd C:/arbitrage</code>\n"
+                "3. <code>uv run python layer3/worker_personal.py</code>"
+            )
+        # personal failure doesn't block kill-condition checks — prop equity already fetched
+
     with _state_lock:
         active = _phase_state.get("active", False)
         phase  = int(_phase_state.get("phase", 1))
 
     if not active:
-        return
-
-    try:
-        _eq_result  = _query_equity(ZMQ_REQ_PROP, "")   # balance + equity only
-        prop_equity = _eq_result["equity"]
-    except Exception as exc:
-        logger.warning("Monitor: prop equity query failed: %s", exc)
         return
 
     with _pf_lock:
@@ -671,7 +727,7 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         f"<b>Review Before Saving</b>\n\n"
         f"<b>Firm:</b> {_wizard_data['propfirm_name']}\n"
         f"<b>Profit Target:</b> {_wizard_data['profit_target_pct']}%\n"
-        f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']}% → enforced at <b>{eff['max_drawdown_overall_pct']}%</b> (−1pp buffer)\n"
+        f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']}% → enforced at <b>{eff['max_drawdown_overall_pct']}%</b> (no buffer — exact)\n"
         f"<b>Max DD Daily:</b> {_wizard_data['max_drawdown_daily_pct']}% → enforced at <b>{eff['max_drawdown_daily_pct']}%</b> (−1pp buffer)\n"
         f"<b>Drawdown Type:</b> {'Static' if _wizard_data['drawdown_is_static'] else 'Dynamic'}{dd_flag}\n"
         f"<b>Raw Spread Acct:</b> {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
