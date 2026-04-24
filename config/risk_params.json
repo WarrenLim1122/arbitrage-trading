@@ -1,0 +1,29 @@
+{
+  "prop_risk_pct": 0.0067,
+  "_note_risk": "0.67% of static baseline_equity locked in propfirm_config.json at phase start. Never uses live MT5 balance for sizing.",
+
+  "phase_multipliers": {
+    "1": 0.20,
+    "2": 0.70
+  },
+
+  "pip_decimal_places": {
+    "EURUSD": 4, "GBPUSD": 4, "AUDUSD": 4, "USDCHF": 4,
+    "EURGBP": 4, "EURAUD": 4, "EURCHF": 4,
+    "GBPAUD": 4, "GBPCHF": 4,
+    "AUDCHF": 4, "CHFJPY": 2,
+    "USDJPY": 2, "EURJPY": 2, "GBPJPY": 2, "AUDJPY": 2
+  },
+
+  "layer3_zmq": {
+    "_note": "Fill in actual VPS IPs before deploying. Layer 3 binds; Layer 2 connects.",
+    "prop": {
+      "push": "tcp://<VPS2_IP>:5555",
+      "rep":  "tcp://<VPS2_IP>:5556"
+    },
+    "personal": {
+      "push": "tcp://<VPS3_IP>:5555",
+      "rep":  "tcp://<VPS3_IP>:5556"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "propfirm_name":            "",
+  "profit_target_pct":        0.0,
+  "max_drawdown_overall_pct": 0.0,
+  "max_drawdown_daily_pct":   0.0,
+  "drawdown_is_static":       true,
+  "raw_spread_account":       false,
+  "profit_sharing_pct":       0.0,
+  "min_profit_days":          0,
+  "daily_profit_cap_pct":     0.0,
+  "baseline_equity":          0.0,
+  "day_start_equity":         0.0,
+  "day_start_date_utc":       ""
+}

@@ -1,0 +1,6 @@
+{
+  "phase": 1,
+  "active": true,
+  "last_signal_ts": "never",
+  "_note": "Managed by Telegram bot — do not edit manually. /phase1 or /phase2 to switch, /stop /resume to control active."
+}
