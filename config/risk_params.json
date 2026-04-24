@@ -18,12 +18,12 @@
   "layer3_zmq": {
     "_note": "Fill in actual VPS IPs before deploying. Layer 3 binds; Layer 2 connects.",
     "prop": {
-      "push": "tcp://<VPS2_IP>:5555",
-      "rep":  "tcp://<VPS2_IP>:5556"
+      "push": "tcp://45.76.156.55:5555",
+      "rep":  "tcp://45.76.156.55:5556"
     },
     "personal": {
-      "push": "tcp://<VPS3_IP>:5555",
-      "rep":  "tcp://<VPS3_IP>:5556"
+      "push": "tcp://139.180.136.233:5555",
+      "rep":  "tcp://139.180.136.233:5556"
     }
   }
 }
