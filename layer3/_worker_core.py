@@ -31,6 +31,9 @@ from zoneinfo import ZoneInfo
 
 import MetaTrader5 as mt5
 import zmq
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────
 WORKER_NAME  = os.getenv("WORKER_NAME", "worker")
