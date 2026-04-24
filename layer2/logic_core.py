@@ -969,17 +969,55 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    try:
+        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        prop_text = f"Balance: {prop['balance']:.2f}  |  Equity: {prop['equity']:.2f}"
+    except Exception as exc:
+        prop_text = f"OFFLINE — {exc}"
+    try:
+        pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        pers_text = f"Balance: {pers['balance']:.2f}  |  Equity: {pers['equity']:.2f}"
+    except Exception as exc:
+        pers_text = f"OFFLINE — {exc}"
+    await update.message.reply_text(
+        f"<b>Live Equity Snapshot</b>\n\n"
+        f"<b>Prop (VPS #2):</b>\n{prop_text}\n\n"
+        f"<b>Personal (VPS #3):</b>\n{pers_text}",
+        parse_mode="HTML",
+    )
+
+
+async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    await asyncio.to_thread(_dispatch_force_close, "emergency_halt", halt=True)
+    await update.message.reply_text(
+        "<b>EMERGENCY HALT EXECUTED</b>\n\n"
+        "All positions force-closed on both MT5 accounts.\n"
+        "Signal processing halted.\n\n"
+        "Send /resume to restart trading.",
+        parse_mode="HTML",
+    )
+    logger.warning("Telegram: emergency halt executed by user")
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     await update.message.reply_text(
         "<b>TEE Bot — Commands</b>\n\n"
+        "<b>Emergency</b>\n"
+        "/emergency — Force-close ALL positions on both accounts + halt immediately\n\n"
         "<b>Phase &amp; Trading Control</b>\n"
         "/phase1 — Phase 1 (×0.20 lots, evaluation)\n"
         "/phase2 — Phase 2 (×0.70 lots, funded)\n"
         "/resume — Resume signal processing\n"
-        "/stop — Halt signal processing\n\n"
+        "/stop — Halt signal processing (open trades continue to SL/TP)\n\n"
         "<b>Status &amp; Config</b>\n"
+        "/equity — Live equity on both MT5 accounts\n"
         "/status — Live system status\n"
         "/propfirm — Current prop firm config\n"
         "/changepropfirm — Set up new prop firm (8-step wizard)\n"
@@ -1023,6 +1061,8 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
+    tg_app.add_handler(CommandHandler("equity",        _cmd_equity))
+    tg_app.add_handler(CommandHandler("emergency",     _cmd_emergency))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
 
@@ -1227,6 +1267,21 @@ async def receive_signal(request: Request):
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
+
+    await _telegram_alert(
+        f"<b>Trade Fired — {payload.ticker}</b>\n\n"
+        f"<b>Prop:</b> {prop_ticket['signal']}  {prop_lots:.2f} lots\n"
+        f"Entry: {payload.entry:.{price_digits}f}  "
+        f"SL: {payload.sl:.{price_digits}f}  "
+        f"TP: {prop_tp:.{price_digits}f}\n"
+        f"Risk: ${prop_dollar_risk:.2f}\n\n"
+        f"<b>Personal:</b> {pers_ticket['signal']}  {pers_lots:.2f} lots\n"
+        f"Entry: {payload.entry:.{price_digits}f}  "
+        f"SL: {pers_sl:.{price_digits}f}  "
+        f"TP: {pers_tp:.{price_digits}f}\n"
+        f"Risk: ${pers_dollar_risk:.2f}\n\n"
+        f"Phase {phase}  |  Baseline: {baseline_equity:.2f}"
+    )
 
     with _state_lock:
         _phase_state["last_signal_ts"] = datetime.now(timezone.utc).isoformat()
