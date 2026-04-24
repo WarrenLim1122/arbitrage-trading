@@ -12,10 +12,10 @@ Telegram bot responsibilities:
   - /propfirm        : show current prop firm config
 
 Equity monitor (background thread, 30 s interval):
-  - Kill 1 (all phases) : daily loss ≥ max_drawdown_daily_pct     → FORCE_CLOSE + halt
-  - Kill 2 (all phases) : overall loss ≥ max_drawdown_overall_pct → FORCE_CLOSE + halt  [static vs baseline]
-  - Kill 3 (Phase 2)    : daily profit ≥ daily_profit_cap_pct     → FORCE_CLOSE + halt
-  - Kill 4 (Phase 1)    : overall profit ≥ profit_target_pct      → FORCE_CLOSE + permanent halt
+  - Kill 1 (all phases) : daily loss ≥ max_drawdown_daily_pct  → FORCE_CLOSE + halt
+  - Kill 2 (Phase 2)    : daily profit ≥ daily_profit_cap_pct  → FORCE_CLOSE + halt
+  - Kill 3 (Phase 1)    : overall profit ≥ profit_target_pct   → FORCE_CLOSE + permanent halt
+  NOTE: overall drawdown is NOT monitored — prop loss = personal gain (cross-hedge by design)
 
 SGT kill switch (enforced inline in /signal endpoint):
   - Rejects signals 00:00–08:59 SGT and on weekends
@@ -402,29 +402,6 @@ def _run_equity_check() -> None:
         _alert_sync(msg)
         return
 
-    # Kill 2 — overall static drawdown (all phases) — measured from baseline_equity
-    # The floor is a hard absolute value; it never trails profits.
-    if baseline > 0:
-        overall_dd_limit = pf.get("max_drawdown_overall_pct", 0.0)
-        if overall_dd_limit > 0:
-            overall_loss_pct = (baseline - prop_equity) / baseline * 100
-            if overall_loss_pct >= overall_dd_limit:
-                floor = round(baseline * (1.0 - overall_dd_limit / 100.0), 2)
-                msg = (
-                    f"<b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
-                    f"Overall loss: <b>{overall_loss_pct:.2f}%</b> ≥ {overall_dd_limit}%\n"
-                    f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  Equity: <b>{prop_equity:.2f}</b>\n"
-                    f"All positions closed. System halted.\n\n"
-                    f"This account is likely blown.\n"
-                    f"<b>Next steps:</b>\n"
-                    f"/changepropfirm — start a new prop firm challenge\n"
-                    f"/resume — resume on same account after manual review"
-                )
-                logger.warning(msg)
-                _dispatch_force_close("overall_drawdown_limit", halt=True)
-                _alert_sync(msg)
-                return
-
     # Kill 3 — daily profit cap (Phase 2 only) — measured from day_start_equity
     if phase == 2:
         daily_profit_pct = (prop_equity - day_start) / day_start * 100
@@ -680,9 +657,9 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n\n"
         f"<b>Kill conditions:</b>\n"
         f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']}% → close all + halt\n"
-        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}% from baseline → close all + halt\n"
-        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}% (Phase 2) → close all + halt\n"
-        f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']}% (Phase 1) → permanent halt\n\n"
+        f"Kill 2 — daily profit ≥ {eff['daily_profit_cap_pct']}% (Phase 2) → close all + halt\n"
+        f"Kill 3 — overall profit ≥ {_wizard_data['profit_target_pct']}% (Phase 1) → permanent halt\n"
+        f"<i>(Overall drawdown not monitored — prop loss = personal gain by design)</i>\n\n"
         f"<i>Baseline equity will be fetched live from MT5 on confirm.</i>\n\n"
         f"Reply <b>YES</b> to save  |  <b>NO</b> to cancel"
     )
@@ -930,9 +907,8 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/cancel — Cancel wizard mid-flow\n\n"
         "<b>Kill Conditions</b> (automatic)\n"
         "Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
-        "Kill 2 — overall loss ≥ DD overall limit → close all + halt\n"
-        "Kill 3 — daily profit ≥ cap (Phase 2) → close all + halt\n"
-        "Kill 4 — overall profit ≥ target (Phase 1) → permanent halt\n\n"
+        "Kill 2 — daily profit ≥ cap (Phase 2) → close all + halt\n"
+        "Kill 3 — overall profit ≥ target (Phase 1) → permanent halt\n\n"
         "<b>Startup Sequence</b>\n"
         "/changepropfirm → /phase1 → /resume",
         parse_mode="HTML",
