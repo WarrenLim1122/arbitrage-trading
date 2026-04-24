@@ -22,29 +22,51 @@ TradingView (15m chart — one chart per pair)
 Telegram Bot API ←→ layer2/logic_core.py   (phase control + prop firm config + error alerts)
 ```
 
+## Infrastructure (Live as of 2026-04-24)
+
+| VPS | Provider | IP | OS | Purpose | Cost |
+|---|---|---|---|---|---|
+| VPS #1 | DigitalOcean (SGP1) | 152.42.213.98 | Ubuntu 24.04 | Layer 1 + Layer 2 + nginx + TLS | $18/month |
+| VPS #2 | Vultr | 45.76.156.55 | Windows Server | worker-prop (prop firm MT5) | ~$15–20/month |
+| VPS #3 | Vultr | 139.180.136.233 | Windows Server | worker-personal (personal MT5) | ~$15–20/month |
+
+- **Public HTTPS endpoint**: https://api.warrenlimzf.com/signal (nginx + Let's Encrypt TLS)
+- **Telegram bot name**: HedgeHog (bot token in VPS #1 `.env`)
+- **VPS #2 noVNC**: `https://console.vultr.com/subs/vps/novnc/?id=88dfe741-382d-47fe-a19c-199baa534bfc`
+- **VPS #3 noVNC**: `https://console.vultr.com/subs/vps/novnc/?id=6288e88e-1ad6-468a-a584-914bd04590b1`
+- **Billing**: DigitalOcean charges card at end of month. Vultr runs on prepaid credit (Visa ending 7119 auto-charges when low).
+
+---
+
 ## Build Status
 
 | Layer | Files | Status |
 |---|---|---|
-| 0 — Signal Engine | `layer0/signal_engine.pine`, `signal_engine_backtest.pine` | COMPLETE — needs TradingView setup |
-| 1 — Gatekeeper | `layer1/main.py`, `layer1/news_filter.py` | COMPLETE — needs VPS #1 + nginx |
-| 2 — Logic Core | `layer2/logic_core.py` | COMPLETE — needs VPS #1 |
-| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | COMPLETE — needs VPS #2 + #3 (Windows) |
+| 0 — Signal Engine | `layer0/signal_engine.pine`, `signal_engine_backtest.pine` | ✅ LIVE — 9 alerts active on TradingView |
+| 1 — Gatekeeper | `layer1/main.py`, `layer1/news_filter.py` | ✅ LIVE — systemd on VPS #1 |
+| 2 — Logic Core | `layer2/logic_core.py` | ✅ LIVE — systemd on VPS #1 |
+| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — PowerShell on VPS #2 + #3 |
 
-**Telegram bot**: token obtained, chat ID confirmed.
-**Next action**: backtest validation on TradingView, then VPS provisioning.
+**Current phase**: Gate D — 7-day demo run started 2026-04-25. Target go-live: ~2026-05-03.
+
+**Important**: VPS #1 Layer 1 and Layer 2 run as systemd services (auto-restart on crash). VPS #2 and #3 workers run in PowerShell windows — if the VPS reboots, the workers must be manually restarted. Do NOT close the PowerShell window on VPS #2/#3; closing the noVNC browser tab is safe.
 
 ---
 
 ## Covered Instruments
 
-6 pairs. Any other ticker is rejected at Layer 1.
+9 pairs. Any other ticker is rejected at Layer 1.
 
 ```
-EURUSD  GBPUSD  AUDUSD  USDCHF  USDJPY  XAUUSD
+EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD  NAS100
 ```
 
-`pip_type` in webhook: `"jpy"` for USDJPY, `"standard"` for all others (including XAUUSD).
+`pip_type` in webhook:
+- `"jpy"` — USDJPY
+- `"index"` — NAS100
+- `"standard"` — all others (EURUSD, GBPUSD, USDCHF, USDCAD, NZDUSD, XAUUSD, XAGUSD)
+
+Symbol map (`config/symbol_map.json`): NAS100 → USTEC (MetaQuotes broker name).
 
 ---
 
@@ -71,16 +93,16 @@ These rules never change between Phase 1 and Phase 2.
 ```
 sl_distance = abs(entry − sl)           # from webhook
 
-Step A — Prop dollar risk
-  prop_dollar_risk = prop_equity × 0.0067
+Step A — Prop dollar risk (uses BASELINE equity, not live equity)
+  prop_dollar_risk = baseline_equity × 0.0067
 
 Step B+C — Personal dollar risk
   phase_ratio      = 0.20 (Phase 1)  |  0.70 (Phase 2)
   pers_dollar_risk = prop_dollar_risk × phase_ratio
 
-Step D — Lots (each account uses its own broker's pip value)
-  prop_lots = prop_dollar_risk / (sl_pips × prop_pip_value)
-  pers_lots = pers_dollar_risk / (sl_pips × pers_pip_value)
+Step D — Lots (each account uses its own broker's contract data)
+  prop_lots = prop_dollar_risk / ((sl_distance / prop_point) × prop_tick_value)
+  pers_lots = pers_dollar_risk / ((sl_distance / pers_point) × pers_tick_value)
 ```
 
 **TP / personal SL computed by Layer 2 (not taken from webhook):**
@@ -110,7 +132,7 @@ Only the phase ratio changes. Direction, RR, and prop sizing are identical in bo
 
 ## Layer 0 — Signal Engine (`layer0/signal_engine.pine`, Pine Script v6)
 
-**Timeframe**: 15-minute chart. One chart per instrument.
+**Timeframe**: 15-minute chart. One chart per instrument. 9 charts total.
 
 **HTF (1-Day) — Sticky Trend:**
 - `request.security("D", ...)`, pivot N=2 bars each side.
@@ -145,6 +167,7 @@ Only the phase ratio changes. Direction, RR, and prop sizing are identical in bo
   "sl":               1.08300,
   "tp":               1.08554,
   "sl_pips":          20.0,
+  "sl_percent":       0.1852,
   "rr_ratio":         0.27,
   "order_type":       "MARKET",
   "daily_trend":      "BULLISH",
@@ -154,14 +177,25 @@ Only the phase ratio changes. Direction, RR, and prop sizing are identical in bo
 }
 ```
 
+**Pine Script v6 known fixes (do not revert):**
+- `long_json` and `short_json` must be single-line strings — multi-line string concatenation causes CE10156.
+- `alertcondition()` removed entirely — it requires a `const string` but JSON contains series values (CE10123). `alert()` inside `if` blocks is sufficient for webhook delivery.
+
 `layer0/signal_engine_backtest.pine` — same logic with `strategy()` for TradingView Strategy Tester.
+
+**TradingView alert settings (all 9 alerts):**
+- Condition: Any alert() function call
+- Expiration: Open-ended
+- Timeframe: 15m
+- Webhook URL: https://api.warrenlimzf.com/signal
+- Alerts are global — not tied to any layout. They fire from TradingView servers independently.
 
 ---
 
 ## Layer 1 — Gatekeeper (`layer1/main.py`, FastAPI)
 
 - Port 8000, public-facing behind nginx + TLS.
-- Validates ticker against 6 allowed pairs (EURUSD, GBPUSD, AUDUSD, USDCHF, USDJPY, XAUUSD).
+- Validates ticker against 9 allowed pairs (EURUSD, GBPUSD, USDCHF, USDCAD, USDJPY, NZDUSD, XAUUSD, XAGUSD, NAS100).
 - Queries Finnhub (`/calendar/economic`) via `layer1/news_filter.py`.
   - 60-minute in-memory cache.
   - Suppresses signal if any high-impact event for either currency is within ±30 min.
@@ -177,16 +211,29 @@ Only the phase ratio changes. Direction, RR, and prop sizing are identical in bo
 
 | Command | Description |
 |---|---|
+| `/emergency` | **Nuclear button** — force-close ALL positions on both MT5 accounts immediately + halt |
 | `/changepropfirm` | 8-step wizard — collects raw prop firm limits, auto-applies buffers, saves config |
 | `/propfirm` | Display current prop firm config |
-| `/phase1` | Set phase ratio ×0.20 |
-| `/phase2` | Set phase ratio ×0.70, clears permanent halt |
-| `/stop` | Halt signal processing |
+| `/equity` | Query live balance + equity from both MT5 accounts on demand |
+| `/phase1` | Set phase ratio ×0.20, locks baseline equity from live MT5 |
+| `/phase2` | Set phase ratio ×0.70, clears permanent halt, locks baseline equity |
+| `/stop` | Halt signal processing (open trades continue to their SL/TP naturally) |
 | `/resume` | Resume (blocked if Phase 1 target reached — requires `/phase2` first) |
 | `/status` | Phase, active state, SGT curfew, equity snapshots |
 | `/cancel` | Cancel wizard mid-flow |
 
+**`/stop` vs `/emergency`:**
+- `/stop` — stops new signals only. Open positions keep running to SL/TP. Use when pausing.
+- `/emergency` — stops new signals AND immediately force-closes all open positions on both accounts. Use when something is wrong and you need to exit the market right now.
+
 Chat ID lock: commands from any other Telegram user are silently ignored.
+
+### Trade Notification (automatic)
+
+Every time a signal is successfully dispatched to both workers, a Telegram message is sent with:
+- Ticker, direction, lots, entry, SL, TP for both prop and personal accounts
+- Dollar risk for each account
+- Phase and baseline equity
 
 ### /changepropfirm Wizard (8 steps)
 
@@ -197,11 +244,9 @@ Asks for the firm's **raw** values. Buffers are applied automatically before sav
 | Input | Firm's raw | Buffer applied | Enforced at |
 |---|---|---|---|
 | Max DD Daily % | e.g. 3% | −1 pp always | 2% |
-| Max DD Overall % | e.g. 6% | −1 pp always | 5% |
+| Max DD Overall % | e.g. 6% | no buffer | 6% |
 | Profit Target % | e.g. 10% | none | 10% |
 | Daily Profit Cap | computed internally | `profit_target × 0.25` | 2.5% |
-
-The buffer formula is dynamic — give any new firm's raw numbers and the correct enforced values are calculated automatically.
 
 `drawdown_is_static` and `raw_spread_account` must be `true`. If either is entered as `false`/`no`/`dynamic`, the wizard warns and requires explicit `CONFIRM` before accepting — both are flagged in the review summary.
 
@@ -209,15 +254,18 @@ On confirmation: fetches live equity from MT5 prop worker and stores as `baselin
 
 ### Equity Monitoring Thread (30 s interval)
 
-Queries **prop firm worker equity only** via ZMQ REQ/REP. All kill conditions are evaluated exclusively against the prop firm account — the personal account's P&L is never checked. All kills are **daily P&L only** — measured from `day_start_equity`, which resets at **11:00 SGT each day** (matching the prop firm's own daily reset timer). Overall prop firm drawdown is intentionally not monitored: if the prop firm loses overall, the personal account gains on the inverse, which is the strategy working as designed.
+Queries **prop firm worker equity only** via ZMQ REQ/REP. All kill conditions are evaluated exclusively against the prop firm account — the personal account's P&L is never checked. Daily kills are measured from `day_start_equity`, which resets at **11:00 SGT each day** (matching the prop firm's own daily reset timer).
 
 | # | Phase | Basis | Condition | Action |
 |---|---|---|---|---|
 | Kill 1 | All | Daily from `day_start_equity` | daily loss ≥ `max_drawdown_daily_pct` (2%) | FORCE_CLOSE both + halt |
-| Kill 2 | Phase 2 | Daily from `day_start_equity` | daily profit ≥ `daily_profit_cap_pct` (2.5%) | FORCE_CLOSE both + halt |
-| Kill 3 | Phase 1 | Overall from `baseline_equity` | overall profit ≥ `profit_target_pct` (10%) | FORCE_CLOSE both + **permanent halt** |
+| Kill 2 | All | Overall from `baseline_equity` | overall loss ≥ `max_drawdown_overall_pct` | FORCE_CLOSE both + **permanent halt** |
+| Kill 3 | Phase 2 | Daily from `day_start_equity` | daily profit ≥ `daily_profit_cap_pct` (2.5%) | FORCE_CLOSE both + halt |
+| Kill 4 | Phase 1 | Overall from `baseline_equity` | overall profit ≥ `profit_target_pct` (10%) | FORCE_CLOSE both + **permanent halt** |
 
-`max_drawdown_overall_pct` is stored in config for reference but does not trigger any kill — the cross-hedge means overall prop drawdown = personal account profit. When a kill fires: pushes `{"action": "FORCE_CLOSE", "reason": "..."}` to both ZMQ PUSH sockets + Telegram alert.
+When a kill fires: pushes `{"action": "FORCE_CLOSE", "reason": "..."}` to both ZMQ PUSH sockets + Telegram alert.
+
+**Worker health monitoring**: if either worker fails to respond for 3 consecutive 30s checks (~90s), a Telegram alert fires with instructions to restart the worker. Recovery is also alerted.
 
 ### SGT Curfew Gate (inline in `/signal` endpoint)
 
@@ -228,11 +276,12 @@ Queries **prop firm worker equity only** via ZMQ REQ/REP. All kill conditions ar
 
 1. SGT curfew gate.
 2. Check `active`, `phase1_permanently_halted`.
-3. Query `prop_equity + prop_pip_value` from prop worker via ZMQ.
-4. Query `pers_pip_value` from personal worker via ZMQ.
-5. Calculate lots per the immutable risk math above (prop and personal independently).
+3. Query `prop_equity + contract data` from prop worker via ZMQ.
+4. Query `contract data` from personal worker via ZMQ.
+5. Calculate lots per the immutable risk math above (prop and personal independently, using baseline equity).
 6. Compute prop TP (1/0.27 RR) and personal SL + TP (0.27 RR, inverse).
 7. Dispatch two ZMQ PUSH tickets with all computed values.
+8. Send trade notification to Telegram.
 
 Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
@@ -244,7 +293,7 @@ Shared logic in `_worker_core.py`; wrappers `worker_prop.py` and `worker_persona
 
 **Three threads per worker:**
 - PULL thread (main): receives execution tickets and FORCE_CLOSE messages.
-- REP thread (daemon): answers equity + pip value queries from Layer 2.
+- REP thread (daemon): answers equity + contract data queries from Layer 2.
 - SGT scheduler thread (daemon): manages `_dormant` flag, force-closes at curfew transition.
 
 ### Pip Value — XAUUSD vs Forex
@@ -290,6 +339,7 @@ Env vars: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `ZMQ_PULL_ADDR`, `ZMQ_REP_A
 | `config/phase_config.json` | `phase`, `active`, `phase1_permanently_halted`, `last_signal_ts` | Telegram commands |
 | `config/propfirm_config.json` | All 12 propfirm fields | `/changepropfirm` wizard only — never edit manually |
 | `config/risk_params.json` | `prop_risk_pct`, `phase_multipliers`, `layer3_zmq` | Manual edit only |
+| `config/symbol_map.json` | Ticker → broker symbol mapping (e.g. NAS100 → USTEC) | Manual edit only |
 
 ### `config/propfirm_config.json` fields
 
@@ -304,13 +354,13 @@ Env vars: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `ZMQ_PULL_ADDR`, `ZMQ_REP_A
   "profit_sharing_pct":       80.0,
   "min_profit_days":          3,
   "daily_profit_cap_pct":     2.5,
-  "baseline_equity":          0.0,
-  "day_start_equity":         0.0,
-  "day_start_date_utc":       "2026-04-23"
+  "baseline_equity":          100000.0,
+  "day_start_equity":         100000.0,
+  "day_start_date_utc":       "2026-04-25"
 }
 ```
 
-Post-buffer values (firm's raw → enforced): daily DD 3%→2%, overall DD 6%→5%, profit cap 3%→2.5%. `daily_profit_cap_pct` = `profit_target_pct × 0.25`. `baseline_equity` and `day_start_equity` are populated live from MT5 by the wizard — never set manually. Never edit this file manually — use `/changepropfirm`.
+`baseline_equity` and `day_start_equity` are populated live from MT5 by the wizard — never set manually. Never edit this file manually — use `/changepropfirm`.
 
 ---
 
@@ -345,8 +395,8 @@ uvicorn layer1.main:app --host 127.0.0.1 --port 8000
 uvicorn layer2.logic_core:app --host 127.0.0.1 --port 8001
 
 # Layer 3 — Workers (one per Windows VPS)
-python layer3/worker_prop.py
-python layer3/worker_personal.py
+uv run python layer3/worker_prop.py
+uv run python layer3/worker_personal.py
 ```
 
 ---
@@ -416,6 +466,7 @@ uv run python layer3/worker_personal.py
 - VPS #3 noVNC: `https://console.vultr.com/subs/vps/novnc/?id=6288e88e-1ad6-468a-a584-914bd04590b1`
 - `&&` does not work in PowerShell — run commands one at a time
 - noVNC clipboard: use the clipboard icon on the left sidebar, paste into the box, then right-click in PowerShell to paste
+- Workers on VPS #2/#3 run in PowerShell — do NOT close the PowerShell window. Closing the noVNC browser tab is safe.
 
 ---
 
@@ -425,11 +476,12 @@ uv run python layer3/worker_personal.py
 - **MetaTrader5 import on Linux = instant failure.** Layers 1 and 2 must never import it.
 - **Prop firm config is wizard-only.** Never edit `propfirm_config.json` manually.
 - **Phase switching is Telegram-only.**
-- **Lot sizing uses the Capital × 0.67% × Ratio formula.** `pers_lots = prop_lots × ratio` is wrong — personal dollar risk is computed first, then converted to lots using the personal broker's own pip value.
+- **Lot sizing uses baseline_equity × 0.67%, not live equity.** This keeps sizing stable regardless of open trade P&L.
+- **Personal dollar risk = prop dollar risk × phase ratio, then converted to lots using personal broker pip value.** `pers_lots = prop_lots × ratio` is wrong.
 - **VPS #2 and #3 must have distinct public IPs.**
 - **ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open** between VPS #1 and VPS #2/#3.
 - **TradingView Premium** required for webhook alert delivery.
-- **One TradingView chart per instrument** — 6 charts total for 6 pairs.
+- **One TradingView chart per instrument** — 9 charts total for 9 pairs.
 - **Demo-first mandatory**: full pipeline on paper/demo MT5 for ≥7 trading days before live capital.
 
 ---
@@ -440,6 +492,7 @@ uv run python layer3/worker_personal.py
 |---|---|---|
 | 00:00 SGT | 16:00 UTC (prev day) | Curfew begins — force-close all positions |
 | 09:00 SGT | 01:00 UTC | Trading resumes (weekdays only) |
+| 11:00 SGT | 03:00 UTC | Prop firm daily reset — day_start_equity resets |
 | Saturday 00:00 SGT | Friday 16:00 UTC | Weekend dormant begins |
 | Monday 09:00 SGT | Monday 01:00 UTC | Weekend dormant ends |
 
@@ -449,35 +502,32 @@ uv run python layer3/worker_personal.py
 
 ```
 Gate 0 — CONFIRM WITH USER before any deployment:
-  [ ] Verify prop firm daily reset time: currently hardcoded at 11:00 SGT in _propfirm_day()
-      — Check prop firm dashboard "Resets In" timer on two separate days to confirm it is
-        always 11:00 SGT (fixed) and does not shift (e.g. tied to a DST timezone).
-      — If the reset time differs, update the hour threshold in logic_core.py:_propfirm_day()
-        before proceeding.
+  [x] Verify prop firm daily reset time: currently hardcoded at 11:00 SGT in _propfirm_day()
+      — Confirmed with FundingPips demo account. Verify again on live account.
 
 Gate A — before Layer 1 goes live (VPS #1):
-  [ ] FINNHUB_API_KEY in .env
-  [ ] nginx installed, TLS certificate (certbot), reverse proxy to port 8000
-  [ ] TradingView Premium — webhook URL set to https://<domain>/signal
-  [ ] uv sync complete, uvicorn starts cleanly
+  [x] FINNHUB_API_KEY in .env
+  [x] nginx installed, TLS certificate (certbot), reverse proxy to port 8000
+  [x] TradingView Premium — webhook URL set to https://api.warrenlimzf.com/signal
+  [x] uv sync complete, uvicorn starts cleanly
 
 Gate B — before Layer 2 Telegram bot goes live (VPS #1):
-  [ ] TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env
-  [ ] /status command returns correct state
-  [ ] /phase1 confirmation message received
-  [ ] /resume activates signal processing
-  [ ] (optional) /changepropfirm wizard — only if starting a fresh challenge or switching firms
+  [x] TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env
+  [x] /status command returns correct state
+  [x] /phase1 confirmation message received
+  [x] /resume activates signal processing
+  [x] /changepropfirm wizard completed — baseline_equity = 100,000 (demo)
 
 Gate C — before Layer 3 workers go live (VPS #2 and VPS #3):
-  [ ] VPS #2 and #3 provisioned (Windows Server 2022), distinct public IPs
-  [ ] MT5 installed and logged in on each VPS
-  [ ] MT5 → Tools → Options → Expert Advisors → "Allow automated trading" checked
-  [ ] Firewall: VPS #2 and #3 accept ZMQ ports 5555–5556 from VPS #1 IP only
-  [ ] uv sync --extra layer3 (installs MetaTrader5 + tzdata)
-  [ ] ZMQ connection test: Layer 2 equity query returns balance from both workers
-  [ ] config/risk_params.json updated with actual ZMQ URLs and VPS IPs
+  [x] VPS #2 and #3 provisioned (Windows Server), distinct public IPs
+  [x] MT5 installed and logged in on each VPS
+  [x] MT5 → Tools → Options → Expert Advisors → "Allow automated trading" checked
+  [x] Firewall: VPS #2 and #3 accept ZMQ ports 5555–5556 from VPS #1 IP only
+  [x] uv sync --extra layer3 (installs MetaTrader5 + tzdata)
+  [x] ZMQ connection test: Layer 2 equity query returns balance from both workers
+  [x] config/risk_params.json updated with actual ZMQ URLs and VPS IPs
 
-Gate D — mandatory before live capital (≥7 trading days on demo):
+Gate D — mandatory before live capital (≥7 trading days on demo, started 2026-04-25):
   [ ] Phase 1 ratio (×0.20) verified on ≥10 signals end-to-end
   [ ] Phase 2 ratio (×0.70) verified on ≥10 signals
   [ ] Inverse direction confirmed on personal account for every signal
@@ -485,10 +535,12 @@ Gate D — mandatory before live capital (≥7 trading days on demo):
   [ ] News filter tested: ≥3 high-impact suppressions logged correctly
   [ ] Latency audit: receipt_ms → fill_ms < 500ms on all orders
   [ ] Telegram error alerts tested by intentionally crashing Layer 3
-  [ ] /changepropfirm wizard: all 8 fields accepted, buffered values shown correctly
+  [ ] Trade notification fires correctly on every dispatch
+  [ ] /equity command returns live balance from both workers
+  [ ] /emergency closes all positions on both accounts immediately
   [ ] Kill 1 (daily loss): drain demo equity past daily DD → FORCE_CLOSE fires on BOTH accounts + Telegram alert
-  [ ] Kill 2 (daily profit cap, Phase 2): simulate +cap% in one day → FORCE_CLOSE fires + Telegram alert
-  [ ] Kill 3 (Phase 1 target): hit overall profit target → permanent halt confirmed, /phase2 + /resume required
+  [ ] Kill 3 (daily profit cap, Phase 2): simulate +cap% in one day → FORCE_CLOSE fires + Telegram alert
+  [ ] Kill 4 (Phase 1 target): hit overall profit target → permanent halt confirmed, /phase2 + /resume required
   [ ] SGT midnight curfew: open position at 23:59 SGT → force-closed by 00:01 SGT
   [ ] SGT 09:00 resume: first signal after 09:00 SGT dispatched normally
   [ ] Weekend rejection: signal arriving Saturday/Sunday returns "weekend" rejection
@@ -497,20 +549,30 @@ Gate D — mandatory before live capital (≥7 trading days on demo):
 
 ---
 
+## Go-Live Checklist (after Gate D passes, ~2026-05-03)
+
+1. Log into MT5 on VPS #2 — switch to real **FundingPips** credentials
+2. Log into MT5 on VPS #3 — switch to real **Fusion Markets** credentials
+3. Send `/changepropfirm` in Telegram — re-run wizard with real FundingPips limits, baseline locks to live balance
+4. Send `/phase1` then `/resume`
+5. Verify first live signal dispatches correctly and trade appears in both MT5 accounts
+
+---
+
 ## Session Continuity (read this after /clear)
 
-All four layers are code-complete. Nothing left to write.
+All four layers are code-complete and fully deployed. The system is in Gate D — 7-day demo run.
 
-**Current state:**
-- Layer 0: 15m LTF + 1D HTF sticky trend. `signal_engine.pine` (live) and `signal_engine_backtest.pine` (backtest) both complete.
-- Layer 1: 6-pair filter (EURUSD, GBPUSD, AUDUSD, USDCHF, USDJPY, XAUUSD) + Finnhub news filter.
-- Layer 2: Correct lot sizing — `prop_dollar_risk = prop_equity × 0.0067`, `pers_dollar_risk = prop_dollar_risk × phase_ratio`, each account converts to lots using its own broker pip value. Prop TP = 1/0.27 RR. Personal TP = 0.27 RR inverse. Personal SL from `m15_swing_high`/`m15_swing_low`.
-- Layer 3: XAUUSD pip value fix (`trade_tick_value` only, no ×10). All kill switches operational via FORCE_CLOSE dispatch from Layer 2.
+**Current state (as of 2026-04-25):**
+- Layer 0: 9 alerts active on TradingView. Webhooks firing and delivering successfully.
+- Layer 1: Live at https://api.warrenlimzf.com/signal. Rejecting signals during SGT curfew (correct). Finnhub news filter active.
+- Layer 2: Running on VPS #1. Telegram bot (HedgeHog) active. `/equity`, `/emergency`, trade notifications all implemented. 4 kill conditions active.
+- Layer 3: Both workers running on VPS #2 (prop, MetaQuotes demo) and VPS #3 (personal, MetaQuotes demo account 106260846).
 
-**What to do next — in order:**
+**Nothing left to build. Monitor Gate D checklist items as signals fire.**
 
-1. **Backtest** — open `signal_engine_backtest.pine` in TradingView Strategy Tester on 15m chart across all pairs. Check signal frequency and drawdown profile. If signals are too sparse, relax `N_HTF` from 2 to 1.
-2. **VPS provisioning** — Gate A + C. Fill `<VPS2_IP>` and `<VPS3_IP>` in `config/risk_params.json`. Open firewall ports 5555–5556 on VPS #2/#3.
-3. **Start Telegram bot** — `/phase1` to set phase, `/resume` to activate. That's all that's required for normal operation.
-4. **7-day demo run** — Gate D in full before any live capital.
-5. **Go live** — switch MT5 to live accounts, `/phase1`, `/resume`. Run `/changepropfirm` only if you need to update baseline equity for the live account.
+**What to do next:**
+1. Wait for signals during trading hours (09:00–00:00 SGT, weekdays only)
+2. On each signal: check Telegram for trade notification, verify MT5 positions match (prop = signal direction, personal = inverse)
+3. Tick off Gate D checklist items as they occur
+4. Go live ~2026-05-03 using the Go-Live Checklist above
