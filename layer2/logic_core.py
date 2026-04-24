@@ -856,6 +856,41 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
     )
 
 
+async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    await update.message.reply_text(
+        "TEE Bot — Available Commands\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "\n"
+        "Phase & trading control\n"
+        "  /phase1          — Set Phase 1 (×0.20 personal lots, evaluation)\n"
+        "  /phase2          — Set Phase 2 (×0.70 personal lots, funded)\n"
+        "  /resume          — Resume signal processing\n"
+        "  /stop            — Halt signal processing\n"
+        "\n"
+        "Status & config\n"
+        "  /status          — Live system status (phase, active, equity, curfew)\n"
+        "  /propfirm        — Show current prop firm config\n"
+        "  /changepropfirm  — 8-step wizard to set up a new prop firm account\n"
+        "                     (asks: firm name, profit target %, overall DD %,\n"
+        "                      daily DD %, drawdown type, raw spread, profit\n"
+        "                      share %, min profit days)\n"
+        "\n"
+        "Wizard\n"
+        "  /cancel          — Cancel /changepropfirm mid-flow\n"
+        "\n"
+        "Kill conditions (auto — no command needed)\n"
+        "  Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
+        "  Kill 2 — overall loss ≥ DD overall limit → close all + halt\n"
+        "  Kill 3 — daily profit ≥ cap (Phase 2) → close all + halt\n"
+        "  Kill 4 — overall profit ≥ target (Phase 1) → close all + permanent halt\n"
+        "\n"
+        "Typical startup sequence\n"
+        "  /changepropfirm → /phase1 → /resume"
+    )
+
+
 # ── Bot startup ───────────────────────────────────────────────────────────
 
 def _run_bot() -> None:
@@ -885,6 +920,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
+    tg_app.add_handler(CommandHandler("help",          _cmd_help))
 
     async def _poll():
         await tg_app.initialize()
