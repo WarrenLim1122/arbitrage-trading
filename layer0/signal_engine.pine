@@ -149,44 +149,9 @@ float s_sl_pips = s_risk / pip_size
 // ═══════════════════════════════════════════════════════════════════════════
 string TS = str.tostring(timenow)
 
-string long_json =
-    '{"signal":"LONG"' +
-    ',"ticker":"'        + syminfo.ticker                              + '"' +
-    ',"timestamp_ms":'   + TS                                               +
-    ',"timeframe":"15m"'                                                     +
-    ',"entry":'          + str.tostring(l_entry,        "#.#####")          +
-    ',"sl":'             + str.tostring(l_sl,           "#.#####")          +
-    ',"tp":'             + str.tostring(l_tp,           "#.#####")          +
-    ',"sl_pips":'        + str.tostring(l_sl_pips,      "#.##")             +
-    ',"sl_percent":'     + str.tostring(long_stop_pct,  "#.####")           +
-    ',"rr_ratio":'       + str.tostring(RR,             "#.##")             +
-    ',"order_type":"MARKET"'                                                 +
-    ',"daily_trend":"BULLISH"'                                               +
-    ',"m15_swing_high":' + str.tostring(last_ltf_sh,    "#.#####")          +
-    ',"m15_swing_low":'  + str.tostring(last_ltf_sl,    "#.#####")          +
-    ',"pip_type":"'      + pip_type                                    + '"' +
-    '}'
+string long_json = '{"signal":"LONG","ticker":"' + syminfo.ticker + '","timestamp_ms":' + TS + ',"timeframe":"15m","entry":' + str.tostring(l_entry, "#.#####") + ',"sl":' + str.tostring(l_sl, "#.#####") + ',"tp":' + str.tostring(l_tp, "#.#####") + ',"sl_pips":' + str.tostring(l_sl_pips, "#.##") + ',"sl_percent":' + str.tostring(long_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"BULLISH","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
 
-string short_json =
-    '{"signal":"SHORT"' +
-    ',"ticker":"'        + syminfo.ticker                              + '"' +
-    ',"timestamp_ms":'   + TS                                               +
-    ',"timeframe":"15m"'                                                     +
-    ',"entry":'          + str.tostring(s_entry,        "#.#####")          +
-    ',"sl":'             + str.tostring(s_sl,           "#.#####")          +
-    ',"tp":'             + str.tostring(s_tp,           "#.#####")          +
-    ',"sl_pips":'        + str.tostring(s_sl_pips,      "#.##")             +
-    ',"sl_percent":'     + str.tostring(short_stop_pct, "#.####")           +
-    ',"rr_ratio":'       + str.tostring(RR,             "#.##")             +
-    ',"order_type":"MARKET"'                                                 +
-    ',"daily_trend":"BEARISH"'                                               +
-    ',"m15_swing_high":' + str.tostring(last_ltf_sh,    "#.#####")          +
-    ',"m15_swing_low":'  + str.tostring(last_ltf_sl,    "#.#####")          +
-    ',"pip_type":"'      + pip_type                                    + '"' +
-    '}'
-
-alertcondition(long_sig,  "TEE LONG  Signal", long_json)
-alertcondition(short_sig, "TEE SHORT Signal", short_json)
+string short_json = '{"signal":"SHORT","ticker":"' + syminfo.ticker + '","timestamp_ms":' + TS + ',"timeframe":"15m","entry":' + str.tostring(s_entry, "#.#####") + ',"sl":' + str.tostring(s_sl, "#.#####") + ',"tp":' + str.tostring(s_tp, "#.#####") + ',"sl_pips":' + str.tostring(s_sl_pips, "#.##") + ',"sl_percent":' + str.tostring(short_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"BEARISH","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
 
 if long_sig
     alert(long_json,  alert.freq_once_per_bar_close)
