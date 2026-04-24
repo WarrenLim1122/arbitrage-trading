@@ -862,8 +862,16 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
 
-    logger.info("Telegram bot polling (chat_id=%d)", CHAT_ID)
-    tg_app.run_polling(allowed_updates=["message"])
+    async def _poll():
+        await tg_app.initialize()
+        await tg_app.start()
+        await tg_app.updater.start_polling(allowed_updates=["message"])
+        logger.info("Telegram bot polling (chat_id=%d)", CHAT_ID)
+        await asyncio.Event().wait()  # block forever; thread is daemon so exits with process
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_poll())
 
 
 threading.Thread(target=_run_bot,              daemon=True, name="tg-bot").start()
