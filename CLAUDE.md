@@ -351,6 +351,74 @@ python layer3/worker_personal.py
 
 ---
 
+## Deploying Code Changes to VPS
+
+**Which VPSes to update depends on which layer changed:**
+
+| Layer changed | VPS #1 (Linux) | VPS #2 worker-prop | VPS #3 worker-personal |
+|---|---|---|---|
+| Layer 1 or 2 | ✅ git pull + restart | ❌ | ❌ |
+| Layer 3 | ❌ | ✅ git pull + restart | ✅ git pull + restart |
+| config/ files | ✅ git pull + restart | ✅ git pull + restart | ✅ git pull + restart |
+| Layer 0 (Pine Script) | ❌ | ❌ | ❌ (TradingView only) |
+
+`uv sync --extra layer3` is only needed on VPS #2/#3 when `pyproject.toml` changed. For pure code changes, `git pull` + restart is enough.
+
+---
+
+### Step 1 — Push from Mac
+
+```bash
+git add <changed files>
+git commit -m "description"
+git push
+```
+
+### Step 2 — Update VPS #1 (SSH from Mac terminal)
+
+```bash
+ssh root@152.42.213.98
+cd /root/arbitrage-trading
+git pull
+sudo systemctl restart layer2   # if Layer 2 changed
+sudo systemctl restart layer1   # if Layer 1 changed
+systemctl status layer2         # verify running
+```
+
+### Step 3 — Update VPS #2 worker-prop (noVNC browser console)
+
+```powershell
+cd C:/arbitrage
+git pull
+uv sync --extra layer3          # only if pyproject.toml changed
+# Stop running worker: Ctrl+C
+uv run python layer3/worker_prop.py
+```
+
+### Step 4 — Update VPS #3 worker-personal (noVNC browser console)
+
+```powershell
+cd C:/arbitrage
+git pull
+uv sync --extra layer3          # only if pyproject.toml changed
+# Stop running worker: Ctrl+C
+uv run python layer3/worker_personal.py
+```
+
+---
+
+### Key facts
+
+- Repo path on VPS #1: `/root/arbitrage-trading`
+- Layer 2 runs as systemd service: `layer2.service` — always restart with `sudo systemctl restart layer2`
+- Layer 1 runs as systemd service: `layer1.service` — always restart with `sudo systemctl restart layer1`
+- VPS #2 noVNC: `https://console.vultr.com/subs/vps/novnc/?id=88dfe741-382d-47fe-a19c-199baa534bfc`
+- VPS #3 noVNC: `https://console.vultr.com/subs/vps/novnc/?id=6288e88e-1ad6-468a-a584-914bd04590b1`
+- `&&` does not work in PowerShell — run commands one at a time
+- noVNC clipboard: use the clipboard icon on the left sidebar, paste into the box, then right-click in PowerShell to paste
+
+---
+
 ## Hard Constraints
 
 - **Personal account always trades inverse direction.**
