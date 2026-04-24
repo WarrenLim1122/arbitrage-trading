@@ -216,7 +216,11 @@ def _alert_sync(message: str) -> None:
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         with httpx.Client(timeout=5.0) as client:
-            client.post(url, json={"chat_id": CHAT_ID, "text": f"TEE Alert\n{message}"})
+            client.post(url, json={
+                "chat_id": CHAT_ID,
+                "text": f"<b>TEE Alert</b>\n\n{message}",
+                "parse_mode": "HTML",
+            })
     except Exception as exc:
         logger.error("Telegram sync alert failed: %s", exc)
 
@@ -225,7 +229,11 @@ async def _telegram_alert(message: str) -> None:
     try:
         bot = Bot(token=BOT_TOKEN)
         async with bot:
-            await bot.send_message(chat_id=CHAT_ID, text=f"TEE Alert\n{message}")
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text=f"<b>TEE Alert</b>\n\n{message}",
+                parse_mode="HTML",
+            )
     except Exception as exc:
         logger.error("Telegram async alert failed: %s", exc)
 
@@ -343,7 +351,7 @@ def _run_equity_check() -> None:
         if _last_curfew_close_date != today:
             logger.info("Monitor: SGT curfew transition — dispatching force-close (positions only)")
             _dispatch_force_close("sgt_curfew", halt=False)
-            _alert_sync("SGT curfew — all positions closed. Resumes 09:00 SGT on next weekday.")
+            _alert_sync("<b>SGT Curfew</b> — All positions closed.\nResumes 09:00 SGT on next weekday.")
             _last_curfew_close_date = today
         return
 
@@ -381,13 +389,13 @@ def _run_equity_check() -> None:
     daily_loss_pct = (day_start - prop_equity) / day_start * 100
     if daily_loss_pct >= pf["max_drawdown_daily_pct"] > 0:
         msg = (
-            f"KILL 1 — Daily loss limit hit\n"
-            f"Daily loss: {daily_loss_pct:.2f}% ≥ {pf['max_drawdown_daily_pct']}%\n"
-            f"Equity: {prop_equity:.2f}\n"
+            f"<b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
+            f"Daily loss: <b>{daily_loss_pct:.2f}%</b> ≥ {pf['max_drawdown_daily_pct']}%\n"
+            f"Equity: <b>{prop_equity:.2f}</b>\n"
             f"All positions closed. System halted.\n\n"
-            f"Next steps:\n"
-            f"  /resume — resume trading tomorrow\n"
-            f"  /changepropfirm — switch to a new prop firm account"
+            f"<b>Next steps:</b>\n"
+            f"/resume — resume trading tomorrow\n"
+            f"/changepropfirm — switch to a new prop firm account"
         )
         logger.warning(msg)
         _dispatch_force_close("daily_loss_limit", halt=True)
@@ -403,13 +411,14 @@ def _run_equity_check() -> None:
             if overall_loss_pct >= overall_dd_limit:
                 floor = round(baseline * (1.0 - overall_dd_limit / 100.0), 2)
                 msg = (
-                    f"KILL 2 — Overall drawdown limit hit\n"
-                    f"Overall loss: {overall_loss_pct:.2f}% ≥ {overall_dd_limit}%\n"
-                    f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  Equity: {prop_equity:.2f}\n"
+                    f"<b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
+                    f"Overall loss: <b>{overall_loss_pct:.2f}%</b> ≥ {overall_dd_limit}%\n"
+                    f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  Equity: <b>{prop_equity:.2f}</b>\n"
                     f"All positions closed. System halted.\n\n"
-                    f"This account is likely blown. Next steps:\n"
-                    f"  /changepropfirm — start a new prop firm challenge\n"
-                    f"  /resume — resume on same account after manual review"
+                    f"This account is likely blown.\n"
+                    f"<b>Next steps:</b>\n"
+                    f"/changepropfirm — start a new prop firm challenge\n"
+                    f"/resume — resume on same account after manual review"
                 )
                 logger.warning(msg)
                 _dispatch_force_close("overall_drawdown_limit", halt=True)
@@ -422,13 +431,13 @@ def _run_equity_check() -> None:
         cap = pf.get("daily_profit_cap_pct", 0.0)
         if cap > 0 and daily_profit_pct >= cap:
             msg = (
-                f"KILL 3 — Daily profit cap hit (Phase 2)\n"
-                f"Daily profit: {daily_profit_pct:.2f}% ≥ {cap}%\n"
-                f"Equity: {prop_equity:.2f}\n"
+                f"<b>KILL 3 — Daily Profit Cap Hit (Phase 2)</b>\n\n"
+                f"Daily profit: <b>{daily_profit_pct:.2f}%</b> ≥ {cap}%\n"
+                f"Equity: <b>{prop_equity:.2f}</b>\n"
                 f"All positions closed for today.\n\n"
-                f"Next steps:\n"
-                f"  /resume — resume trading tomorrow\n"
-                f"  /changepropfirm — switch to a new prop firm account"
+                f"<b>Next steps:</b>\n"
+                f"/resume — resume trading tomorrow\n"
+                f"/changepropfirm — switch to a new prop firm account"
             )
             logger.warning(msg)
             _dispatch_force_close("daily_profit_cap", halt=True)
@@ -441,17 +450,17 @@ def _run_equity_check() -> None:
         target      = pf.get("profit_target_pct", 0.0)
         if target > 0 and overall_pct >= target:
             msg = (
-                f"KILL 4 — Phase 1 target reached! Evaluation PASSED.\n"
-                f"Overall profit: {overall_pct:.2f}% ≥ {target}%\n"
-                f"Equity: {prop_equity:.2f}\n"
-                f"System PERMANENTLY HALTED — awaiting your decision.\n\n"
-                f"Options:\n"
-                f"  1. Move to funded account (Phase 2):\n"
-                f"     /phase2 → /resume\n\n"
-                f"  2. Start a new prop firm challenge:\n"
-                f"     /changepropfirm\n"
-                f"     (wizard will ask: firm name, profit target %, overall DD %, "
-                f"daily DD %, drawdown type, raw spread, profit share %, min profit days)"
+                f"<b>KILL 4 — Phase 1 Target Reached! Evaluation PASSED.</b>\n\n"
+                f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
+                f"Equity: <b>{prop_equity:.2f}</b>\n"
+                f"System permanently halted — awaiting your decision.\n\n"
+                f"<b>Options:</b>\n\n"
+                f"1. Move to funded account (Phase 2)\n"
+                f"   /phase2 then /resume\n\n"
+                f"2. Start a new prop firm challenge\n"
+                f"   /changepropfirm\n"
+                f"   <i>Wizard asks: firm name, profit target %, overall DD %, daily DD %, "
+                f"drawdown type, raw spread, profit share %, min profit days</i>"
             )
             logger.warning(msg)
             _dispatch_force_close("phase1_target", halt=True, permanent=True)
@@ -475,15 +484,19 @@ async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
     _wizard_data.clear()
     await update.message.reply_text(
-        "Change Prop Firm Config\n\n"
-        "Step 1/8 — Enter Prop Firm Name:"
+        "<b>Change Prop Firm Config</b>\n\n"
+        "<b>Step 1 of 8</b> — Enter the prop firm name:",
+        parse_mode="HTML",
     )
     return PF_NAME
 
 
 async def _wiz_name(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _wizard_data["propfirm_name"] = update.message.text.strip()
-    await update.message.reply_text("Step 2/8 — Profit Target % (firm's number, e.g. 10):")
+    await update.message.reply_text(
+        "<b>Step 2 of 8</b> — Profit Target %\n\nEnter the firm's profit target (e.g. <code>10</code>):",
+        parse_mode="HTML",
+    )
     return PF_PROFIT_TARGET
 
 
@@ -492,10 +505,13 @@ async def _wiz_profit_target(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
         v = float(update.message.text.strip())
         assert v > 0
     except Exception:
-        await update.message.reply_text("Invalid — enter a positive number (e.g. 10):")
+        await update.message.reply_text("Invalid — enter a positive number (e.g. <code>10</code>):", parse_mode="HTML")
         return PF_PROFIT_TARGET
     _wizard_data["profit_target_pct"] = v
-    await update.message.reply_text("Step 3/8 — Max Drawdown Overall % (firm's raw limit, e.g. 10):")
+    await update.message.reply_text(
+        "<b>Step 3 of 8</b> — Max Drawdown Overall %\n\nEnter the firm's raw overall DD limit (e.g. <code>10</code>):",
+        parse_mode="HTML",
+    )
     return PF_MAX_DD_OVERALL
 
 
@@ -504,10 +520,13 @@ async def _wiz_max_dd_overall(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
         v = float(update.message.text.strip())
         assert v > 0
     except Exception:
-        await update.message.reply_text("Invalid — enter a positive number (e.g. 10):")
+        await update.message.reply_text("Invalid — enter a positive number (e.g. <code>10</code>):", parse_mode="HTML")
         return PF_MAX_DD_OVERALL
     _wizard_data["max_drawdown_overall_pct"] = v
-    await update.message.reply_text("Step 4/8 — Max Drawdown Daily % (firm's raw limit, e.g. 3):")
+    await update.message.reply_text(
+        "<b>Step 4 of 8</b> — Max Drawdown Daily %\n\nEnter the firm's raw daily DD limit (e.g. <code>3</code>):",
+        parse_mode="HTML",
+    )
     return PF_MAX_DD_DAILY
 
 
@@ -516,11 +535,12 @@ async def _wiz_max_dd_daily(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
         v = float(update.message.text.strip())
         assert v > 0
     except Exception:
-        await update.message.reply_text("Invalid — enter a positive number (e.g. 3):")
+        await update.message.reply_text("Invalid — enter a positive number (e.g. <code>3</code>):", parse_mode="HTML")
         return PF_MAX_DD_DAILY
     _wizard_data["max_drawdown_daily_pct"] = v
     await update.message.reply_text(
-        "Step 5/8 — Drawdown type?\nType: static  or  dynamic"
+        "<b>Step 5 of 8</b> — Drawdown Type\n\nType <code>static</code> or <code>dynamic</code>:",
+        parse_mode="HTML",
     )
     return PF_DD_TYPE
 
@@ -534,15 +554,17 @@ async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             _wizard_data["drawdown_is_static"] = False
             _wizard_data.pop("_dd_type_confirming")
             await update.message.reply_text(
-                "Dynamic drawdown accepted (flagged).\n"
-                "Step 6/8 — Raw spread account?\nType: yes  or  no"
+                "Dynamic drawdown accepted (flagged).\n\n"
+                "<b>Step 6 of 8</b> — Raw Spread Account\n\nType <code>yes</code> or <code>no</code>:",
+                parse_mode="HTML",
             )
             return PF_RAW_SPREAD
         else:
             _wizard_data.pop("_dd_type_confirming")
             await update.message.reply_text(
-                "Confirmation not received — please re-enter drawdown type.\n"
-                "Type: static  or  dynamic"
+                "Confirmation not received. Re-enter drawdown type:\n\n"
+                "<code>static</code>  or  <code>dynamic</code>",
+                parse_mode="HTML",
             )
             return PF_DD_TYPE
 
@@ -550,19 +572,24 @@ async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if v_lower == "static":
         _wizard_data["drawdown_is_static"] = True
         await update.message.reply_text(
-            "Step 6/8 — Raw spread account?\nType: yes  or  no"
+            "<b>Step 6 of 8</b> — Raw Spread Account\n\nType <code>yes</code> or <code>no</code>:",
+            parse_mode="HTML",
         )
         return PF_RAW_SPREAD
     elif v_lower == "dynamic":
         _wizard_data["_dd_type_confirming"] = True
         await update.message.reply_text(
-            "WARNING — Dynamic drawdown flagged.\n"
-            "This system is built for static drawdown accounts.\n"
-            "Reply CONFIRM to accept, or type 'static' to correct."
+            "<b>Warning — Dynamic Drawdown Flagged</b>\n\n"
+            "This system is designed for static drawdown accounts.\n"
+            "Reply <b>CONFIRM</b> to accept, or type <code>static</code> to correct.",
+            parse_mode="HTML",
         )
         return PF_DD_TYPE
     else:
-        await update.message.reply_text("Type exactly:  static  or  dynamic")
+        await update.message.reply_text(
+            "Type exactly: <code>static</code>  or  <code>dynamic</code>",
+            parse_mode="HTML",
+        )
         return PF_DD_TYPE
 
 
@@ -575,33 +602,42 @@ async def _wiz_raw_spread(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> in
             _wizard_data["raw_spread_account"] = False
             _wizard_data.pop("_raw_spread_confirming")
             await update.message.reply_text(
-                "Non-raw spread accepted (flagged).\n"
-                "Step 7/8 — Profit Sharing % (e.g. 80):"
+                "Non-raw spread accepted (flagged).\n\n"
+                "<b>Step 7 of 8</b> — Profit Sharing %\n\nEnter the profit sharing % (e.g. <code>80</code>):",
+                parse_mode="HTML",
             )
             return PF_PROFIT_SHARE
         else:
             _wizard_data.pop("_raw_spread_confirming")
             await update.message.reply_text(
-                "Confirmation not received — please re-enter.\n"
-                "Type: yes  or  no"
+                "Confirmation not received. Re-enter:\n\n"
+                "<code>yes</code>  or  <code>no</code>",
+                parse_mode="HTML",
             )
             return PF_RAW_SPREAD
 
     v_lower = v.lower()
     if v_lower == "yes":
         _wizard_data["raw_spread_account"] = True
-        await update.message.reply_text("Step 7/8 — Profit Sharing % (e.g. 80):")
+        await update.message.reply_text(
+            "<b>Step 7 of 8</b> — Profit Sharing %\n\nEnter the profit sharing % (e.g. <code>80</code>):",
+            parse_mode="HTML",
+        )
         return PF_PROFIT_SHARE
     elif v_lower == "no":
         _wizard_data["_raw_spread_confirming"] = True
         await update.message.reply_text(
-            "WARNING — Non-raw spread account flagged.\n"
-            "This system is built for raw spread accounts.\n"
-            "Reply CONFIRM to accept, or type 'yes' to correct."
+            "<b>Warning — Non-Raw Spread Account Flagged</b>\n\n"
+            "This system is designed for raw spread accounts.\n"
+            "Reply <b>CONFIRM</b> to accept, or type <code>yes</code> to correct.",
+            parse_mode="HTML",
         )
         return PF_RAW_SPREAD
     else:
-        await update.message.reply_text("Type exactly:  yes  or  no")
+        await update.message.reply_text(
+            "Type exactly: <code>yes</code>  or  <code>no</code>",
+            parse_mode="HTML",
+        )
         return PF_RAW_SPREAD
 
 
@@ -610,10 +646,13 @@ async def _wiz_profit_share(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
         v = float(update.message.text.strip())
         assert 0 < v <= 100
     except Exception:
-        await update.message.reply_text("Invalid — enter a number between 1 and 100:")
+        await update.message.reply_text("Invalid — enter a number between 1 and 100:", parse_mode="HTML")
         return PF_PROFIT_SHARE
     _wizard_data["profit_sharing_pct"] = v
-    await update.message.reply_text("Step 8/8 — Minimum Profit Days (e.g. 5):")
+    await update.message.reply_text(
+        "<b>Step 8 of 8</b> — Minimum Profit Days\n\nEnter the minimum trading days required (e.g. <code>5</code>):",
+        parse_mode="HTML",
+    )
     return PF_MIN_DAYS
 
 
@@ -627,32 +666,27 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _wizard_data["min_profit_days"] = v
 
     eff = _apply_buffers(_wizard_data)
-    dd_flag  = "  *** FLAGGED — non-standard" if not _wizard_data["drawdown_is_static"] else ""
-    rs_flag  = "  *** FLAGGED — non-standard" if not _wizard_data["raw_spread_account"] else ""
+    dd_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["drawdown_is_static"] else ""
+    rs_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["raw_spread_account"] else ""
     summary = (
-        f"Review Before Saving\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Firm              : {_wizard_data['propfirm_name']}\n"
-        f"Profit Target     : {_wizard_data['profit_target_pct']}%\n"
-        f"Max DD Overall    : {_wizard_data['max_drawdown_overall_pct']}%  "
-        f"→ enforced at {eff['max_drawdown_overall_pct']}%  (−1pp buffer)\n"
-        f"Max DD Daily      : {_wizard_data['max_drawdown_daily_pct']}%  "
-        f"→ enforced at {eff['max_drawdown_daily_pct']}%  (−1pp buffer)\n"
-        f"Drawdown Type     : {'Static' if _wizard_data['drawdown_is_static'] else 'Dynamic'}{dd_flag}\n"
-        f"Raw Spread Acct   : {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
-        f"Profit Sharing    : {_wizard_data['profit_sharing_pct']}%\n"
-        f"Min Profit Days   : {_wizard_data['min_profit_days']}\n"
-        f"\n"
-        f"Kill conditions:\n"
-        f"  Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']}% → close all + halt\n"
-        f"  Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}% from baseline (static) → close all + halt\n"
-        f"  Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}% (Phase 2) → close all + halt\n"
-        f"  Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']}% (Phase 1) → close all + permanent halt\n"
-        f"\n"
-        f"Baseline equity fetched live from MT5 on confirm.\n"
-        f"\nReply YES to save  |  NO to cancel."
+        f"<b>Review Before Saving</b>\n\n"
+        f"<b>Firm:</b> {_wizard_data['propfirm_name']}\n"
+        f"<b>Profit Target:</b> {_wizard_data['profit_target_pct']}%\n"
+        f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']}% → enforced at <b>{eff['max_drawdown_overall_pct']}%</b> (−1pp buffer)\n"
+        f"<b>Max DD Daily:</b> {_wizard_data['max_drawdown_daily_pct']}% → enforced at <b>{eff['max_drawdown_daily_pct']}%</b> (−1pp buffer)\n"
+        f"<b>Drawdown Type:</b> {'Static' if _wizard_data['drawdown_is_static'] else 'Dynamic'}{dd_flag}\n"
+        f"<b>Raw Spread Acct:</b> {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
+        f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']}%\n"
+        f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n\n"
+        f"<b>Kill conditions:</b>\n"
+        f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']}% → close all + halt\n"
+        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}% from baseline → close all + halt\n"
+        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}% (Phase 2) → close all + halt\n"
+        f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']}% (Phase 1) → permanent halt\n\n"
+        f"<i>Baseline equity will be fetched live from MT5 on confirm.</i>\n\n"
+        f"Reply <b>YES</b> to save  |  <b>NO</b> to cancel"
     )
-    await update.message.reply_text(summary)
+    await update.message.reply_text(summary, parse_mode="HTML")
     return PF_CONFIRM
 
 
@@ -660,10 +694,13 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     v = update.message.text.strip().upper()
     if v == "NO":
         _wizard_data.clear()
-        await update.message.reply_text("Cancelled — no changes saved.")
+        await update.message.reply_text("Cancelled — no changes saved.", parse_mode="HTML")
         return ConversationHandler.END
     if v != "YES":
-        await update.message.reply_text("Reply YES to save or NO to cancel.")
+        await update.message.reply_text(
+            "Reply <b>YES</b> to save or <b>NO</b> to cancel.",
+            parse_mode="HTML",
+        )
         return PF_CONFIRM
 
     eff = _apply_buffers(_wizard_data)
@@ -673,8 +710,9 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         baseline = _query_equity(ZMQ_REQ_PROP, "")["balance"]
     except Exception as exc:
         await update.message.reply_text(
-            f"Warning: could not fetch live balance ({exc}).\n"
-            f"Baseline set to 0.0 — run /changepropfirm again once MT5 is connected."
+            f"<b>Warning</b> — could not fetch live balance:\n<code>{exc}</code>\n\n"
+            f"Baseline set to 0.0 — run /changepropfirm again once MT5 is connected.",
+            parse_mode="HTML",
         )
 
     with _pf_lock:
@@ -699,10 +737,11 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     _wizard_data.clear()
     await update.message.reply_text(
-        f"Saved.\n"
-        f"Firm         : {_propfirm['propfirm_name']}\n"
-        f"Baseline eq  : {baseline:.2f}\n"
-        f"All kill-switch thresholds are now active."
+        f"<b>Config Saved</b>\n\n"
+        f"<b>Firm:</b> {_propfirm['propfirm_name']}\n"
+        f"<b>Baseline equity:</b> {baseline:.2f}\n\n"
+        f"All kill-switch thresholds are now active.",
+        parse_mode="HTML",
     )
     logger.info("Prop firm config updated — firm=%s  baseline=%.2f",
                 _propfirm["propfirm_name"], baseline)
@@ -713,7 +752,7 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
         return ConversationHandler.END
     _wizard_data.clear()
-    await update.message.reply_text("Wizard cancelled.")
+    await update.message.reply_text("<b>Wizard Cancelled</b>\n\nNo changes saved.", parse_mode="HTML")
     return ConversationHandler.END
 
 
@@ -730,17 +769,21 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     balance, err = await asyncio.to_thread(_lock_baseline_from_live)
     if err:
         await update.message.reply_text(
-            f"Phase 1 set — personal lots ×{PHASE_MULT[1]:.2f}\n"
-            f"Warning: could not fetch live balance ({err}).\n"
-            f"Baseline NOT updated — run /phase1 again once MT5 is connected."
+            f"<b>Phase 1 Set</b> — personal lots ×{PHASE_MULT[1]:.2f}\n\n"
+            f"<b>Warning</b> — could not fetch live balance:\n<code>{err}</code>\n\n"
+            f"Baseline NOT updated. Run /phase1 again once MT5 is connected.",
+            parse_mode="HTML",
         )
         logger.warning("Telegram /phase1: baseline lock failed: %s", err)
         return
 
     await asyncio.to_thread(_dispatch_parameters)
     await update.message.reply_text(
-        f"Phase 1 set — personal lots ×{PHASE_MULT[1]:.2f}\n"
-        f"Baseline locked: {balance:.2f}"
+        f"<b>Phase 1 Active</b>\n\n"
+        f"Personal lots multiplier: ×{PHASE_MULT[1]:.2f}\n"
+        f"Baseline equity locked: <b>{balance:.2f}</b>\n\n"
+        f"Send /resume to start trading.",
+        parse_mode="HTML",
     )
     logger.info("Telegram: phase set to 1  baseline=%.2f", balance)
 
@@ -756,19 +799,23 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     balance, err = await asyncio.to_thread(_lock_baseline_from_live)
     if err:
         await update.message.reply_text(
-            f"Phase 2 set — personal lots ×{PHASE_MULT[2]:.2f}\n"
-            f"Phase 1 permanent halt cleared.\n"
-            f"Warning: could not fetch live balance ({err}).\n"
-            f"Baseline NOT updated — run /phase2 again once MT5 is connected."
+            f"<b>Phase 2 Set</b> — personal lots ×{PHASE_MULT[2]:.2f}\n"
+            f"Phase 1 permanent halt cleared.\n\n"
+            f"<b>Warning</b> — could not fetch live balance:\n<code>{err}</code>\n\n"
+            f"Baseline NOT updated. Run /phase2 again once MT5 is connected.",
+            parse_mode="HTML",
         )
         logger.warning("Telegram /phase2: baseline lock failed: %s", err)
         return
 
     await asyncio.to_thread(_dispatch_parameters)
     await update.message.reply_text(
-        f"Phase 2 set — personal lots ×{PHASE_MULT[2]:.2f}\n"
+        f"<b>Phase 2 Active</b>\n\n"
+        f"Personal lots multiplier: ×{PHASE_MULT[2]:.2f}\n"
         f"Phase 1 permanent halt cleared.\n"
-        f"Baseline locked: {balance:.2f}"
+        f"Baseline equity locked: <b>{balance:.2f}</b>\n\n"
+        f"Send /resume to start trading.",
+        parse_mode="HTML",
     )
     logger.info("Telegram: phase set to 2  baseline=%.2f", balance)
 
@@ -779,7 +826,10 @@ async def _cmd_stop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     with _state_lock:
         _phase_state["active"] = False
         _save_phase(_phase_state)
-    await update.message.reply_text("Signal processing HALTED. Send /resume to re-enable.")
+    await update.message.reply_text(
+        "<b>Signal Processing Halted</b>\n\nSend /resume to re-enable.",
+        parse_mode="HTML",
+    )
     logger.warning("Telegram: halted by user")
 
 
@@ -790,14 +840,18 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         p1_halt = _phase_state.get("phase1_permanently_halted", False)
     if p1_halt:
         await update.message.reply_text(
-            "Phase 1 profit target was reached.\nYou must /phase2 before resuming."
+            "<b>Blocked</b> — Phase 1 profit target was reached.\n\nSend /phase2 before resuming.",
+            parse_mode="HTML",
         )
         return
     with _state_lock:
         _phase_state["active"] = True
         _save_phase(_phase_state)
-    curfew_note = "  (Note: SGT curfew active — signals will queue until 09:00 SGT)" if _is_sgt_curfew() else ""
-    await update.message.reply_text(f"Signal processing RESUMED.{curfew_note}")
+    curfew_note = "\n\n<i>Note: SGT curfew active — signals will be processed from 09:00 SGT.</i>" if _is_sgt_curfew() else ""
+    await update.message.reply_text(
+        f"<b>Signal Processing Resumed</b>{curfew_note}",
+        parse_mode="HTML",
+    )
     logger.info("Telegram: resumed by user")
 
 
@@ -820,17 +874,20 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     mult   = PHASE_MULT.get(phase, "?")
     curfew = _is_sgt_curfew()
     await update.message.reply_text(
-        f"Phase          : {phase}  (×{mult})\n"
-        f"Active         : {'YES' if active else 'NO — halted'}\n"
-        f"P1 Perm Halt   : {'YES — /phase2 required' if p1_halt else 'No'}\n"
-        f"SGT Curfew     : {'YES (dormant)' if curfew else 'No'}\n"
-        f"Firm           : {pf_name}\n"
-        f"Baseline eq    : {baseline:.2f}\n"
-        f"Static DD floor: {floor:.2f}  (−{dd_overall}% from baseline)\n"
-        f"Day-start eq   : {day_start:.2f}\n"
-        f"Daily DD limit : {dd_daily}%\n"
-        f"Daily profit ↑ : {cap}%\n"
-        f"Last signal    : {last_ts}"
+        f"<b>System Status</b>\n\n"
+        f"<b>Phase:</b> {phase}  (×{mult})\n"
+        f"<b>Active:</b> {'YES' if active else 'NO — halted'}\n"
+        f"<b>Perm Halt:</b> {'YES — /phase2 required' if p1_halt else 'No'}\n"
+        f"<b>SGT Curfew:</b> {'YES (dormant)' if curfew else 'No'}\n"
+        f"<b>Firm:</b> {pf_name}\n\n"
+        f"<b>Equity</b>\n"
+        f"Baseline:         {baseline:.2f}\n"
+        f"DD floor:         {floor:.2f}  (−{dd_overall}% from baseline)\n"
+        f"Day-start:        {day_start:.2f}\n"
+        f"Daily DD limit:   {dd_daily}%\n"
+        f"Daily profit cap: {cap}%\n\n"
+        f"<b>Last signal:</b> {last_ts}",
+        parse_mode="HTML",
     )
 
 
@@ -840,19 +897,19 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
     with _pf_lock:
         pf = dict(_propfirm)
     await update.message.reply_text(
-        f"Prop Firm Config\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"Firm              : {pf.get('propfirm_name', '—')}\n"
-        f"Profit Target     : {pf.get('profit_target_pct', 0)}%\n"
-        f"Max DD Overall    : {pf.get('max_drawdown_overall_pct', 0)}%  (buffered)\n"
-        f"Max DD Daily      : {pf.get('max_drawdown_daily_pct', 0)}%   (buffered)\n"
-        f"Drawdown Type     : {'Static' if pf.get('drawdown_is_static') else 'Dynamic'}\n"
-        f"Raw Spread Acct   : {'Yes' if pf.get('raw_spread_account') else 'No'}\n"
-        f"Profit Sharing    : {pf.get('profit_sharing_pct', 0)}%\n"
-        f"Min Profit Days   : {pf.get('min_profit_days', 0)}\n"
-        f"Daily Profit Cap  : {pf.get('daily_profit_cap_pct', 0)}%\n"
-        f"Baseline Equity   : {pf.get('baseline_equity', 0):.2f}\n"
-        f"Day-Start Equity  : {pf.get('day_start_equity', 0):.2f}"
+        f"<b>Prop Firm Config</b>\n\n"
+        f"<b>Firm:</b> {pf.get('propfirm_name', '—')}\n"
+        f"<b>Profit Target:</b> {pf.get('profit_target_pct', 0)}%\n"
+        f"<b>Max DD Overall:</b> {pf.get('max_drawdown_overall_pct', 0)}%  (buffered)\n"
+        f"<b>Max DD Daily:</b> {pf.get('max_drawdown_daily_pct', 0)}%  (buffered)\n"
+        f"<b>Drawdown Type:</b> {'Static' if pf.get('drawdown_is_static') else 'Dynamic'}\n"
+        f"<b>Raw Spread Acct:</b> {'Yes' if pf.get('raw_spread_account') else 'No'}\n"
+        f"<b>Profit Sharing:</b> {pf.get('profit_sharing_pct', 0)}%\n"
+        f"<b>Min Profit Days:</b> {pf.get('min_profit_days', 0)}\n"
+        f"<b>Daily Profit Cap:</b> {pf.get('daily_profit_cap_pct', 0)}%\n"
+        f"<b>Baseline Equity:</b> {pf.get('baseline_equity', 0):.2f}\n"
+        f"<b>Day-Start Equity:</b> {pf.get('day_start_equity', 0):.2f}",
+        parse_mode="HTML",
     )
 
 
@@ -860,34 +917,25 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     await update.message.reply_text(
-        "TEE Bot — Available Commands\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "\n"
-        "Phase & trading control\n"
-        "  /phase1          — Set Phase 1 (×0.20 personal lots, evaluation)\n"
-        "  /phase2          — Set Phase 2 (×0.70 personal lots, funded)\n"
-        "  /resume          — Resume signal processing\n"
-        "  /stop            — Halt signal processing\n"
-        "\n"
-        "Status & config\n"
-        "  /status          — Live system status (phase, active, equity, curfew)\n"
-        "  /propfirm        — Show current prop firm config\n"
-        "  /changepropfirm  — 8-step wizard to set up a new prop firm account\n"
-        "                     (asks: firm name, profit target %, overall DD %,\n"
-        "                      daily DD %, drawdown type, raw spread, profit\n"
-        "                      share %, min profit days)\n"
-        "\n"
-        "Wizard\n"
-        "  /cancel          — Cancel /changepropfirm mid-flow\n"
-        "\n"
-        "Kill conditions (auto — no command needed)\n"
-        "  Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
-        "  Kill 2 — overall loss ≥ DD overall limit → close all + halt\n"
-        "  Kill 3 — daily profit ≥ cap (Phase 2) → close all + halt\n"
-        "  Kill 4 — overall profit ≥ target (Phase 1) → close all + permanent halt\n"
-        "\n"
-        "Typical startup sequence\n"
-        "  /changepropfirm → /phase1 → /resume"
+        "<b>TEE Bot — Commands</b>\n\n"
+        "<b>Phase &amp; Trading Control</b>\n"
+        "/phase1 — Phase 1 (×0.20 lots, evaluation)\n"
+        "/phase2 — Phase 2 (×0.70 lots, funded)\n"
+        "/resume — Resume signal processing\n"
+        "/stop — Halt signal processing\n\n"
+        "<b>Status &amp; Config</b>\n"
+        "/status — Live system status\n"
+        "/propfirm — Current prop firm config\n"
+        "/changepropfirm — Set up new prop firm (8-step wizard)\n"
+        "/cancel — Cancel wizard mid-flow\n\n"
+        "<b>Kill Conditions</b> (automatic)\n"
+        "Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
+        "Kill 2 — overall loss ≥ DD overall limit → close all + halt\n"
+        "Kill 3 — daily profit ≥ cap (Phase 2) → close all + halt\n"
+        "Kill 4 — overall profit ≥ target (Phase 1) → permanent halt\n\n"
+        "<b>Startup Sequence</b>\n"
+        "/changepropfirm → /phase1 → /resume",
+        parse_mode="HTML",
     )
 
 
