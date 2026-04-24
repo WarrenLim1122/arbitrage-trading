@@ -380,9 +380,15 @@ def _run_equity_check() -> None:
     # Kill 1 — daily loss (all phases) — measured from day_start_equity
     daily_loss_pct = (day_start - prop_equity) / day_start * 100
     if daily_loss_pct >= pf["max_drawdown_daily_pct"] > 0:
-        msg = (f"KILL 1 — Daily loss limit hit\n"
-               f"Daily loss: {daily_loss_pct:.2f}% ≥ {pf['max_drawdown_daily_pct']}%\n"
-               f"Equity: {prop_equity:.2f}  |  Use /resume tomorrow.")
+        msg = (
+            f"KILL 1 — Daily loss limit hit\n"
+            f"Daily loss: {daily_loss_pct:.2f}% ≥ {pf['max_drawdown_daily_pct']}%\n"
+            f"Equity: {prop_equity:.2f}\n"
+            f"All positions closed. System halted.\n\n"
+            f"Next steps:\n"
+            f"  /resume — resume trading tomorrow\n"
+            f"  /changepropfirm — switch to a new prop firm account"
+        )
         logger.warning(msg)
         _dispatch_force_close("daily_loss_limit", halt=True)
         _alert_sync(msg)
@@ -396,11 +402,15 @@ def _run_equity_check() -> None:
             overall_loss_pct = (baseline - prop_equity) / baseline * 100
             if overall_loss_pct >= overall_dd_limit:
                 floor = round(baseline * (1.0 - overall_dd_limit / 100.0), 2)
-                msg = (f"KILL 2 — Overall static drawdown limit hit\n"
-                       f"Overall loss: {overall_loss_pct:.2f}% ≥ {overall_dd_limit}%\n"
-                       f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  "
-                       f"Equity: {prop_equity:.2f}\n"
-                       f"Use /resume after review.")
+                msg = (
+                    f"KILL 2 — Overall drawdown limit hit\n"
+                    f"Overall loss: {overall_loss_pct:.2f}% ≥ {overall_dd_limit}%\n"
+                    f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  Equity: {prop_equity:.2f}\n"
+                    f"All positions closed. System halted.\n\n"
+                    f"This account is likely blown. Next steps:\n"
+                    f"  /changepropfirm — start a new prop firm challenge\n"
+                    f"  /resume — resume on same account after manual review"
+                )
                 logger.warning(msg)
                 _dispatch_force_close("overall_drawdown_limit", halt=True)
                 _alert_sync(msg)
@@ -411,9 +421,15 @@ def _run_equity_check() -> None:
         daily_profit_pct = (prop_equity - day_start) / day_start * 100
         cap = pf.get("daily_profit_cap_pct", 0.0)
         if cap > 0 and daily_profit_pct >= cap:
-            msg = (f"KILL 3 — Daily profit cap hit (Phase 2)\n"
-                   f"Daily profit: {daily_profit_pct:.2f}% ≥ {cap}%\n"
-                   f"Equity: {prop_equity:.2f}  |  Use /resume tomorrow.")
+            msg = (
+                f"KILL 3 — Daily profit cap hit (Phase 2)\n"
+                f"Daily profit: {daily_profit_pct:.2f}% ≥ {cap}%\n"
+                f"Equity: {prop_equity:.2f}\n"
+                f"All positions closed for today.\n\n"
+                f"Next steps:\n"
+                f"  /resume — resume trading tomorrow\n"
+                f"  /changepropfirm — switch to a new prop firm account"
+            )
             logger.warning(msg)
             _dispatch_force_close("daily_profit_cap", halt=True)
             _alert_sync(msg)
@@ -424,11 +440,19 @@ def _run_equity_check() -> None:
         overall_pct = (prop_equity - baseline) / baseline * 100
         target      = pf.get("profit_target_pct", 0.0)
         if target > 0 and overall_pct >= target:
-            msg = (f"KILL 4 — Phase 1 profit target reached!\n"
-                   f"Overall profit: {overall_pct:.2f}% ≥ {target}%\n"
-                   f"Equity: {prop_equity:.2f}\n"
-                   f"System PERMANENTLY HALTED.\n"
-                   f"Use /phase2 then /resume to continue.")
+            msg = (
+                f"KILL 4 — Phase 1 target reached! Evaluation PASSED.\n"
+                f"Overall profit: {overall_pct:.2f}% ≥ {target}%\n"
+                f"Equity: {prop_equity:.2f}\n"
+                f"System PERMANENTLY HALTED — awaiting your decision.\n\n"
+                f"Options:\n"
+                f"  1. Move to funded account (Phase 2):\n"
+                f"     /phase2 → /resume\n\n"
+                f"  2. Start a new prop firm challenge:\n"
+                f"     /changepropfirm\n"
+                f"     (wizard will ask: firm name, profit target %, overall DD %, "
+                f"daily DD %, drawdown type, raw spread, profit share %, min profit days)"
+            )
             logger.warning(msg)
             _dispatch_force_close("phase1_target", halt=True, permanent=True)
             _alert_sync(msg)
