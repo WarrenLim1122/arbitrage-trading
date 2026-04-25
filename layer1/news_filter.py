@@ -21,8 +21,14 @@ CURRENCY_COUNTRIES: dict[str, list[str]] = {
     "AUD": ["AU"],
     "CHF": ["CH"],
     "JPY": ["JP"],
+    "NZD": ["NZ"],
+    "CAD": ["CA"],
     "USD": ["US"],
-    # Only USD pairs are traded — other currencies kept for completeness
+}
+
+# Tickers that can't be split into standard base/quote currencies — map directly.
+_TICKER_COUNTRY_OVERRIDE: dict[str, list[str]] = {
+    "NAS100": ["US"],  # US equity index — only US news relevant
 }
 
 CACHE_TTL_MINUTES = 60
@@ -58,7 +64,7 @@ async def _fetch_events(api_key: str) -> list[dict]:
 async def check_news_window(
     ticker: str,
     api_key: str,
-    window_minutes: int = 30,
+    window_minutes: int = 60,
     fail_open: bool = True,
 ) -> tuple[bool, str | None]:
     """
@@ -68,12 +74,15 @@ async def check_news_window(
     fail_open=True   → treat Finnhub API failure as clear (pass signal through).
     fail_open=False  → treat Finnhub API failure as blocked (suppress signal).
     """
-    base = ticker[:3].upper()
-    quote = ticker[3:].upper()
-
-    relevant_countries: set[str] = set(
-        CURRENCY_COUNTRIES.get(base, []) + CURRENCY_COUNTRIES.get(quote, [])
-    )
+    ticker_up = ticker.upper()
+    if ticker_up in _TICKER_COUNTRY_OVERRIDE:
+        relevant_countries: set[str] = set(_TICKER_COUNTRY_OVERRIDE[ticker_up])
+    else:
+        base = ticker_up[:3]
+        quote = ticker_up[3:]
+        relevant_countries = set(
+            CURRENCY_COUNTRIES.get(base, []) + CURRENCY_COUNTRIES.get(quote, [])
+        )
 
     try:
         events = await _fetch_events(api_key)

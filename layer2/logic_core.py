@@ -75,8 +75,9 @@ PROPFIRM_CONFIG_PATH = ROOT / "config" / "propfirm_config.json"
 SGT = ZoneInfo("Asia/Singapore")
 
 # ── Env vars ──────────────────────────────────────────────────────────────
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID   = int(os.environ["TELEGRAM_CHAT_ID"])
+BOT_TOKEN       = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID         = int(os.environ["TELEGRAM_CHAT_ID"])
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
 # ── Risk params ───────────────────────────────────────────────────────────
 with RISK_PARAMS_PATH.open() as _f:
@@ -95,6 +96,22 @@ ALLOWED_PAIRS: frozenset[str] = frozenset({
     "NZDUSD", "XAUUSD", "XAGUSD", "NAS100",
 })
 
+# Finnhub country codes that each pair is sensitive to.
+# Used by the news pre-close monitor to decide which positions to close.
+_TICKER_COUNTRIES: dict[str, frozenset[str]] = {
+    "EURUSD": frozenset({"EU", "DE", "FR", "US"}),
+    "GBPUSD": frozenset({"GB", "US"}),
+    "USDCHF": frozenset({"US", "CH"}),
+    "USDCAD": frozenset({"US", "CA"}),
+    "USDJPY": frozenset({"US", "JP"}),
+    "NZDUSD": frozenset({"NZ", "US"}),
+    "XAUUSD": frozenset({"US"}),
+    "XAGUSD": frozenset({"US"}),
+    "NAS100": frozenset({"US"}),
+}
+
+_NEWS_PRECLOSE_WINDOW = 60   # minutes before news → close positions
+
 # RR constants — immutable across all phases
 _RR_PERSONAL = 0.27
 _RR_PROP     = 1.0 / _RR_PERSONAL   # ≈ 3.7037
@@ -102,6 +119,13 @@ _RR_PROP     = 1.0 / _RR_PERSONAL   # ≈ 3.7037
 # ── Shared state ──────────────────────────────────────────────────────────
 _state_lock = threading.Lock()
 _pf_lock    = threading.Lock()
+
+# ── News pre-close state ───────────────────────────────────────────────────
+_l2_news_cache: dict = {"events": None, "fetched_at": None}
+_l2_news_cache_lock = threading.Lock()
+# Tracks (ticker, event_time_str) pairs already acted on — prevents repeat closes.
+_news_closed_events: set[tuple[str, str]] = set()
+_news_events_lock = threading.Lock()
 
 
 def _load_phase() -> dict:
@@ -265,6 +289,124 @@ def _dispatch_force_close(reason: str, *, halt: bool = True, permanent: bool = F
 
     logger.warning("FORCE_CLOSE dispatched — reason=%s  halt=%s  permanent=%s",
                    reason, halt, permanent)
+
+
+# ── News pre-close helpers ────────────────────────────────────────────────
+
+def _fetch_news_sync() -> list[dict]:
+    """Fetch Finnhub economic calendar synchronously with a 60-min in-memory cache."""
+    now = datetime.now(timezone.utc)
+    with _l2_news_cache_lock:
+        if (
+            _l2_news_cache["events"] is not None
+            and _l2_news_cache["fetched_at"] is not None
+            and (now - _l2_news_cache["fetched_at"]).total_seconds() < 3600
+        ):
+            return _l2_news_cache["events"]
+
+    date_from = (now - timedelta(hours=2)).strftime("%Y-%m-%d")
+    date_to   = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(
+            "https://finnhub.io/api/v1/calendar/economic",
+            params={"token": FINNHUB_API_KEY, "from": date_from, "to": date_to},
+        )
+        resp.raise_for_status()
+
+    events = resp.json().get("economicCalendar", [])
+    with _l2_news_cache_lock:
+        _l2_news_cache["events"] = events
+        _l2_news_cache["fetched_at"] = now
+    logger.info("L2 news cache refreshed — %d events loaded", len(events))
+    return events
+
+
+def _dispatch_close_ticker(ticker: str, reason: str) -> None:
+    """Push CLOSE_TICKER to both Layer 3 workers for a single currency pair."""
+    ticket = {"action": "CLOSE_TICKER", "ticker": ticker, "reason": reason}
+    for url in (ZMQ_PUSH_PROP, ZMQ_PUSH_PERS):
+        try:
+            _push_ticket(url, ticket)
+        except Exception as exc:
+            logger.error("CLOSE_TICKER dispatch failed → %s: %s", url, exc)
+    logger.warning("CLOSE_TICKER dispatched — ticker=%s  reason=%s", ticker, reason)
+
+
+def _run_news_preclose_check() -> None:
+    global _news_closed_events
+
+    now    = datetime.now(timezone.utc)
+    window = timedelta(minutes=_NEWS_PRECLOSE_WINDOW)
+
+    try:
+        events = _fetch_news_sync()
+    except Exception as exc:
+        logger.warning("News pre-close: Finnhub fetch failed: %s", exc)
+        return
+
+    # Expire entries older than 3 hours to prevent unbounded set growth.
+    cutoff = now - timedelta(hours=3)
+    with _news_events_lock:
+        _news_closed_events = {
+            (t, ts) for (t, ts) in _news_closed_events
+            if _safe_parse_utc(ts) > cutoff
+        }
+
+    for ticker, countries in _TICKER_COUNTRIES.items():
+        for event in events:
+            if event.get("impact") != "high":
+                continue
+            if event.get("country") not in countries:
+                continue
+
+            event_dt = _safe_parse_utc(event.get("time", ""))
+            if event_dt is None:
+                continue
+
+            time_to_event = event_dt - now
+            if not (timedelta(0) < time_to_event <= window):
+                continue
+
+            key = (ticker, event["time"])
+            with _news_events_lock:
+                if key in _news_closed_events:
+                    continue
+                _news_closed_events.add(key)
+
+            mins_left  = int(time_to_event.total_seconds() / 60)
+            event_desc = (
+                f"[{event.get('country')}] {event.get('event', 'High-Impact Event')} "
+                f"@ {event['time']} UTC ({mins_left} min away)"
+            )
+
+            logger.warning("NEWS PRE-CLOSE %s — %s", ticker, event_desc)
+            _dispatch_close_ticker(ticker, f"pre_news_{ticker}")
+            _alert_sync(
+                f"<b>News Pre-Close — {ticker}</b>\n\n"
+                f"{event_desc}\n\n"
+                f"Existing positions closed.\n"
+                f"New signals suppressed ±{_NEWS_PRECLOSE_WINDOW} min."
+            )
+
+
+def _safe_parse_utc(time_str: str) -> datetime | None:
+    try:
+        return datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def _news_preclose_loop() -> None:
+    if not FINNHUB_API_KEY:
+        logger.warning("FINNHUB_API_KEY not set — news pre-close monitor disabled")
+        return
+    while True:
+        time.sleep(60)
+        try:
+            _run_news_preclose_check()
+        except Exception as exc:
+            logger.error("News pre-close monitor error: %s", exc)
 
 
 # ── Equity monitoring ─────────────────────────────────────────────────────
@@ -1080,6 +1222,7 @@ def _run_bot() -> None:
 
 threading.Thread(target=_run_bot,              daemon=True, name="tg-bot").start()
 threading.Thread(target=_equity_monitor_loop,  daemon=True, name="equity-monitor").start()
+threading.Thread(target=_news_preclose_loop,   daemon=True, name="news-preclose").start()
 
 # ── FastAPI ───────────────────────────────────────────────────────────────
 

@@ -247,6 +247,57 @@ def _force_close_all(reason: str) -> None:
     logger.info("FORCE_CLOSE(%s): %d/%d positions closed", reason, closed, len(positions))
 
 
+# ── Close positions for a single ticker ──────────────────────────────────
+
+def _force_close_ticker(canonical_ticker: str, reason: str) -> None:
+    """Close all open positions for one specific symbol on this MT5 account."""
+    resolved = _resolve_symbol(canonical_ticker)
+    _ensure_connected()
+    with _mt5_lock:
+        positions = mt5.positions_get(symbol=resolved)
+    if not positions:
+        logger.info("CLOSE_TICKER(%s): no open positions for %s", reason, resolved)
+        return
+
+    closed = 0
+    for pos in positions:
+        close_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
+        with _mt5_lock:
+            tick = mt5.symbol_info_tick(pos.symbol)
+        if tick is None:
+            logger.error("CLOSE_TICKER: no tick for %s — skipping ticket=%d",
+                         pos.symbol, pos.ticket)
+            continue
+        price   = tick.bid if pos.type == 0 else tick.ask
+        filling = _get_filling_mode(pos.symbol)
+        req = {
+            "action":       mt5.TRADE_ACTION_DEAL,
+            "symbol":       pos.symbol,
+            "volume":       pos.volume,
+            "type":         close_type,
+            "position":     pos.ticket,
+            "price":        price,
+            "deviation":    DEVIATION_POINTS,
+            "magic":        MT5_MAGIC,
+            "comment":      f"TEE-NEWS-{reason[:8]}",
+            "type_time":    mt5.ORDER_TIME_GTC,
+            "type_filling": filling,
+        }
+        with _mt5_lock:
+            result = mt5.order_send(req)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info("CLOSE_TICKER(%s): closed %s ticket=%d  price=%.5f",
+                        reason, pos.symbol, pos.ticket, result.price)
+            closed += 1
+        else:
+            rc = result.retcode if result else "None"
+            cm = result.comment if result else ""
+            logger.error("CLOSE_TICKER(%s): FAILED %s ticket=%d  retcode=%s  %s",
+                         reason, pos.symbol, pos.ticket, rc, cm)
+
+    logger.info("CLOSE_TICKER(%s): %d/%d closed for %s", reason, closed, len(positions), resolved)
+
+
 # ── SGT kill switch thread ────────────────────────────────────────────────
 
 def _sgt_scheduler() -> None:
@@ -475,6 +526,15 @@ def _pull_loop(ctx: zmq.Context) -> None:
                 reason = ticket.get("reason", "unknown")
                 logger.warning("FORCE_CLOSE received — reason=%s", reason)
                 _force_close_all(reason)
+                continue
+
+            # CLOSE_TICKER — close positions for one pair only (news pre-close)
+            if ticket.get("action") == "CLOSE_TICKER":
+                ticker = ticket.get("ticker", "")
+                reason = ticket.get("reason", "unknown")
+                logger.warning("CLOSE_TICKER received — ticker=%s  reason=%s", ticker, reason)
+                if ticker:
+                    _force_close_ticker(ticker, reason)
                 continue
 
             # SET_PARAMETERS — update static DD floor sent by Layer 2 on phase change

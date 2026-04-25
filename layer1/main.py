@@ -41,7 +41,7 @@ logger = logging.getLogger("layer1")
 # ── Config ────────────────────────────────────────────────────────────────
 FINNHUB_KEY  = os.environ["FINNHUB_API_KEY"]          # hard-fail if missing
 LAYER2_URL   = os.getenv("LAYER2_URL",   "http://127.0.0.1:8001/signal")
-NEWS_WINDOW  = int(os.getenv("NEWS_WINDOW_MINUTES", "30"))
+NEWS_WINDOW  = int(os.getenv("NEWS_WINDOW_MINUTES", "60"))
 FAIL_OPEN    = os.getenv("NEWS_FAIL_OPEN", "true").lower() == "true"
 
 ALLOWED_PAIRS: frozenset[str] = frozenset({

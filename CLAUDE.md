@@ -198,7 +198,8 @@ Only the phase ratio changes. Direction, RR, and prop sizing are identical in bo
 - Validates ticker against 9 allowed pairs (EURUSD, GBPUSD, USDCHF, USDCAD, USDJPY, NZDUSD, XAUUSD, XAGUSD, NAS100).
 - Queries Finnhub (`/calendar/economic`) via `layer1/news_filter.py`.
   - 60-minute in-memory cache.
-  - Suppresses signal if any high-impact event for either currency is within ±30 min.
+  - Suppresses signal if any high-impact event for either currency is within ±60 min.
+  - NZD, CAD, NAS100 (→ US) are now correctly mapped to Finnhub country codes.
   - `FAIL_OPEN=true` by default.
 - Forwards clean signals to Layer 2 via internal HTTP POST.
 - Env vars: `FINNHUB_API_KEY`, `LAYER2_URL`, `NEWS_WINDOW_MINUTES`, `NEWS_FAIL_OPEN`.
@@ -283,7 +284,17 @@ When a kill fires: pushes `{"action": "FORCE_CLOSE", "reason": "..."}` to both Z
 7. Dispatch two ZMQ PUSH tickets with all computed values.
 8. Send trade notification to Telegram.
 
-Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+**News Pre-Close Monitor (60s interval, background thread):**
+
+Runs independently of signal flow. Every 60 seconds, fetches Finnhub events and checks all 9 pairs. If a high-impact event affecting a pair's currencies is within 60 minutes:
+- Dispatches `CLOSE_TICKER` to both workers (closes only that pair's positions, not all positions).
+- Sends Telegram alert naming the event, pair, and minutes remaining.
+- Tracks `(ticker, event_time)` pairs already acted on — fires once per event, not every 60s.
+- Only operates when `FINNHUB_API_KEY` is set; logs a warning and exits if missing.
+
+`CLOSE_TICKER` is handled in Layer 3's PULL loop and bypasses the dormant guard (same as FORCE_CLOSE).
+
+Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `FINNHUB_API_KEY` (optional — disables pre-close if missing).
 
 ---
 
