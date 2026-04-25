@@ -7,10 +7,13 @@ news filter, and forwards clean signals to Layer 2.
 Environment variables (set in .env or system):
   FINNHUB_API_KEY       — required
   LAYER2_URL            — default http://127.0.0.1:8001/signal
-  NEWS_WINDOW_MINUTES   — default 30
+  NEWS_WINDOW_MINUTES   — default 60
   NEWS_FAIL_OPEN        — default true
+  TELEGRAM_BOT_TOKEN    — optional; enables suppression alerts
+  TELEGRAM_CHAT_ID      — optional; required if BOT_TOKEN is set
 """
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -39,15 +42,45 @@ logging.basicConfig(
 logger = logging.getLogger("layer1")
 
 # ── Config ────────────────────────────────────────────────────────────────
-FINNHUB_KEY  = os.environ["FINNHUB_API_KEY"]          # hard-fail if missing
+FINNHUB_KEY  = os.getenv("FINNHUB_API_KEY", "")        # no longer required — FF calendar used instead
 LAYER2_URL   = os.getenv("LAYER2_URL",   "http://127.0.0.1:8001/signal")
 NEWS_WINDOW  = int(os.getenv("NEWS_WINDOW_MINUTES", "60"))
 FAIL_OPEN    = os.getenv("NEWS_FAIL_OPEN", "true").lower() == "true"
+
+_TG_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+_TG_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+
+# Dedup: (ticker, event_time_str) already alerted — prevents repeat alerts
+# for the same blocking event.
+_suppression_notified: set[tuple[str, str]] = set()
 
 ALLOWED_PAIRS: frozenset[str] = frozenset({
     "EURUSD", "GBPUSD", "USDCHF", "USDCAD", "USDJPY",
     "NZDUSD", "XAUUSD", "XAGUSD", "NAS100",
 })
+
+# ── Telegram suppression alert ────────────────────────────────────────────
+
+async def _alert_signal_blocked(signal: str, ticker: str, reason: str) -> None:
+    """Fire-and-forget Telegram alert when a live signal is suppressed by news."""
+    if not _TG_TOKEN or not _TG_CHAT_ID:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{_TG_TOKEN}/sendMessage"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(url, json={
+                "chat_id": _TG_CHAT_ID,
+                "text": (
+                    f"<b>TEE Alert</b>\n\n"
+                    f"<b>Signal Blocked — {ticker} {signal}</b>\n\n"
+                    f"{reason}\n\n"
+                    f"<i>Trade not entered. Pair suspended until event passes.</i>"
+                ),
+                "parse_mode": "HTML",
+            })
+    except Exception as exc:
+        logger.warning("Telegram suppression alert failed: %s", exc)
+
 
 # ── App ───────────────────────────────────────────────────────────────────
 app = FastAPI(title="TEE Layer 1 — Gatekeeper", version="1.0.0")
@@ -116,7 +149,7 @@ async def receive_signal(request: Request):
     )
 
     # 2. News filter
-    blocked, reason = await check_news_window(
+    blocked, reason, event_time = await check_news_window(
         payload.ticker, FINNHUB_KEY, NEWS_WINDOW, FAIL_OPEN
     )
 
@@ -124,6 +157,14 @@ async def receive_signal(request: Request):
         logger.warning(
             "SUPPRESSED %s %s — %s", payload.signal, payload.ticker, reason
         )
+        # Send one Telegram alert per (ticker, event) pair — not on every signal
+        if event_time:
+            key = (payload.ticker, event_time)
+            if key not in _suppression_notified:
+                _suppression_notified.add(key)
+                asyncio.create_task(
+                    _alert_signal_blocked(payload.signal, payload.ticker, reason)
+                )
         return JSONResponse(
             status_code=200,
             content={

@@ -70,13 +70,19 @@ logging.basicConfig(
 logger = logging.getLogger(f"layer3.{WORKER_NAME}")
 
 # ── Locks and shared state ────────────────────────────────────────────────
-_mt5_lock       = threading.Lock()
-_dormant_lock   = threading.Lock()
-_dd_params_lock = threading.Lock()
-_dormant        = False             # True during 00:00–08:59 SGT and weekends
+_mt5_lock            = threading.Lock()
+_dormant_lock        = threading.Lock()
+_dd_params_lock      = threading.Lock()
+_news_suppressed_lock = threading.Lock()
+_dormant             = False             # True during 00:00–08:59 SGT and weekends
 
 _filling_cache: dict[str, int] = {}
 _last_curfew_close_date: date | None = None
+
+# News suppression guard — ticker → expiry epoch seconds.
+# Populated by NEWS_SUPPRESS from Layer 2. Refuses execution tickets for
+# suppressed pairs even if Layer 1/2 somehow let one through.
+_news_suppressed: dict[str, float] = {}
 
 # Static drawdown floor — sent from Layer 2 via SET_PARAMETERS, persisted locally
 _dd_params: dict = {"dd_floor": 0.0}
@@ -546,12 +552,52 @@ def _pull_loop(ctx: zmq.Context) -> None:
                 logger.info("SET_PARAMETERS received: dd_floor=%.2f", floor)
                 continue
 
+            # NEWS_SUPPRESS — Layer 2 flagged this pair as entering a news window.
+            # Refuse all new execution tickets for it until suppression_end_utc.
+            if ticket.get("action") == "NEWS_SUPPRESS":
+                ticker  = ticket.get("ticker", "")
+                end_iso = ticket.get("suppression_end_utc", "")
+                if ticker and end_iso:
+                    try:
+                        expiry = datetime.fromisoformat(end_iso).timestamp()
+                        with _news_suppressed_lock:
+                            _news_suppressed[ticker] = expiry
+                        logger.info("NEWS_SUPPRESS: %s suppressed until %s UTC", ticker, end_iso)
+                    except Exception as exc:
+                        logger.warning("NEWS_SUPPRESS parse error: %s", exc)
+                continue
+
+            # NEWS_CLEAR — suppression window ended; pair is tradeable again.
+            if ticket.get("action") == "NEWS_CLEAR":
+                ticker = ticket.get("ticker", "")
+                if ticker:
+                    with _news_suppressed_lock:
+                        _news_suppressed.pop(ticker, None)
+                    logger.info("NEWS_CLEAR: %s suppression lifted", ticker)
+                continue
+
             # Dormant guard — drop execution tickets during curfew / weekend
             with _dormant_lock:
                 dormant = _dormant
             if dormant:
                 logger.info("DORMANT — dropped ticket %s %s",
                             ticket.get("signal"), ticket.get("ticker"))
+                continue
+
+            # News suppression guard — last line of defence before MT5 execution.
+            # Cleans up expired entries on the fly; no separate cleanup thread needed.
+            ticker    = ticket.get("ticker", "")
+            now_epoch = time.time()
+            with _news_suppressed_lock:
+                expired = [t for t, ex in _news_suppressed.items() if ex <= now_epoch]
+                for t in expired:
+                    del _news_suppressed[t]
+                suppressed_until = _news_suppressed.get(ticker, 0.0)
+            if suppressed_until > now_epoch:
+                logger.warning(
+                    "NEWS GUARD — rejected %s %s (suppressed for %ds more)",
+                    ticket.get("signal"), ticker, int(suppressed_until - now_epoch),
+                )
                 continue
 
             logger.info("TICKET  %s %s  %.2f lots",

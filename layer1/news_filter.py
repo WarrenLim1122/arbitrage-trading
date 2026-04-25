@@ -1,119 +1,81 @@
 """
-Finnhub economic calendar filter.
+News window filter — powered by ForexFactory calendar (no API key required).
 
-Fetches high-impact events and returns whether the current moment falls
-within the suppression window for the currencies in the given ticker.
-Results are cached for CACHE_TTL_MINUTES to avoid hammering the API.
+ForexFactory is the industry-standard reference used by prop firms and traders.
+Impact levels ("High", "Medium", "Low") match the ForexFactory red/orange/yellow icons.
+Currency codes ("USD", "EUR", "GBP") map directly to pair base/quote currencies.
 """
 
+import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
-import httpx
+from layer1.ff_calendar import fetch_events_sync
 
 logger = logging.getLogger(__name__)
 
-# Finnhub country codes that carry each currency.
-# EUR includes DE and FR because German/French data regularly moves EUR crosses.
-CURRENCY_COUNTRIES: dict[str, list[str]] = {
-    "EUR": ["EU", "DE", "FR"],   # Eurozone + Germany/France (most EUR-moving events)
-    "GBP": ["GB"],
-    "AUD": ["AU"],
-    "CHF": ["CH"],
-    "JPY": ["JP"],
-    "NZD": ["NZ"],
-    "CAD": ["CA"],
-    "USD": ["US"],
+# Maps each traded pair to the currencies that can trigger a news block.
+# ForexFactory tags events with the currency code directly (e.g. "EUR" for ECB events,
+# "USD" for Fed events) — no country→currency mapping needed.
+_TICKER_CURRENCIES: dict[str, frozenset[str]] = {
+    "EURUSD": frozenset({"EUR", "USD"}),
+    "GBPUSD": frozenset({"GBP", "USD"}),
+    "USDCHF": frozenset({"USD", "CHF"}),
+    "USDCAD": frozenset({"USD", "CAD"}),
+    "USDJPY": frozenset({"USD", "JPY"}),
+    "NZDUSD": frozenset({"NZD", "USD"}),
+    "XAUUSD": frozenset({"USD"}),
+    "XAGUSD": frozenset({"USD"}),
+    "NAS100": frozenset({"USD"}),
 }
-
-# Tickers that can't be split into standard base/quote currencies — map directly.
-_TICKER_COUNTRY_OVERRIDE: dict[str, list[str]] = {
-    "NAS100": ["US"],  # US equity index — only US news relevant
-}
-
-CACHE_TTL_MINUTES = 60
-_cache: dict = {"events": None, "fetched_at": None}
-
-
-async def _fetch_events(api_key: str) -> list[dict]:
-    """Return cached Finnhub events, refreshing when the TTL expires."""
-    now = datetime.now(timezone.utc)
-
-    if _cache["events"] is not None and _cache["fetched_at"] is not None:
-        age_minutes = (now - _cache["fetched_at"]).total_seconds() / 60
-        if age_minutes < CACHE_TTL_MINUTES:
-            return _cache["events"]
-
-    date_from = (now - timedelta(hours=2)).strftime("%Y-%m-%d")
-    date_to = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(
-            "https://finnhub.io/api/v1/calendar/economic",
-            params={"token": api_key, "from": date_from, "to": date_to},
-        )
-        resp.raise_for_status()
-
-    events = resp.json().get("economicCalendar", [])
-    _cache["events"] = events
-    _cache["fetched_at"] = now
-    logger.info("Finnhub cache refreshed — %d events loaded", len(events))
-    return events
 
 
 async def check_news_window(
     ticker: str,
-    api_key: str,
+    api_key: str,               # kept for interface compatibility — no longer used
     window_minutes: int = 60,
     fail_open: bool = True,
-) -> tuple[bool, str | None]:
+) -> tuple[bool, str | None, str | None]:
     """
-    Returns (is_blocked, reason_string).
+    Returns (is_blocked, reason_string, event_time_key).
 
-    is_blocked=True  → caller must suppress the trade signal.
-    fail_open=True   → treat Finnhub API failure as clear (pass signal through).
-    fail_open=False  → treat Finnhub API failure as blocked (suppress signal).
+    is_blocked=True   → caller must suppress the trade signal.
+    event_time_key    → ISO UTC string of the blocking event (for dedup).
+    fail_open=True    → treat fetch failure as clear (pass signal through).
+    fail_open=False   → treat fetch failure as blocked (suppress signal).
     """
-    ticker_up = ticker.upper()
-    if ticker_up in _TICKER_COUNTRY_OVERRIDE:
-        relevant_countries: set[str] = set(_TICKER_COUNTRY_OVERRIDE[ticker_up])
-    else:
-        base = ticker_up[:3]
-        quote = ticker_up[3:]
-        relevant_countries = set(
-            CURRENCY_COUNTRIES.get(base, []) + CURRENCY_COUNTRIES.get(quote, [])
-        )
+    currencies = _TICKER_CURRENCIES.get(ticker.upper(), frozenset())
+    if not currencies:
+        return False, None, None
 
     try:
-        events = await _fetch_events(api_key)
+        events = await asyncio.to_thread(fetch_events_sync)
     except Exception as exc:
-        logger.error("Finnhub fetch failed: %s", exc)
+        logger.error("FF calendar fetch failed: %s", exc)
         if fail_open:
-            logger.warning("Fail-open active — signal passed despite Finnhub error")
-            return False, None
-        return True, f"Finnhub unreachable ({exc}) — signal suppressed (fail-closed)"
+            logger.warning("Fail-open active — signal passed despite FF calendar error")
+            return False, None, None
+        return True, f"FF calendar unreachable ({exc}) — signal suppressed (fail-closed)", None
 
-    now = datetime.now(timezone.utc)
+    now    = datetime.now(timezone.utc)
     window = timedelta(minutes=window_minutes)
 
     for event in events:
-        if event.get("impact") != "high":
+        if event.get("impact") != "High":
             continue
-        if event.get("country") not in relevant_countries:
-            continue
-
-        try:
-            event_dt = datetime.strptime(
-                event["time"], "%Y-%m-%d %H:%M:%S"
-            ).replace(tzinfo=timezone.utc)
-        except (ValueError, KeyError):
+        if event.get("currency") not in currencies:
             continue
 
-        if abs(now - event_dt) <= window:
-            reason = (
-                f"[{event.get('country')}] {event.get('event')} "
-                f"@ {event['time']} UTC  (within ±{window_minutes}min window)"
-            )
-            return True, reason
+        event_utc = event.get("time_utc")
+        if event_utc is None or abs(now - event_utc) > window:
+            continue
 
-    return False, None
+        mins_away = int((event_utc - now).total_seconds() / 60)
+        direction = f"in {mins_away} min" if mins_away >= 0 else f"{abs(mins_away)} min ago"
+        reason = (
+            f"[{event['currency']}] {event['title']} "
+            f"@ {event_utc.strftime('%Y-%m-%d %H:%M')} UTC  ({direction}, ±{window_minutes}min window)"
+        )
+        return True, reason, event_utc.isoformat()
+
+    return False, None, None

@@ -37,6 +37,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 import zmq
+from layer1.ff_calendar import fetch_events_sync as _fetch_ff_events
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -75,9 +76,8 @@ PROPFIRM_CONFIG_PATH = ROOT / "config" / "propfirm_config.json"
 SGT = ZoneInfo("Asia/Singapore")
 
 # ── Env vars ──────────────────────────────────────────────────────────────
-BOT_TOKEN       = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID         = int(os.environ["TELEGRAM_CHAT_ID"])
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID   = int(os.environ["TELEGRAM_CHAT_ID"])
 
 # ── Risk params ───────────────────────────────────────────────────────────
 with RISK_PARAMS_PATH.open() as _f:
@@ -96,18 +96,18 @@ ALLOWED_PAIRS: frozenset[str] = frozenset({
     "NZDUSD", "XAUUSD", "XAGUSD", "NAS100",
 })
 
-# Finnhub country codes that each pair is sensitive to.
-# Used by the news pre-close monitor to decide which positions to close.
-_TICKER_COUNTRIES: dict[str, frozenset[str]] = {
-    "EURUSD": frozenset({"EU", "DE", "FR", "US"}),
-    "GBPUSD": frozenset({"GB", "US"}),
-    "USDCHF": frozenset({"US", "CH"}),
-    "USDCAD": frozenset({"US", "CA"}),
-    "USDJPY": frozenset({"US", "JP"}),
-    "NZDUSD": frozenset({"NZ", "US"}),
-    "XAUUSD": frozenset({"US"}),
-    "XAGUSD": frozenset({"US"}),
-    "NAS100": frozenset({"US"}),
+# ForexFactory currency codes that each pair is sensitive to.
+# FF tags events with currency codes directly (e.g. "USD", "EUR") — no country mapping needed.
+_TICKER_CURRENCIES: dict[str, frozenset[str]] = {
+    "EURUSD": frozenset({"EUR", "USD"}),
+    "GBPUSD": frozenset({"GBP", "USD"}),
+    "USDCHF": frozenset({"USD", "CHF"}),
+    "USDCAD": frozenset({"USD", "CAD"}),
+    "USDJPY": frozenset({"USD", "JPY"}),
+    "NZDUSD": frozenset({"NZD", "USD"}),
+    "XAUUSD": frozenset({"USD"}),
+    "XAGUSD": frozenset({"USD"}),
+    "NAS100": frozenset({"USD"}),
 }
 
 _NEWS_PRECLOSE_WINDOW = 60   # minutes before news → close positions
@@ -121,11 +121,16 @@ _state_lock = threading.Lock()
 _pf_lock    = threading.Lock()
 
 # ── News pre-close state ───────────────────────────────────────────────────
-_l2_news_cache: dict = {"events": None, "fetched_at": None}
-_l2_news_cache_lock = threading.Lock()
-# Tracks (ticker, event_time_str) pairs already acted on — prevents repeat closes.
+# Tracks (ticker, event_time_iso) pairs already acted on — prevents repeat closes.
+# event_time_iso is event["time_utc"].isoformat() from ff_calendar.
 _news_closed_events: set[tuple[str, str]] = set()
 _news_events_lock = threading.Lock()
+
+# Active news suppression window per pair.
+# ticker → suppression_end (UTC datetime): the end of the ±60min window.
+# Layer 3 workers are notified via ZMQ so they can independently refuse execution.
+_news_suppressed_pairs: dict[str, datetime] = {}
+_news_suppressed_lock = threading.Lock()
 
 
 def _load_phase() -> dict:
@@ -293,35 +298,6 @@ def _dispatch_force_close(reason: str, *, halt: bool = True, permanent: bool = F
 
 # ── News pre-close helpers ────────────────────────────────────────────────
 
-def _fetch_news_sync() -> list[dict]:
-    """Fetch Finnhub economic calendar synchronously with a 60-min in-memory cache."""
-    now = datetime.now(timezone.utc)
-    with _l2_news_cache_lock:
-        if (
-            _l2_news_cache["events"] is not None
-            and _l2_news_cache["fetched_at"] is not None
-            and (now - _l2_news_cache["fetched_at"]).total_seconds() < 3600
-        ):
-            return _l2_news_cache["events"]
-
-    date_from = (now - timedelta(hours=2)).strftime("%Y-%m-%d")
-    date_to   = (now + timedelta(days=1)).strftime("%Y-%m-%d")
-
-    with httpx.Client(timeout=10.0) as client:
-        resp = client.get(
-            "https://finnhub.io/api/v1/calendar/economic",
-            params={"token": FINNHUB_API_KEY, "from": date_from, "to": date_to},
-        )
-        resp.raise_for_status()
-
-    events = resp.json().get("economicCalendar", [])
-    with _l2_news_cache_lock:
-        _l2_news_cache["events"] = events
-        _l2_news_cache["fetched_at"] = now
-    logger.info("L2 news cache refreshed — %d events loaded", len(events))
-    return events
-
-
 def _dispatch_close_ticker(ticker: str, reason: str) -> None:
     """Push CLOSE_TICKER to both Layer 3 workers for a single currency pair."""
     ticket = {"action": "CLOSE_TICKER", "ticker": ticker, "reason": reason}
@@ -333,6 +309,32 @@ def _dispatch_close_ticker(ticker: str, reason: str) -> None:
     logger.warning("CLOSE_TICKER dispatched — ticker=%s  reason=%s", ticker, reason)
 
 
+def _dispatch_news_suppress(ticker: str, suppression_end: datetime) -> None:
+    """Tell both Layer 3 workers to refuse new execution tickets for this pair."""
+    ticket = {
+        "action":               "NEWS_SUPPRESS",
+        "ticker":               ticker,
+        "suppression_end_utc":  suppression_end.isoformat(),
+    }
+    for url in (ZMQ_PUSH_PROP, ZMQ_PUSH_PERS):
+        try:
+            _push_ticket(url, ticket)
+        except Exception as exc:
+            logger.error("NEWS_SUPPRESS dispatch failed → %s: %s", url, exc)
+    logger.info("NEWS_SUPPRESS dispatched — ticker=%s  until=%s", ticker, suppression_end.isoformat())
+
+
+def _dispatch_news_clear(ticker: str) -> None:
+    """Tell both Layer 3 workers that the news window for this pair has closed."""
+    ticket = {"action": "NEWS_CLEAR", "ticker": ticker}
+    for url in (ZMQ_PUSH_PROP, ZMQ_PUSH_PERS):
+        try:
+            _push_ticket(url, ticket)
+        except Exception as exc:
+            logger.error("NEWS_CLEAR dispatch failed → %s: %s", url, exc)
+    logger.info("NEWS_CLEAR dispatched — ticker=%s", ticker)
+
+
 def _run_news_preclose_check() -> None:
     global _news_closed_events
 
@@ -340,46 +342,70 @@ def _run_news_preclose_check() -> None:
     window = timedelta(minutes=_NEWS_PRECLOSE_WINDOW)
 
     try:
-        events = _fetch_news_sync()
+        events = _fetch_ff_events()
     except Exception as exc:
-        logger.warning("News pre-close: Finnhub fetch failed: %s", exc)
+        logger.warning("News pre-close: FF calendar fetch failed: %s", exc)
         return
 
-    # Expire entries older than 3 hours to prevent unbounded set growth.
+    # Expire dedup entries older than 3 hours.
     cutoff = now - timedelta(hours=3)
     with _news_events_lock:
         _news_closed_events = {
             (t, ts) for (t, ts) in _news_closed_events
-            if _safe_parse_utc(ts) > cutoff
+            if datetime.fromisoformat(ts) > cutoff
         }
 
-    for ticker, countries in _TICKER_COUNTRIES.items():
-        for event in events:
-            if event.get("impact") != "high":
-                continue
-            if event.get("country") not in countries:
+    # Expire suppression windows that have ended — send NEWS_CLEAR to Layer 3.
+    with _news_suppressed_lock:
+        expired = [t for t, end in _news_suppressed_pairs.items() if end <= now]
+    for t in expired:
+        with _news_suppressed_lock:
+            _news_suppressed_pairs.pop(t, None)
+        _dispatch_news_clear(t)
+        logger.info("NEWS suppression window closed for %s", t)
+
+    # ── News-first scan ───────────────────────────────────────────────────
+    # One pass through events; fan out to all affected pairs per event.
+    for event in events:
+        if event.get("impact") != "High":
+            continue
+
+        event_utc = event.get("time_utc")
+        if event_utc is None:
+            continue
+
+        time_to_event = event_utc - now
+        if not (timedelta(0) < time_to_event <= window):
+            continue
+
+        # This upcoming high-impact event is inside the window.
+        # Determine which of our 9 pairs its currency affects.
+        for ticker, currencies in _TICKER_CURRENCIES.items():
+            if event.get("currency") not in currencies:
                 continue
 
-            event_dt = _safe_parse_utc(event.get("time", ""))
-            if event_dt is None:
-                continue
-
-            time_to_event = event_dt - now
-            if not (timedelta(0) < time_to_event <= window):
-                continue
-
-            key = (ticker, event["time"])
+            key = (ticker, event_utc.isoformat())
             with _news_events_lock:
                 if key in _news_closed_events:
                     continue
                 _news_closed_events.add(key)
 
+            # Update in-memory suppression window (extend if multiple events overlap).
+            suppression_end = event_utc + window
+            with _news_suppressed_lock:
+                existing = _news_suppressed_pairs.get(ticker)
+                if existing is None or suppression_end > existing:
+                    _news_suppressed_pairs[ticker] = suppression_end
+
+            # Notify Layer 3 — refuse new execution tickets for this pair.
+            _dispatch_news_suppress(ticker, suppression_end)
+
+            # Close any existing positions for this pair.
             mins_left  = int(time_to_event.total_seconds() / 60)
             event_desc = (
-                f"[{event.get('country')}] {event.get('event', 'High-Impact Event')} "
-                f"@ {event['time']} UTC ({mins_left} min away)"
+                f"[{event['currency']}] {event['title']} "
+                f"@ {event_utc.strftime('%Y-%m-%d %H:%M')} UTC ({mins_left} min away)"
             )
-
             logger.warning("NEWS PRE-CLOSE %s — %s", ticker, event_desc)
             _dispatch_close_ticker(ticker, f"pre_news_{ticker}")
             _alert_sync(
@@ -390,17 +416,8 @@ def _run_news_preclose_check() -> None:
             )
 
 
-def _safe_parse_utc(time_str: str) -> datetime | None:
-    try:
-        return datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
-
-
 def _news_preclose_loop() -> None:
-    if not FINNHUB_API_KEY:
-        logger.warning("FINNHUB_API_KEY not set — news pre-close monitor disabled")
-        return
+    logger.info("News pre-close monitor started (ForexFactory, ±%dmin window)", _NEWS_PRECLOSE_WINDOW)
     while True:
         time.sleep(60)
         try:
@@ -1458,4 +1475,24 @@ async def health():
         "propfirm":   pf_name,
         "sgt_curfew": _is_sgt_curfew(),
         "utc_time":   datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/news_status")
+async def news_status():
+    """Returns which pairs are currently in a news suppression window."""
+    now = datetime.now(timezone.utc)
+    with _news_suppressed_lock:
+        active = {
+            t: {
+                "suppression_ends_utc": end.isoformat(),
+                "minutes_remaining":    max(0, int((end - now).total_seconds() / 60)),
+            }
+            for t, end in _news_suppressed_pairs.items()
+            if end > now
+        }
+    return {
+        "suppressed_pairs": active,
+        "count":            len(active),
+        "utc_time":         now.isoformat(),
     }
