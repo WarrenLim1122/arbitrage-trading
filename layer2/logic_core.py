@@ -134,6 +134,10 @@ _news_suppressed_lock = threading.Lock()
 _manual_suppressed_pairs: set[str] = set()
 _manual_suppress_lock = threading.Lock()
 
+# Position mismatch tracking: ticker → (first_seen_utc, mismatch_type)
+# Populated by equity monitor; no lock needed (single monitor thread).
+_mismatch_first_seen: dict[str, tuple[datetime, str]] = {}
+
 
 def _load_phase() -> dict:
     with PHASE_CONFIG_PATH.open() as f:
@@ -157,6 +161,11 @@ def _save_propfirm(data: dict) -> None:
 
 _phase_state: dict = _load_phase()
 _propfirm:    dict = _load_propfirm()
+
+# Migrate old key name on first load
+if "phase1_permanently_halted" in _phase_state and "permanently_halted" not in _phase_state:
+    _phase_state["permanently_halted"] = _phase_state.pop("phase1_permanently_halted")
+    _save_phase(_phase_state)
 
 # ── ZeroMQ ────────────────────────────────────────────────────────────────
 _zmq_ctx = zmq.Context.instance()
@@ -278,7 +287,7 @@ def _dispatch_force_close(reason: str, *, halt: bool = True, permanent: bool = F
 
     halt=True     — also sets active=False in phase config (for kill conditions).
     halt=False    — positions closed only; active flag untouched (for SGT curfew).
-    permanent=True — sets phase1_permanently_halted (Phase 1 target reached).
+    permanent=True — sets permanently_halted (profit target reached in any phase).
     """
     ticket = {"action": "FORCE_CLOSE", "reason": reason}
     for url in (ZMQ_PUSH_PROP, ZMQ_PUSH_PERS):
@@ -291,7 +300,7 @@ def _dispatch_force_close(reason: str, *, halt: bool = True, permanent: bool = F
         with _state_lock:
             _phase_state["active"] = False
             if permanent:
-                _phase_state["phase1_permanently_halted"] = True
+                _phase_state["permanently_halted"] = True
             _save_phase(_phase_state)
 
     logger.warning("FORCE_CLOSE dispatched — reason=%s  halt=%s  permanent=%s",
@@ -335,6 +344,99 @@ def _dispatch_news_clear(ticker: str) -> None:
         except Exception as exc:
             logger.error("NEWS_CLEAR dispatch failed → %s: %s", url, exc)
     logger.info("NEWS_CLEAR dispatched — ticker=%s", ticker)
+
+
+# ── Position mismatch detection ───────────────────────────────────────────
+
+def _close_ticker_on_worker(zmq_url: str, ticker: str, reason: str) -> None:
+    """Close all positions for one ticker on a single worker (not both)."""
+    ticket = {"action": "CLOSE_TICKER", "ticker": ticker, "reason": reason}
+    try:
+        _push_ticket(zmq_url, ticket)
+    except Exception as exc:
+        logger.error("CLOSE_TICKER (single) failed → %s for %s: %s", zmq_url, ticker, exc)
+
+
+def _handle_mismatch(ticker: str, mismatch_type: str,
+                     prop_dir: int | None, pers_dir: int | None) -> None:
+    """Close the orphaned position and alert Telegram. Called after 30 s grace period."""
+    _dir = {0: "LONG", 1: "SHORT"}
+    if mismatch_type == "prop_only":
+        _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "orphan_mismatch")
+        msg = (
+            f"<b>CRITICAL MISMATCH — {ticker}</b>\n\n"
+            f"Prop has {_dir.get(prop_dir, '?')} but personal has NONE.\n"
+            f"Orphaned prop position force-closed.\n\n"
+            f"Check VPS #2 + VPS #3 immediately."
+        )
+    elif mismatch_type == "pers_only":
+        _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "orphan_mismatch")
+        msg = (
+            f"<b>CRITICAL MISMATCH — {ticker}</b>\n\n"
+            f"Personal has {_dir.get(pers_dir, '?')} but prop has NONE.\n"
+            f"Orphaned personal position force-closed.\n\n"
+            f"Check VPS #2 + VPS #3 immediately."
+        )
+    else:  # same_direction
+        _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "direction_mismatch")
+        _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "direction_mismatch")
+        msg = (
+            f"<b>CRITICAL DIRECTION MISMATCH — {ticker}</b>\n\n"
+            f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge is BROKEN!\n"
+            f"Positions closed on BOTH accounts.\n\n"
+            f"Check VPS #2 + VPS #3 immediately."
+        )
+    logger.error("MISMATCH HANDLED: %s  type=%s", ticker, mismatch_type)
+    _alert_sync(msg)
+
+
+def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) -> None:
+    """Compare open positions on both accounts. Act on any mismatch persisting ≥ 30 s.
+
+    Correct state: every ticker on prop has the OPPOSITE direction on personal.
+    Mismatch types:
+      prop_only      — ticker open on prop, missing on personal
+      pers_only      — ticker open on personal, missing on prop
+      same_direction — both accounts have same direction (hedge broken)
+    """
+    now   = datetime.now(timezone.utc)
+    grace = 30  # seconds
+
+    prop_map: dict[str, int] = {p["symbol"]: p["type"] for p in prop_positions}
+    pers_map: dict[str, int] = {p["symbol"]: p["type"] for p in pers_positions}
+    all_tickers = set(prop_map) | set(pers_map)
+
+    current_mismatches: set[str] = set()
+
+    for ticker in all_tickers:
+        mismatch_type: str | None = None
+        if ticker in prop_map and ticker not in pers_map:
+            mismatch_type = "prop_only"
+        elif ticker in pers_map and ticker not in prop_map:
+            mismatch_type = "pers_only"
+        elif ticker in prop_map and ticker in pers_map:
+            if prop_map[ticker] == pers_map[ticker]:
+                mismatch_type = "same_direction"
+
+        if not mismatch_type:
+            continue  # correct hedge (opposite directions present) — nothing to do
+
+        current_mismatches.add(ticker)
+        if ticker not in _mismatch_first_seen:
+            _mismatch_first_seen[ticker] = (now, mismatch_type)
+            logger.warning("Mismatch first seen: %s  type=%s", ticker, mismatch_type)
+        else:
+            first_seen, _ = _mismatch_first_seen[ticker]
+            if (now - first_seen).total_seconds() >= grace:
+                _handle_mismatch(ticker, mismatch_type,
+                                 prop_map.get(ticker), pers_map.get(ticker))
+                _mismatch_first_seen.pop(ticker, None)
+
+    # Clear mismatches that resolved themselves within the grace period
+    for ticker in list(_mismatch_first_seen):
+        if ticker not in current_mismatches:
+            logger.info("Mismatch self-resolved for %s (within %ds grace)", ticker, grace)
+            del _mismatch_first_seen[ticker]
 
 
 def _run_news_preclose_check() -> None:
@@ -531,8 +633,8 @@ def _run_equity_check() -> None:
     global _prop_fail_count, _pers_fail_count, _prop_down, _pers_down
 
     with _state_lock:
-        p1_halt = _phase_state.get("phase1_permanently_halted", False)
-    if p1_halt:
+        p_halt = _phase_state.get("permanently_halted", False)
+    if p_halt:
         return
 
     now_sgt  = _sgt_now()
@@ -603,6 +705,15 @@ def _run_equity_check() -> None:
             )
         # personal failure doesn't block kill-condition checks — prop equity already fetched
 
+    # Position mismatch check — runs every cycle when both workers are online
+    if not _prop_down and not _pers_down:
+        try:
+            prop_pos = _query_positions(ZMQ_REQ_PROP)
+            pers_pos = _query_positions(ZMQ_REQ_PERS)
+            _run_mismatch_check(prop_pos, pers_pos)
+        except Exception as exc:
+            logger.warning("Mismatch check error: %s", exc)
+
     with _state_lock:
         active = _phase_state.get("active", False)
         phase  = int(_phase_state.get("phase", 1))
@@ -664,45 +775,50 @@ def _run_equity_check() -> None:
                 _alert_sync(msg)
                 return
 
-    # Kill 3 — daily profit cap (Phase 2 only) — measured from day_start_equity
-    if phase == 2:
-        daily_profit_pct = (prop_equity - day_start) / day_start * 100
-        cap = pf.get("daily_profit_cap_pct", 0.0)
-        if cap > 0 and daily_profit_pct >= cap:
-            msg = (
-                f"<b>KILL 3 — Daily Profit Cap Hit (Phase 2)</b>\n\n"
-                f"Daily profit: <b>{daily_profit_pct:.2f}%</b> ≥ {cap}%\n"
-                f"Equity: <b>{prop_equity:.2f}</b>\n"
-                f"All positions closed for today.\n\n"
-                f"<b>Next steps:</b>\n"
-                f"/resume — resume trading tomorrow\n"
-                f"/changepropfirm — switch to a new prop firm account"
-            )
-            logger.warning(msg)
-            _dispatch_force_close("daily_profit_cap", halt=True)
-            _alert_sync(msg)
-            return
+    # Kill 3 — daily profit cap (all phases) — prop firm consistency rule
+    daily_profit_pct = (prop_equity - day_start) / day_start * 100
+    cap = pf.get("daily_profit_cap_pct", 0.0)
+    if cap > 0 and daily_profit_pct >= cap:
+        msg = (
+            f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
+            f"Daily profit: <b>{daily_profit_pct:.2f}%</b> ≥ {cap}%\n"
+            f"Equity: <b>{prop_equity:.2f}</b>\n"
+            f"All positions closed for today. Prop firm consistency rule enforced.\n\n"
+            f"<b>Next steps:</b>\n"
+            f"/resume — resume trading tomorrow"
+        )
+        logger.warning(msg)
+        _dispatch_force_close("daily_profit_cap", halt=True)
+        _alert_sync(msg)
+        return
 
-    # Kill 4 — Phase 1 profit target — cumulative from baseline
-    if phase == 1 and baseline > 0:
+    # Kill 4 — profit target reached (all phases) — cumulative from baseline
+    if baseline > 0:
         overall_pct = (prop_equity - baseline) / baseline * 100
         target      = pf.get("profit_target_pct", 0.0)
         if target > 0 and overall_pct >= target:
-            msg = (
-                f"<b>KILL 4 — Phase 1 Target Reached! Evaluation PASSED.</b>\n\n"
-                f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
-                f"Equity: <b>{prop_equity:.2f}</b>\n"
-                f"System permanently halted — awaiting your decision.\n\n"
-                f"<b>Options:</b>\n\n"
-                f"1. Move to funded account (Phase 2)\n"
-                f"   /phase2 then /resume\n\n"
-                f"2. Start a new prop firm challenge\n"
-                f"   /changepropfirm\n"
-                f"   <i>Wizard asks: firm name, profit target %, overall DD %, daily DD %, "
-                f"drawdown type, raw spread, profit share %, min profit days</i>"
-            )
+            if phase == 1:
+                msg = (
+                    f"<b>KILL 4 — Evaluation PASSED! Phase 1 Complete.</b>\n\n"
+                    f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
+                    f"Equity: <b>{prop_equity:.2f}</b>\n"
+                    f"All positions closed. System halted.\n\n"
+                    f"<b>Ready to move to funded phase?</b>\n"
+                    f"/phase2 — configure and start Phase 2\n"
+                    f"/changepropfirm — start a new challenge instead"
+                )
+            else:
+                msg = (
+                    f"<b>KILL 4 — Phase {phase} Target Reached!</b>\n\n"
+                    f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
+                    f"Equity: <b>{prop_equity:.2f}</b>\n"
+                    f"All positions closed. System halted.\n\n"
+                    f"<b>Options:</b>\n"
+                    f"/phase2 — start a new challenge (wizard will ask for settings)\n"
+                    f"/stop — end trading on this account"
+                )
             logger.warning(msg)
-            _dispatch_force_close("phase1_target", halt=True, permanent=True)
+            _dispatch_force_close("profit_target", halt=True, permanent=True)
             _alert_sync(msg)
 
 
@@ -711,7 +827,10 @@ def _run_equity_check() -> None:
 (PF_NAME, PF_PROFIT_TARGET, PF_MAX_DD_OVERALL, PF_MAX_DD_DAILY,
  PF_DD_TYPE, PF_RAW_SPREAD, PF_PROFIT_SHARE, PF_MIN_DAYS, PF_CONFIRM) = range(9)
 
+(P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_CONFIRM) = range(9, 13)
+
 _wizard_data: dict = {}
+_p2_wizard_data: dict = {}
 
 
 def _auth(update: Update) -> bool:
@@ -969,6 +1088,17 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "day_start_equity":         baseline,
             "day_start_date_utc":       _propfirm_day(_sgt_now()),
         })
+        # Store raw Phase 1 values for /phase2 wizard (raw = before buffers, what the firm states)
+        _propfirm.setdefault("phase_configs", {})["1"] = {
+            "propfirm_name":            _wizard_data["propfirm_name"],
+            "profit_target_pct":        _wizard_data["profit_target_pct"],
+            "max_drawdown_overall_pct": _wizard_data["max_drawdown_overall_pct"],
+            "max_drawdown_daily_pct":   _wizard_data["max_drawdown_daily_pct"],
+            "drawdown_is_static":       _wizard_data["drawdown_is_static"],
+            "raw_spread_account":       _wizard_data["raw_spread_account"],
+            "profit_sharing_pct":       _wizard_data["profit_sharing_pct"],
+            "min_profit_days":          _wizard_data["min_profit_days"],
+        }
         _save_propfirm(_propfirm)
 
     if baseline > 0:
@@ -1002,7 +1132,8 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     with _state_lock:
         _phase_state["phase"] = 1
-        _phase_state.pop("phase1_permanently_halted", None)
+        _phase_state.pop("permanently_halted", None)
+        _phase_state.pop("phase1_permanently_halted", None)  # backward compat
         _save_phase(_phase_state)
 
     balance, err = await asyncio.to_thread(_lock_baseline_from_live)
@@ -1027,36 +1158,274 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Telegram: phase set to 1  baseline=%.2f", balance)
 
 
-async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _auth(update):
-        return
-    with _state_lock:
-        _phase_state["phase"] = 2
-        _phase_state.pop("phase1_permanently_halted", None)
-        _save_phase(_phase_state)
+# ── Phase 2 setup wizard (/phase2) ───────────────────────────────────────
 
-    balance, err = await asyncio.to_thread(_lock_baseline_from_live)
-    if err:
+# Ordered field definitions used to display and collect Phase 2 settings.
+# Each entry: (1-based index, config_key, display_name, input_type)
+_P2_FIELD_DEFS = [
+    (1, "propfirm_name",            "Propfirm name",       "str"),
+    (2, "profit_target_pct",        "Profit target %",     "float_pos"),
+    (3, "max_drawdown_overall_pct", "Max DD overall %",    "float_pos"),
+    (4, "max_drawdown_daily_pct",   "Max DD daily %",      "float_pos"),
+    (5, "drawdown_is_static",       "Drawdown type",       "static_dynamic"),
+    (6, "raw_spread_account",       "Raw spread account",  "yes_no"),
+    (7, "profit_sharing_pct",       "Profit sharing %",    "float_pos"),
+    (8, "min_profit_days",          "Min profit days",     "int_nn"),
+]
+_P2_FIELD_BY_IDX: dict[int, tuple] = {d[0]: d for d in _P2_FIELD_DEFS}
+
+
+def _p2_display(key: str, value) -> str:
+    if key == "drawdown_is_static":
+        return "Static" if value else "Dynamic"
+    if key == "raw_spread_account":
+        return "Yes" if value else "No"
+    if key == "max_drawdown_daily_pct":
+        return f"{value}% (enforced at {round(value - 1.0, 2)}% after −1pp buffer)"
+    if key in ("profit_target_pct", "max_drawdown_overall_pct", "profit_sharing_pct"):
+        return f"{value}%"
+    return str(value)
+
+
+def _p2_settings_block(cfg: dict, compare_to: dict | None = None) -> str:
+    lines = []
+    for idx, key, name, _ in _P2_FIELD_DEFS:
+        val  = cfg.get(key, "—")
+        mark = ""
+        if compare_to is not None and compare_to.get(key) != val:
+            mark = "  ← changed"
+        lines.append(f"{idx}. {name:<22} — {_p2_display(key, val)}{mark}")
+    return "\n".join(lines)
+
+
+async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+
+    with _pf_lock:
+        phase1_cfg = _propfirm.get("phase_configs", {}).get("1")
+
+    if not phase1_cfg:
         await update.message.reply_text(
-            f"<b>Phase 2 Set</b> — personal lots ×{PHASE_MULT[2]:.2f}\n"
-            f"Phase 1 permanent halt cleared.\n\n"
-            f"<b>Warning</b> — could not fetch live balance:\n<code>{err}</code>\n\n"
-            f"Baseline NOT updated. Run /phase2 again once MT5 is connected.",
+            "<b>Phase 1 config not found.</b>\n\n"
+            "Run /changepropfirm first to configure Phase 1 settings.",
             parse_mode="HTML",
         )
-        logger.warning("Telegram /phase2: baseline lock failed: %s", err)
-        return
+        return ConversationHandler.END
 
-    await asyncio.to_thread(_dispatch_parameters)
+    _p2_wizard_data.clear()
+    _p2_wizard_data["phase1_config"] = dict(phase1_cfg)
+    _p2_wizard_data["new_config"]    = dict(phase1_cfg)
+
+    block = _p2_settings_block(phase1_cfg)
+    await update.message.reply_text(
+        f"<b>Phase 2 Setup</b>\n\n"
+        f"Phase 1 settings:\n<pre>{block}</pre>\n\n"
+        f"Use the same details for Phase 2? (<b>yes</b> / <b>no</b>)",
+        parse_mode="HTML",
+    )
+    return P2_SAME_OR_DIFF
+
+
+async def _p2_same_or_diff(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    v = update.message.text.strip().lower()
+    if v == "yes":
+        _p2_wizard_data["fields_to_change"] = []
+        return await _p2_show_review(update)
+    if v == "no":
+        block = _p2_settings_block(_p2_wizard_data["phase1_config"])
+        await update.message.reply_text(
+            f"<pre>{block}</pre>\n\n"
+            f"Which settings to change? Reply with numbers separated by spaces.\n"
+            f"Example: <code>2 4</code>",
+            parse_mode="HTML",
+        )
+        return P2_WHICH_FIELDS
+    await update.message.reply_text("Reply <b>yes</b> or <b>no</b>.", parse_mode="HTML")
+    return P2_SAME_OR_DIFF
+
+
+async def _p2_which_fields(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    indices = []
+    for t in update.message.text.strip().split():
+        try:
+            n = int(t)
+            if 1 <= n <= 8 and n not in indices:
+                indices.append(n)
+        except ValueError:
+            pass
+    if not indices:
+        await update.message.reply_text(
+            "No valid numbers. Enter numbers 1–8 separated by spaces (e.g. <code>2 4</code>):",
+            parse_mode="HTML",
+        )
+        return P2_WHICH_FIELDS
+    _p2_wizard_data["fields_to_change"] = sorted(indices)
+    _p2_wizard_data["field_iter_idx"]   = 0
+    return await _p2_ask_current_field(update)
+
+
+async def _p2_ask_current_field(update) -> int:
+    idx    = _p2_wizard_data["field_iter_idx"]
+    fields = _p2_wizard_data["fields_to_change"]
+    if idx >= len(fields):
+        return await _p2_show_review(update)
+    _, key, name, input_type = _P2_FIELD_BY_IDX[fields[idx]]
+    current = _p2_wizard_data["phase1_config"].get(key, "—")
+    hints   = {
+        "str":            "Enter the new value:",
+        "float_pos":      f"Enter a positive number (e.g. <code>10</code>):",
+        "static_dynamic": "Type <code>static</code> or <code>dynamic</code>:",
+        "yes_no":         "Type <code>yes</code> or <code>no</code>:",
+        "int_nn":         "Enter a whole number ≥ 0:",
+    }
+    await update.message.reply_text(
+        f"<b>Setting {fields[idx]}: {name}</b>\n"
+        f"Phase 1 value: {_p2_display(key, current)}\n\n"
+        f"{hints[input_type]}",
+        parse_mode="HTML",
+    )
+    return P2_COLLECTING
+
+
+async def _p2_collect_field(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    idx      = _p2_wizard_data["field_iter_idx"]
+    fields   = _p2_wizard_data["fields_to_change"]
+    _, key, name, input_type = _P2_FIELD_BY_IDX[fields[idx]]
+    text  = update.message.text.strip()
+    value = None
+    error = None
+    if input_type == "str":
+        value = text
+    elif input_type == "float_pos":
+        try:
+            value = float(text)
+            assert value > 0
+        except Exception:
+            error = "Enter a positive number (e.g. <code>10</code>):"
+    elif input_type == "static_dynamic":
+        if text.lower() == "static":
+            value = True
+        elif text.lower() == "dynamic":
+            value = False
+        else:
+            error = "Type <code>static</code> or <code>dynamic</code>:"
+    elif input_type == "yes_no":
+        if text.lower() == "yes":
+            value = True
+        elif text.lower() == "no":
+            value = False
+        else:
+            error = "Type <code>yes</code> or <code>no</code>:"
+    elif input_type == "int_nn":
+        try:
+            value = int(text)
+            assert value >= 0
+        except Exception:
+            error = "Enter a whole number ≥ 0:"
+    if error:
+        await update.message.reply_text(error, parse_mode="HTML")
+        return P2_COLLECTING
+    _p2_wizard_data["new_config"][key]  = value
+    _p2_wizard_data["field_iter_idx"]   = idx + 1
+    return await _p2_ask_current_field(update)
+
+
+async def _p2_show_review(update) -> int:
+    new = _p2_wizard_data["new_config"]
+    p1  = _p2_wizard_data["phase1_config"]
+    eff = _apply_buffers(new)
+    block   = _p2_settings_block(new, compare_to=p1)
+    dd_flag = "  <b>[FLAGGED]</b>" if not new.get("drawdown_is_static") else ""
+    rs_flag = "  <b>[FLAGGED]</b>" if not new.get("raw_spread_account") else ""
+    await update.message.reply_text(
+        f"<b>Phase 2 Review</b>\n\n"
+        f"<pre>{block}</pre>\n\n"
+        f"<b>Kill conditions:</b>\n"
+        f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']}%\n"
+        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}%\n"
+        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}%\n"
+        f"Kill 4 — overall profit ≥ {new['profit_target_pct']}%\n"
+        f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
+        f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
+        f"<i>Baseline equity locked from live MT5 on confirm.</i>\n\n"
+        f"Reply <b>YES</b> to save and start Phase 2  |  <b>NO</b> to cancel",
+        parse_mode="HTML",
+    )
+    return P2_CONFIRM
+
+
+async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    v = update.message.text.strip().upper()
+    if v == "NO":
+        _p2_wizard_data.clear()
+        await update.message.reply_text("Cancelled — no changes saved.")
+        return ConversationHandler.END
+    if v != "YES":
+        await update.message.reply_text("Reply <b>YES</b> to save or <b>NO</b> to cancel.", parse_mode="HTML")
+        return P2_CONFIRM
+
+    new = _p2_wizard_data["new_config"]
+    eff = _apply_buffers(new)
+
+    baseline = 0.0
+    try:
+        baseline = _query_equity(ZMQ_REQ_PROP, "")["balance"]
+    except Exception as exc:
+        await update.message.reply_text(
+            f"<b>Warning</b> — could not fetch live balance:\n<code>{exc}</code>\n\n"
+            f"Baseline set to 0.0 — run /phase2 again once MT5 is connected.",
+            parse_mode="HTML",
+        )
+
+    today = _propfirm_day(_sgt_now())
+    with _pf_lock:
+        _propfirm.update({
+            "propfirm_name":            new["propfirm_name"],
+            "profit_target_pct":        new["profit_target_pct"],
+            "max_drawdown_overall_pct": eff["max_drawdown_overall_pct"],
+            "max_drawdown_daily_pct":   eff["max_drawdown_daily_pct"],
+            "drawdown_is_static":       new["drawdown_is_static"],
+            "raw_spread_account":       new["raw_spread_account"],
+            "profit_sharing_pct":       new["profit_sharing_pct"],
+            "min_profit_days":          new["min_profit_days"],
+            "daily_profit_cap_pct":     eff["daily_profit_cap_pct"],
+            "baseline_equity":          baseline,
+            "day_start_equity":         baseline,
+            "day_start_date_utc":       today,
+        })
+        # Store raw Phase 2 config for future reference
+        _propfirm.setdefault("phase_configs", {})["2"] = {k: new[k] for k in new}
+        _save_propfirm(_propfirm)
+
+    with _state_lock:
+        _phase_state["phase"] = 2
+        _phase_state.pop("permanently_halted", None)
+        _phase_state.pop("phase1_permanently_halted", None)  # backward compat
+        _save_phase(_phase_state)
+
+    if baseline > 0:
+        _dispatch_parameters()
+
+    _p2_wizard_data.clear()
     await update.message.reply_text(
         f"<b>Phase 2 Active</b>\n\n"
+        f"Firm: {_propfirm['propfirm_name']}\n"
         f"Personal lots multiplier: ×{PHASE_MULT[2]:.2f}\n"
-        f"Phase 1 permanent halt cleared.\n"
-        f"Baseline equity locked: <b>{balance:.2f}</b>\n\n"
+        f"Baseline equity locked: <b>{baseline:.2f}</b>\n\n"
         f"Send /resume to start trading.",
         parse_mode="HTML",
     )
-    logger.info("Telegram: phase set to 2  baseline=%.2f", balance)
+    logger.info("Phase 2 started — firm=%s  baseline=%.2f", _propfirm["propfirm_name"], baseline)
+    return ConversationHandler.END
+
+
+async def _p2_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    _p2_wizard_data.clear()
+    await update.message.reply_text("<b>Phase 2 Setup Cancelled.</b>", parse_mode="HTML")
+    return ConversationHandler.END
 
 
 async def _cmd_stop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1076,10 +1445,10 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     with _state_lock:
-        p1_halt = _phase_state.get("phase1_permanently_halted", False)
-    if p1_halt:
+        p_halt = _phase_state.get("permanently_halted", False)
+    if p_halt:
         await update.message.reply_text(
-            "<b>Blocked</b> — Phase 1 profit target was reached.\n\nSend /phase2 before resuming.",
+            "<b>Blocked</b> — Profit target was reached. Send /phase2 to configure and start the next phase.",
             parse_mode="HTML",
         )
         return
@@ -1101,7 +1470,8 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         phase   = _phase_state.get("phase", "?")
         active  = _phase_state.get("active", False)
         last_ts = _phase_state.get("last_signal_ts", "never")
-        p1_halt = _phase_state.get("phase1_permanently_halted", False)
+        p_halt  = _phase_state.get("permanently_halted", False)
+        max_pos = _phase_state.get("max_open_positions", 2)
     with _pf_lock:
         pf_name    = _propfirm.get("propfirm_name", "not configured")
         day_start  = _propfirm.get("day_start_equity",        0.0)
@@ -1116,8 +1486,9 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"<b>System Status</b>\n\n"
         f"<b>Phase:</b> {phase}  (×{mult})\n"
         f"<b>Active:</b> {'YES' if active else 'NO — halted'}\n"
-        f"<b>Perm Halt:</b> {'YES — /phase2 required' if p1_halt else 'No'}\n"
+        f"<b>Perm Halt:</b> {'YES — /phase2 required' if p_halt else 'No'}\n"
         f"<b>SGT Curfew:</b> {'YES (dormant)' if curfew else 'No'}\n"
+        f"<b>Max open positions:</b> {max_pos}\n"
         f"<b>Firm:</b> {pf_name}\n\n"
         f"<b>Equity</b>\n"
         f"Baseline:         {baseline:.2f}\n"
@@ -1440,6 +1811,63 @@ async def _cmd_resumepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
     logger.info("Manual resumepair: %s", ticker)
 
 
+async def _cmd_setmaxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    text = (update.message.text or "").strip().split()
+    if len(text) < 2:
+        await update.message.reply_text(
+            "Usage: /setmaxpos &lt;number&gt;\nExample: /setmaxpos 2\nRange: 1–10",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        n = int(text[1])
+        assert 1 <= n <= 10
+    except Exception:
+        await update.message.reply_text("Enter a whole number between 1 and 10.")
+        return
+
+    with _state_lock:
+        _phase_state["max_open_positions"] = n
+        _save_phase(_phase_state)
+
+    warning = ""
+    if n > 5:
+        theoretical = round(n * PROP_RISK_PCT * 100, 2)
+        with _pf_lock:
+            dd_daily_raw = _propfirm.get("max_drawdown_daily_pct", 0.0) + 1.0  # before buffer
+        warning = (
+            f"\n\n<b>Warning:</b> {n} positions × {PROP_RISK_PCT*100:.2f}% = "
+            f"<b>{theoretical:.2f}% theoretical max daily loss</b> if all SLs hit simultaneously.\n"
+            f"Daily DD limit (before buffer): {dd_daily_raw:.1f}%"
+        )
+
+    await update.message.reply_text(
+        f"<b>Max open positions set to {n}.</b>{warning}",
+        parse_mode="HTML",
+    )
+    logger.info("Telegram: max_open_positions set to %d", n)
+
+
+async def _cmd_maxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    with _state_lock:
+        limit = _phase_state.get("max_open_positions", 2)
+    try:
+        prop_pos = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
+        count_str = str(len(prop_pos))
+    except Exception as exc:
+        count_str = f"unknown ({exc})"
+    await update.message.reply_text(
+        f"<b>Position Limit</b>\n\n"
+        f"Max allowed: {limit}\n"
+        f"Currently open (prop): {count_str}",
+        parse_mode="HTML",
+    )
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -1448,10 +1876,13 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Emergency</b>\n"
         "/emergency — Force-close ALL positions on both accounts + halt\n\n"
         "<b>Phase &amp; Trading Control</b>\n"
-        "/phase1 — Phase 1 (×0.20 lots, evaluation)\n"
-        "/phase2 — Phase 2 (×0.70 lots, funded)\n"
+        "/phase1 — Phase 1 (×0.20 lots, evaluation) — runs 8-step config wizard\n"
+        "/phase2 — Next phase (×0.70 lots) — wizard: same as Phase 1 or update settings\n"
         "/resume — Resume signal processing\n"
         "/stop — Halt signal processing (open trades continue to SL/TP)\n\n"
+        "<b>Position Limits</b>\n"
+        "/setmaxpos 2 — Set max simultaneous open trades (1–10)\n"
+        "/maxpos — Show current limit and open count\n\n"
         "<b>Pair Control</b>\n"
         "/closepair EURUSD — Close all positions for pair + block new signals\n"
         "/resumepair EURUSD — Unblock pair and allow new signals\n\n"
@@ -1466,11 +1897,11 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/propfirm — Current prop firm config\n"
         "/changepropfirm — Set up new prop firm (8-step wizard)\n"
         "/cancel — Cancel wizard mid-flow\n\n"
-        "<b>Kill Conditions</b> (automatic)\n"
+        "<b>Kill Conditions</b> (automatic, all phases)\n"
         "Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
         "Kill 2 — overall loss ≥ DD overall limit → close all + permanent halt\n"
-        "Kill 3 — daily profit ≥ cap (Phase 2) → close all + halt\n"
-        "Kill 4 — overall profit ≥ target (Phase 1) → permanent halt\n\n"
+        "Kill 3 — daily profit ≥ cap → close all + halt (consistency rule)\n"
+        "Kill 4 — overall profit ≥ target → close all + permanent halt → /phase2\n\n"
         "<b>Startup Sequence</b>\n"
         "/changepropfirm → /phase1 → /resume",
         parse_mode="HTML",
@@ -1497,10 +1928,22 @@ def _run_bot() -> None:
         per_chat=True,
     )
 
+    p2_wizard = ConversationHandler(
+        entry_points=[CommandHandler("phase2", _cmd_phase2)],
+        states={
+            P2_SAME_OR_DIFF: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_same_or_diff)],
+            P2_WHICH_FIELDS: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_which_fields)],
+            P2_COLLECTING:   [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_collect_field)],
+            P2_CONFIRM:      [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_confirm)],
+        },
+        fallbacks=[CommandHandler("cancel", _p2_cancel)],
+        per_chat=True,
+    )
+
     tg_app = Application.builder().token(BOT_TOKEN).build()
     tg_app.add_handler(wizard)
+    tg_app.add_handler(p2_wizard)
     tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
-    tg_app.add_handler(CommandHandler("phase2",        _cmd_phase2))
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
@@ -1515,6 +1958,8 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("suppressed",    _cmd_suppressed))
     tg_app.add_handler(CommandHandler("closepair",     _cmd_closepair))
     tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))
+    tg_app.add_handler(CommandHandler("setmaxpos",     _cmd_setmaxpos))
+    tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
 
     async def _poll():
@@ -1591,12 +2036,13 @@ async def receive_signal(request: Request):
     with _state_lock:
         active  = _phase_state.get("active", False)
         phase   = int(_phase_state.get("phase", 1))
-        p1_halt = _phase_state.get("phase1_permanently_halted", False)
+        p_halt  = _phase_state.get("permanently_halted", False)
+        max_pos = _phase_state.get("max_open_positions", 2)
 
-    if p1_halt:
+    if p_halt:
         return JSONResponse({
             "status": "halted",
-            "reason": "phase1 target reached — /phase2 then /resume to continue",
+            "reason": "profit target reached — /phase2 to configure and start next phase",
         })
 
     if not active:
@@ -1613,6 +2059,23 @@ async def receive_signal(request: Request):
         reason = "manual block (/closepair)" if manual_block else "news suppression window"
         logger.info("SUPPRESSED — dropped %s %s (%s)", payload.signal, payload.ticker, reason)
         return JSONResponse({"status": "suppressed", "reason": reason})
+
+    # Max open positions gate — count by prop positions (1 signal = 1 prop position)
+    try:
+        open_positions = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
+        open_count = len(open_positions)
+    except Exception as exc:
+        logger.warning("Max-pos check: prop positions query failed: %s — failing open", exc)
+        open_count = 0  # fail open — don't block if count unknown
+
+    if open_count >= max_pos:
+        logger.info("MAX_POS  %s %s — %d/%d open", payload.signal, payload.ticker, open_count, max_pos)
+        return JSONResponse({
+            "status": "rejected",
+            "reason": "max_positions_reached",
+            "open":   open_count,
+            "max":    max_pos,
+        })
 
     logger.info("SIGNAL  %s %s | entry=%.5f  sl_pips=%.1f  phase=%d",
                 payload.signal, payload.ticker, payload.entry, payload.sl_pips, phase)

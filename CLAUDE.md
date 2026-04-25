@@ -223,11 +223,13 @@ Only the phase ratio changes. Direction and prop sizing are identical in both ph
 | `/suppressed` | Active suppression blackboard — pairs currently blocked and why |
 | `/closepair EURUSD` | Close all positions for a pair on both accounts + block new signals until /resumepair |
 | `/resumepair EURUSD` | Unblock a pair closed with /closepair |
-| `/phase1` | Set phase ratio ×0.20, locks baseline equity from live MT5 |
-| `/phase2` | Set phase ratio ×0.70, clears permanent halt, locks baseline equity |
+| `/setmaxpos 2` | Set max simultaneous open trades (1–10). Default 2. If >5, warns about daily DD exposure |
+| `/maxpos` | Show current position limit and current open count |
+| `/phase1` | Set phase ratio ×0.20, runs /changepropfirm first, locks baseline equity from live MT5 |
+| `/phase2` | Next phase wizard — shows Phase 1 settings, ask same/different, locks new baseline |
 | `/stop` | Halt signal processing (open trades continue to their SL/TP naturally) |
-| `/resume` | Resume (blocked if Phase 1 target reached — requires `/phase2` first) |
-| `/status` | Phase, active state, SGT curfew, equity snapshots |
+| `/resume` | Resume (blocked if profit target reached — requires `/phase2` first) |
+| `/status` | Phase, active state, max positions, SGT curfew, equity snapshots |
 | `/cancel` | Cancel wizard mid-flow |
 
 **`/stop` vs `/emergency`:**
@@ -268,12 +270,28 @@ Queries **prop firm worker equity only** via ZMQ REQ/REP. All kill conditions ar
 |---|---|---|---|---|
 | Kill 1 | All | Daily from `day_start_equity` | daily loss ≥ `max_drawdown_daily_pct` (2%) | FORCE_CLOSE both + halt |
 | Kill 2 | All | Overall from `baseline_equity` | overall loss ≥ `max_drawdown_overall_pct` | FORCE_CLOSE both + **permanent halt** |
-| Kill 3 | Phase 2 | Daily from `day_start_equity` | daily profit ≥ `daily_profit_cap_pct` (2.5%) | FORCE_CLOSE both + halt |
-| Kill 4 | Phase 1 | Overall from `baseline_equity` | overall profit ≥ `profit_target_pct` (10%) | FORCE_CLOSE both + **permanent halt** |
+| Kill 3 | **All** | Daily from `day_start_equity` | daily profit ≥ `daily_profit_cap_pct` (2.5%) | FORCE_CLOSE both + halt (prop firm consistency rule) |
+| Kill 4 | **All** | Overall from `baseline_equity` | overall profit ≥ `profit_target_pct` (10%) | FORCE_CLOSE both + **permanent halt** → /phase2 to continue |
 
 When a kill fires: pushes `{"action": "FORCE_CLOSE", "reason": "..."}` to both ZMQ PUSH sockets + Telegram alert.
 
 **Worker health monitoring**: if either worker fails to respond for 3 consecutive 30s checks (~90s), a Telegram alert fires with instructions to restart the worker. Recovery is also alerted.
+
+**Position mismatch monitoring (every 30s, within equity monitor thread):**
+
+Every cycle (when both workers are online), Layer 2 queries open positions from both accounts and compares them:
+
+| Mismatch type | Condition | Action |
+|---|---|---|
+| `prop_only` | Ticker open on prop, missing on personal for ≥30s | Close orphan on prop + Telegram alert |
+| `pers_only` | Ticker open on personal, missing on prop for ≥30s | Close orphan on personal + Telegram alert |
+| `same_direction` | Both accounts hold same direction on same ticker | Close on BOTH accounts + Telegram alert (hedge broken) |
+
+Correct state: prop holds direction X → personal holds the OPPOSITE direction on same ticker. A 30s grace period avoids false alarms during normal execution time. If the mismatch resolves itself within 30s, no action is taken.
+
+**Max open positions gate (inline in `/signal` endpoint):**
+
+Before dispatching any signal, Layer 2 queries prop worker position count. Prop is the authoritative count (1 signal = 1 prop position). If `count ≥ max_open_positions`, the signal is rejected with `max_positions_reached`. Default limit: 2. Configurable via `/setmaxpos`. Slots free immediately when a position closes — no cooldown.
 
 ### SGT Curfew Gate (inline in `/signal` endpoint)
 
@@ -283,13 +301,14 @@ When a kill fires: pushes `{"action": "FORCE_CLOSE", "reason": "..."}` to both Z
 ### Signal Processing Sequence
 
 1. SGT curfew gate.
-2. Check `active`, `phase1_permanently_halted`.
-3. Query `prop_equity + contract data` from prop worker via ZMQ.
-4. Query `contract data` from personal worker via ZMQ.
-5. Calculate lots per the immutable risk math above (prop and personal independently, using baseline equity).
-6. Compute prop TP (1/0.27 RR) and personal SL + TP (0.27 RR, inverse).
-7. Dispatch two ZMQ PUSH tickets with all computed values.
-8. Send trade notification to Telegram.
+2. Check `active`, `permanently_halted`.
+3. Max open positions gate — query prop position count, reject if ≥ limit.
+4. Query `prop_equity + contract data` from prop worker via ZMQ.
+5. Query `contract data` from personal worker via ZMQ.
+6. Calculate lots per the immutable risk math (prop from dollar risk; personal = prop_lots × phase_ratio).
+7. Compute prop SL/TP (mirror of signal) and personal SL/TP (from signal directly).
+8. Dispatch two ZMQ PUSH tickets with all computed values.
+9. Send trade notification to Telegram.
 
 **News Pre-Close Monitor (60s interval, background thread):**
 
@@ -361,7 +380,7 @@ Env vars: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `ZMQ_PULL_ADDR`, `ZMQ_REP_A
 
 | File | Key fields | Changed by |
 |---|---|---|
-| `config/phase_config.json` | `phase`, `active`, `phase1_permanently_halted`, `last_signal_ts` | Telegram commands |
+| `config/phase_config.json` | `phase`, `active`, `permanently_halted`, `max_open_positions`, `last_signal_ts` | Telegram commands |
 | `config/propfirm_config.json` | All 12 propfirm fields | `/changepropfirm` wizard only — never edit manually |
 | `config/risk_params.json` | `prop_risk_pct`, `phase_multipliers`, `layer3_zmq` | Manual edit only |
 | `config/symbol_map.json` | Ticker → broker symbol mapping (e.g. NAS100 → USTEC) | Manual edit only |
