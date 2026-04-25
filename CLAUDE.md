@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project: Automated Trade Execution Engine (TEE)
 
-A four-layer cross-hedging dual-account system. The FundingPips prop firm account executes the primary directional trade; the personal Fusion Markets account simultaneously executes the **inverse direction** as a hedge. Position sizing is phase-dependent and remotely controlled via Telegram.
+A four-layer cross-hedging dual-account system. The personal Fusion Markets account follows the signal direction; the FundingPips prop firm account simultaneously executes the **inverse direction** as a hedge. Position sizing is phase-dependent and remotely controlled via Telegram.
 
 ## Architecture
 
@@ -76,22 +76,25 @@ These rules never change between Phase 1 and Phase 2.
 
 **Directional logic:**
 
-| Signal | Prop Firm | Personal Account |
+| Signal | Personal Account | Prop Firm |
 |---|---|---|
-| LONG | LONG | SHORT (inverse) |
-| SHORT | SHORT | LONG (inverse) |
+| LONG | LONG (follows signal) | SHORT (inverse) |
+| SHORT | SHORT (follows signal) | LONG (inverse) |
 
 **RR per account (immutable):**
 
 | Account | RR | TP distance from entry |
 |---|---|---|
-| Prop Firm | 1/0.27 ≈ 3.7037 | `sl_distance × 3.7037` |
-| Personal | 0.27 | `sl_distance × 0.27` (inverse direction) |
+| Personal | 0.27 | `sl_distance × 0.27` (signal direction) |
+| Prop Firm | 1/0.27 ≈ 3.7037 | `sl_distance × 3.7037` (inverse direction) |
 
 **Lot sizing sequence:**
 
 ```
-sl_distance = abs(entry − sl)           # from webhook
+# Personal SL = webhook sl (swing level on signal side)
+# Prop SL     = opposite swing level (m15_swing_high for LONG, m15_swing_low for SHORT)
+sl_distance_pers = abs(entry − payload.sl)
+sl_distance_prop = abs(entry − prop_sl)
 
 Step A — Prop dollar risk (uses BASELINE equity, not live equity)
   prop_dollar_risk = baseline_equity × 0.0067
@@ -100,23 +103,25 @@ Step B+C — Personal dollar risk
   phase_ratio      = 0.20 (Phase 1)  |  0.70 (Phase 2)
   pers_dollar_risk = prop_dollar_risk × phase_ratio
 
-Step D — Lots (each account uses its own broker's contract data)
-  prop_lots = prop_dollar_risk / ((sl_distance / prop_point) × prop_tick_value)
-  pers_lots = pers_dollar_risk / ((sl_distance / pers_point) × pers_tick_value)
+Step D — Lots (each account uses its own SL distance and broker contract data)
+  prop_lots = prop_dollar_risk / ((sl_distance_prop / prop_point) × prop_tick_value)
+  pers_lots = pers_dollar_risk / ((sl_distance_pers / pers_point) × pers_tick_value)
 ```
 
-**TP / personal SL computed by Layer 2 (not taken from webhook):**
+**TP/SL computed by Layer 2 (not taken from webhook):**
 
 ```
 LONG signal:
-  prop_tp  = entry + sl_distance × 3.7037
-  pers_sl  = m15_swing_high          # swing high above entry = SHORT stop
-  pers_tp  = entry − sl_distance × 0.27
+  personal: LONG   sl = payload.sl (last_ltf_sl, below entry)
+                   tp = entry + sl_distance_pers × 0.27
+  prop:     SHORT  sl = m15_swing_high (above entry = inverse stop)
+                   tp = entry − sl_distance_prop × 3.7037
 
 SHORT signal:
-  prop_tp  = entry − sl_distance × 3.7037
-  pers_sl  = m15_swing_low           # swing low below entry = LONG stop
-  pers_tp  = entry + sl_distance × 0.27
+  personal: SHORT  sl = payload.sl (last_ltf_sh, above entry)
+                   tp = entry − sl_distance_pers × 0.27
+  prop:     LONG   sl = m15_swing_low (below entry = inverse stop)
+                   tp = entry + sl_distance_prop × 3.7037
 ```
 
 **Phase definitions:**
@@ -216,6 +221,13 @@ Only the phase ratio changes. Direction, RR, and prop sizing are identical in bo
 | `/changepropfirm` | 8-step wizard — collects raw prop firm limits, auto-applies buffers, saves config |
 | `/propfirm` | Display current prop firm config |
 | `/equity` | Query live balance + equity from both MT5 accounts on demand |
+| `/positions` | Show all open positions on both accounts (ticker, direction, lots, entry, SL, TP, P&L) |
+| `/pnl` | Today's P&L vs daily profit cap and drawdown limits |
+| `/health` | Ping all 4 layers and report live/dead status |
+| `/news` | Upcoming high-impact events in the next 4 hours for all covered pairs |
+| `/suppressed` | Active suppression blackboard — pairs currently blocked and why |
+| `/closepair EURUSD` | Close all positions for a pair on both accounts + block new signals until /resumepair |
+| `/resumepair EURUSD` | Unblock a pair closed with /closepair |
 | `/phase1` | Set phase ratio ×0.20, locks baseline equity from live MT5 |
 | `/phase2` | Set phase ratio ×0.70, clears permanent halt, locks baseline equity |
 | `/stop` | Halt signal processing (open trades continue to their SL/TP naturally) |

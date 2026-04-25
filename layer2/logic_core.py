@@ -133,6 +133,10 @@ _news_events_lock = threading.Lock()
 _news_suppressed_pairs: dict[str, datetime] = {}
 _news_suppressed_lock = threading.Lock()
 
+# Manual suppression via /closepair command — persists until /resumepair.
+_manual_suppressed_pairs: set[str] = set()
+_manual_suppress_lock = threading.Lock()
+
 
 def _load_phase() -> dict:
     with PHASE_CONFIG_PATH.open() as f:
@@ -1186,20 +1190,281 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
     logger.warning("Telegram: emergency halt executed by user")
 
 
+def _query_positions(zmq_url: str) -> list[dict]:
+    sock = _zmq_ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.connect(zmq_url)
+    try:
+        sock.send_json({"query": "positions"})
+        if not sock.poll(EQUITY_TIMEOUT):
+            raise RuntimeError(f"positions query timed out ({zmq_url})")
+        reply = sock.recv_json()
+        return reply.get("positions", [])
+    finally:
+        sock.close()
+
+
+async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    try:
+        prop_pos = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
+        prop_err = None
+    except Exception as exc:
+        prop_pos = None
+        prop_err = str(exc)
+    try:
+        pers_pos = await asyncio.to_thread(_query_positions, ZMQ_REQ_PERS)
+        pers_err = None
+    except Exception as exc:
+        pers_pos = None
+        pers_err = str(exc)
+
+    lines = ["<b>Open Positions</b>\n"]
+    for label, positions, err in [
+        ("Personal — signal direction (VPS #3)", pers_pos, pers_err),
+        ("Prop — inverse direction (VPS #2)", prop_pos, prop_err),
+    ]:
+        lines.append(f"<b>{label}:</b>")
+        if err:
+            lines.append(f"OFFLINE — {err}")
+        elif not positions:
+            lines.append("No open positions")
+        else:
+            for p in positions:
+                direction = "LONG" if p["type"] == 0 else "SHORT"
+                lines.append(
+                    f"{p['symbol']}  {direction}  {p['volume']:.2f} lots\n"
+                    f"  Entry: {p['price_open']}  SL: {p['sl']}  TP: {p['tp']}\n"
+                    f"  P&amp;L: ${p['profit']:.2f}"
+                )
+        lines.append("")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    try:
+        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+    except Exception as exc:
+        await update.message.reply_text(f"Prop worker offline: {exc}")
+        return
+    with _pf_lock:
+        pf = dict(_propfirm)
+
+    baseline   = pf.get("baseline_equity",        0.0)
+    day_start  = pf.get("day_start_equity",        0.0)
+    daily_cap  = pf.get("daily_profit_cap_pct",    0.0)
+    daily_dd   = pf.get("max_drawdown_daily_pct",  0.0)
+    overall_dd = pf.get("max_drawdown_overall_pct",0.0)
+    target_pct = pf.get("profit_target_pct",       0.0)
+    equity     = prop["equity"]
+
+    daily_pnl   = equity - day_start
+    overall_pnl = equity - baseline
+    cap_lim     = baseline * daily_cap   / 100
+    dd_day_lim  = baseline * daily_dd    / 100
+    dd_all_lim  = baseline * overall_dd  / 100
+    target_lim  = baseline * target_pct  / 100
+
+    def _pct(val, lim):
+        return f"{abs(val)/lim*100:.1f}%" if lim > 0 else "n/a"
+
+    await update.message.reply_text(
+        f"<b>P&amp;L Dashboard (Prop Account)</b>\n\n"
+        f"Baseline:     ${baseline:,.2f}\n"
+        f"Day started:  ${day_start:,.2f}\n"
+        f"Now:          ${equity:,.2f}\n\n"
+        f"<b>Daily P&amp;L:</b>  ${daily_pnl:+,.2f}\n"
+        f"  Profit cap  ${cap_lim:,.2f}  ({_pct(daily_pnl, cap_lim)} used)\n"
+        f"  DD limit   -${dd_day_lim:,.2f}  ({_pct(-daily_pnl, dd_day_lim)} used)\n\n"
+        f"<b>Overall P&amp;L:</b> ${overall_pnl:+,.2f}\n"
+        f"  Target      ${target_lim:,.2f}  ({_pct(overall_pnl, target_lim)} used)\n"
+        f"  DD limit   -${dd_all_lim:,.2f}  ({_pct(-overall_pnl, dd_all_lim)} used)",
+        parse_mode="HTML",
+    )
+
+
+async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    try:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get("http://127.0.0.1:8000/health")
+        l1 = "✅ alive" if resp.status_code == 200 else f"⚠️ HTTP {resp.status_code}"
+    except Exception as exc:
+        l1 = f"❌ OFFLINE — {exc}"
+    try:
+        await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        prop_h = "✅ alive"
+    except Exception as exc:
+        prop_h = f"❌ OFFLINE — {exc}"
+    try:
+        await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        pers_h = "✅ alive"
+    except Exception as exc:
+        pers_h = f"❌ OFFLINE — {exc}"
+
+    await update.message.reply_text(
+        f"<b>System Health</b>\n\n"
+        f"Layer 1 (Gatekeeper):     {l1}\n"
+        f"Layer 2 (Logic Core):     ✅ alive\n"
+        f"Worker Prop (VPS #2):     {prop_h}\n"
+        f"Worker Personal (VPS #3): {pers_h}",
+        parse_mode="HTML",
+    )
+
+
+async def _cmd_news(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    try:
+        events = await asyncio.to_thread(_fetch_ff_events)
+    except Exception as exc:
+        await update.message.reply_text(f"FF calendar error: {exc}")
+        return
+
+    now     = datetime.now(timezone.utc)
+    horizon = now + timedelta(hours=4)
+    sgt_off = timedelta(hours=8)
+
+    ccy_to_pairs: dict[str, list[str]] = {}
+    for ticker, ccys in _TICKER_CURRENCIES.items():
+        for c in ccys:
+            ccy_to_pairs.setdefault(c, []).append(ticker)
+
+    relevant = []
+    for ev in events:
+        if ev.get("impact") != "High":
+            continue
+        t = ev.get("time_utc")
+        if t is None or not (now <= t <= horizon):
+            continue
+        ccy   = ev.get("currency", "")
+        pairs = ccy_to_pairs.get(ccy, [])
+        relevant.append((t, ccy, ev.get("title", ""), pairs))
+    relevant.sort(key=lambda x: x[0])
+
+    if not relevant:
+        await update.message.reply_text("No high-impact events in the next 4 hours for covered pairs.")
+        return
+
+    lines = ["<b>Upcoming High-Impact News (next 4h)</b>\n"]
+    for t, ccy, title, pairs in relevant:
+        sgt_str   = (t + sgt_off).strftime("%H:%M SGT")
+        pairs_str = ", ".join(pairs) if pairs else "—"
+        lines.append(f"{sgt_str} — {ccy}: {title}\n  Affects: {pairs_str}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def _cmd_suppressed(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    now     = datetime.now(timezone.utc)
+    sgt_off = timedelta(hours=8)
+    lines   = ["<b>Active Suppression Blackboard</b>\n"]
+
+    with _news_suppressed_lock:
+        news_active = {t: e for t, e in _news_suppressed_pairs.items() if e > now}
+    with _manual_suppress_lock:
+        manual_active = set(_manual_suppressed_pairs)
+
+    all_pairs = set(news_active) | manual_active
+    if not all_pairs:
+        await update.message.reply_text("No pairs currently suppressed.")
+        return
+
+    for ticker in sorted(all_pairs):
+        reasons = []
+        if ticker in news_active:
+            ends_sgt = (news_active[ticker] + sgt_off).strftime("%H:%M SGT")
+            reasons.append(f"news (until {ends_sgt})")
+        if ticker in manual_active:
+            reasons.append("manual /closepair")
+        lines.append(f"{ticker}: {', '.join(reasons)}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+async def _cmd_closepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    text = (update.message.text or "").strip().split()
+    if len(text) < 2:
+        await update.message.reply_text("Usage: /closepair EURUSD")
+        return
+    ticker = text[1].upper()
+    if ticker not in ALLOWED_PAIRS:
+        await update.message.reply_text(
+            f"Unknown pair: {ticker}\nAllowed: {', '.join(sorted(ALLOWED_PAIRS))}"
+        )
+        return
+
+    await asyncio.to_thread(_dispatch_close_ticker, ticker, "manual_closepair")
+    with _manual_suppress_lock:
+        _manual_suppressed_pairs.add(ticker)
+    _dispatch_news_suppress(ticker, datetime(9999, 12, 31, tzinfo=timezone.utc))
+
+    await update.message.reply_text(
+        f"<b>{ticker} closed and blocked.</b>\n\n"
+        f"All {ticker} positions closed on both accounts.\n"
+        f"New {ticker} signals suppressed until /resumepair {ticker}.",
+        parse_mode="HTML",
+    )
+    logger.warning("Manual closepair: %s", ticker)
+
+
+async def _cmd_resumepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    text = (update.message.text or "").strip().split()
+    if len(text) < 2:
+        await update.message.reply_text("Usage: /resumepair EURUSD")
+        return
+    ticker = text[1].upper()
+    if ticker not in ALLOWED_PAIRS:
+        await update.message.reply_text(
+            f"Unknown pair: {ticker}\nAllowed: {', '.join(sorted(ALLOWED_PAIRS))}"
+        )
+        return
+
+    with _manual_suppress_lock:
+        _manual_suppressed_pairs.discard(ticker)
+    _dispatch_news_clear(ticker)
+
+    await update.message.reply_text(
+        f"<b>{ticker} resumed.</b>\n\nNew {ticker} signals will now be accepted.",
+        parse_mode="HTML",
+    )
+    logger.info("Manual resumepair: %s", ticker)
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     await update.message.reply_text(
         "<b>TEE Bot — Commands</b>\n\n"
         "<b>Emergency</b>\n"
-        "/emergency — Force-close ALL positions on both accounts + halt immediately\n\n"
+        "/emergency — Force-close ALL positions on both accounts + halt\n\n"
         "<b>Phase &amp; Trading Control</b>\n"
         "/phase1 — Phase 1 (×0.20 lots, evaluation)\n"
         "/phase2 — Phase 2 (×0.70 lots, funded)\n"
         "/resume — Resume signal processing\n"
         "/stop — Halt signal processing (open trades continue to SL/TP)\n\n"
-        "<b>Status &amp; Config</b>\n"
-        "/equity — Live equity on both MT5 accounts\n"
+        "<b>Pair Control</b>\n"
+        "/closepair EURUSD — Close all positions for pair + block new signals\n"
+        "/resumepair EURUSD — Unblock pair and allow new signals\n\n"
+        "<b>Status &amp; Monitoring</b>\n"
+        "/positions — Open positions on both accounts\n"
+        "/equity — Live balance + equity on both accounts\n"
+        "/pnl — Today's P&amp;L vs daily cap and DD limits\n"
+        "/health — Ping all 4 layers\n"
+        "/news — Upcoming high-impact events (next 4h)\n"
+        "/suppressed — Active suppression blackboard\n"
         "/status — Live system status\n"
         "/propfirm — Current prop firm config\n"
         "/changepropfirm — Set up new prop firm (8-step wizard)\n"
@@ -1246,6 +1511,13 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("equity",        _cmd_equity))
     tg_app.add_handler(CommandHandler("emergency",     _cmd_emergency))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
+    tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
+    tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
+    tg_app.add_handler(CommandHandler("health",        _cmd_health))
+    tg_app.add_handler(CommandHandler("news",          _cmd_news))
+    tg_app.add_handler(CommandHandler("suppressed",    _cmd_suppressed))
+    tg_app.add_handler(CommandHandler("closepair",     _cmd_closepair))
+    tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
 
     async def _poll():
@@ -1334,6 +1606,17 @@ async def receive_signal(request: Request):
         logger.info("HALTED — dropped %s %s", payload.signal, payload.ticker)
         return JSONResponse({"status": "halted", "reason": "signal processing stopped"})
 
+    # News + manual suppression gate
+    now_utc = datetime.now(timezone.utc)
+    with _news_suppressed_lock:
+        news_block = payload.ticker in _news_suppressed_pairs and _news_suppressed_pairs[payload.ticker] > now_utc
+    with _manual_suppress_lock:
+        manual_block = payload.ticker in _manual_suppressed_pairs
+    if news_block or manual_block:
+        reason = "manual block (/closepair)" if manual_block else "news suppression window"
+        logger.info("SUPPRESSED — dropped %s %s (%s)", payload.signal, payload.ticker, reason)
+        return JSONResponse({"status": "suppressed", "reason": reason})
+
     logger.info("SIGNAL  %s %s | entry=%.5f  sl_pips=%.1f  phase=%d",
                 payload.signal, payload.ticker, payload.entry, payload.sl_pips, phase)
 
@@ -1371,9 +1654,8 @@ async def receive_signal(request: Request):
     phase_ratio      = PHASE_MULT.get(phase, PHASE_MULT[1])
     pers_dollar_risk = prop_dollar_risk * phase_ratio
 
-    # Step D — universal contract math: lots = dollar_risk / (sl_distance/point × tick_value)
-    sl_distance = abs(payload.entry - payload.sl)
-
+    # Step D — personal SL comes from webhook sl directly.
+    # Prop (inverse account) uses the other swing level as its SL.
     prop_point    = prop_info["point"]
     prop_tick_val = prop_info["trade_tick_value"]
     pers_point    = pers_info["point"]
@@ -1385,8 +1667,18 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
 
-    prop_dollar_per_lot = (sl_distance / prop_point) * prop_tick_val
-    pers_dollar_per_lot = (sl_distance / pers_point) * pers_tick_val
+    # Personal follows signal direction — SL is the webhook sl (swing level on signal side)
+    # Prop is inverse — SL is the opposite swing level
+    if payload.signal == "LONG":
+        prop_sl = payload.m15_swing_high  # prop SHORT stop: swing high above entry
+    else:
+        prop_sl = payload.m15_swing_low   # prop LONG stop: swing low below entry
+
+    sl_distance_pers = abs(payload.entry - payload.sl)
+    sl_distance_prop = abs(payload.entry - prop_sl)
+
+    prop_dollar_per_lot = (sl_distance_prop / prop_point) * prop_tick_val
+    pers_dollar_per_lot = (sl_distance_pers / pers_point) * pers_tick_val
 
     prop_lots = round(prop_dollar_risk / prop_dollar_per_lot, 2)
     pers_lots = round(pers_dollar_risk / pers_dollar_per_lot, 2)
@@ -1395,41 +1687,44 @@ async def receive_signal(request: Request):
     price_digits = prop_info["digits"]
 
     if payload.signal == "LONG":
-        prop_tp = round(payload.entry + sl_distance * _RR_PROP,     price_digits)
-        pers_sl = payload.m15_swing_high   # swing high above entry = SHORT stop
-        pers_tp = round(payload.entry - sl_distance * _RR_PERSONAL, price_digits)
+        # Personal: LONG — TP small above entry
+        # Prop: SHORT (inverse) — TP far below entry
+        pers_tp = round(payload.entry + sl_distance_pers * _RR_PERSONAL, price_digits)
+        prop_tp = round(payload.entry - sl_distance_prop * _RR_PROP,     price_digits)
     else:  # SHORT
-        prop_tp = round(payload.entry - sl_distance * _RR_PROP,     price_digits)
-        pers_sl = payload.m15_swing_low    # swing low below entry = LONG stop
-        pers_tp = round(payload.entry + sl_distance * _RR_PERSONAL, price_digits)
+        # Personal: SHORT — TP small below entry
+        # Prop: LONG (inverse) — TP far above entry
+        pers_tp = round(payload.entry - sl_distance_pers * _RR_PERSONAL, price_digits)
+        prop_tp = round(payload.entry + sl_distance_prop * _RR_PROP,     price_digits)
 
     logger.info(
         "LOTS  prop=%.2f lots ($%.2f risk)  personal=%.2f lots ($%.2f risk)  "
-        "phase=%d ×%.2f  baseline=%.2f  sl_dist=%.5f  "
+        "phase=%d ×%.2f  baseline=%.2f  sl_dist_pers=%.5f  sl_dist_prop=%.5f  "
         "prop point=%.5f tick=%.4f  pers point=%.5f tick=%.4f",
         prop_lots, prop_dollar_risk, pers_lots, pers_dollar_risk,
-        phase, phase_ratio, baseline_equity, sl_distance,
+        phase, phase_ratio, baseline_equity, sl_distance_pers, sl_distance_prop,
         prop_point, prop_tick_val, pers_point, pers_tick_val,
     )
 
+    # Personal follows signal direction; prop is inverse
     prop_ticket = {
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
-        "sl":           payload.sl,
+        "sl":           prop_sl,                   # m15_swing_high or m15_swing_low
         "tp":           prop_tp,
         "sl_pips":      payload.sl_pips,
-        "signal":       payload.signal,
+        "signal":       _invert(payload.signal),   # prop is inverse
         "lots":         prop_lots,
     }
     pers_ticket = {
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
-        "sl":           pers_sl,
+        "sl":           payload.sl,                # personal uses webhook sl directly
         "tp":           pers_tp,
         "sl_pips":      payload.sl_pips,
-        "signal":       _invert(payload.signal),
+        "signal":       payload.signal,            # personal follows signal
         "lots":         pers_lots,
     }
 
@@ -1453,16 +1748,16 @@ async def receive_signal(request: Request):
 
     await _telegram_alert(
         f"<b>Trade Fired — {payload.ticker}</b>\n\n"
-        f"<b>Prop:</b> {prop_ticket['signal']}  {prop_lots:.2f} lots\n"
+        f"<b>Personal (signal):</b> {pers_ticket['signal']}  {pers_lots:.2f} lots\n"
         f"Entry: {payload.entry:.{price_digits}f}  "
         f"SL: {payload.sl:.{price_digits}f}  "
-        f"TP: {prop_tp:.{price_digits}f}\n"
-        f"Risk: ${prop_dollar_risk:.2f}\n\n"
-        f"<b>Personal:</b> {pers_ticket['signal']}  {pers_lots:.2f} lots\n"
-        f"Entry: {payload.entry:.{price_digits}f}  "
-        f"SL: {pers_sl:.{price_digits}f}  "
         f"TP: {pers_tp:.{price_digits}f}\n"
         f"Risk: ${pers_dollar_risk:.2f}\n\n"
+        f"<b>Prop (inverse):</b> {prop_ticket['signal']}  {prop_lots:.2f} lots\n"
+        f"Entry: {payload.entry:.{price_digits}f}  "
+        f"SL: {prop_sl:.{price_digits}f}  "
+        f"TP: {prop_tp:.{price_digits}f}\n"
+        f"Risk: ${prop_dollar_risk:.2f}\n\n"
         f"Phase {phase}  |  Baseline: {baseline_equity:.2f}"
     )
 

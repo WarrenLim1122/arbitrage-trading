@@ -455,6 +455,30 @@ def _static_dd_guard_loop() -> None:
 
 # ── REP thread — equity query responder ───────────────────────────────────
 
+def _build_positions_reply() -> dict:
+    try:
+        with _mt5_lock:
+            positions = mt5.positions_get()
+        if not positions:
+            return {"positions": []}
+        result = []
+        for p in positions:
+            result.append({
+                "symbol":     p.symbol,
+                "type":       p.type,      # 0=LONG 1=SHORT
+                "volume":     p.volume,
+                "price_open": p.price_open,
+                "sl":         p.sl,
+                "tp":         p.tp,
+                "profit":     p.profit,
+                "magic":      p.magic,
+            })
+        return {"positions": result}
+    except Exception as exc:
+        logger.error("positions reply error: %s", exc)
+        return {"positions": [], "error": str(exc)}
+
+
 def _build_equity_reply(ticker: str) -> dict:
     try:
         with _mt5_lock:
@@ -505,11 +529,16 @@ def _rep_loop(ctx: zmq.Context) -> None:
 
         try:
             msg    = json.loads(raw)
+            query  = msg.get("query", "equity")
             ticker = msg.get("ticker", "EURUSD")
         except Exception:
+            query  = "equity"
             ticker = "EURUSD"
 
-        reply = _build_equity_reply(ticker)
+        if query == "positions":
+            reply = _build_positions_reply()
+        else:
+            reply = _build_equity_reply(ticker)
         try:
             sock.send_json(reply)
         except Exception as exc:
