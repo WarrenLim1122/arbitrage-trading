@@ -113,9 +113,6 @@ _TICKER_CURRENCIES: dict[str, frozenset[str]] = {
 _NEWS_AWARENESS_WINDOW   = 60   # minutes before news → scan / log only
 _NEWS_TRADING_BAN_WINDOW = 30   # minutes before news → close positions + suppress
 
-# RR constants — immutable across all phases
-_RR_PERSONAL = 0.27
-_RR_PROP     = 1.0 / _RR_PERSONAL   # ≈ 3.7037
 
 # ── Shared state ──────────────────────────────────────────────────────────
 _state_lock = threading.Lock()
@@ -1650,16 +1647,13 @@ async def receive_signal(request: Request):
         raise HTTPException(status_code=503, detail=msg)
 
     prop_dollar_risk = baseline_equity * PROP_RISK_PCT
-    # Step B+C — personal dollar risk scales by phase ratio
     phase_ratio      = PHASE_MULT.get(phase, PHASE_MULT[1])
-    pers_dollar_risk = prop_dollar_risk * phase_ratio
 
-    # Step D — personal SL comes from webhook sl directly.
-    # Prop (inverse account) uses the other swing level as its SL.
+    # Single SL distance from signal — both accounts use the same reference
+    sl_distance = abs(payload.entry - payload.sl)
+
     prop_point    = prop_info["point"]
     prop_tick_val = prop_info["trade_tick_value"]
-    pers_point    = pers_info["point"]
-    pers_tick_val = pers_info["trade_tick_value"]
 
     if prop_point <= 0 or prop_tick_val <= 0:
         msg = f"Invalid contract data from prop worker for {payload.ticker} — point={prop_point} tick_value={prop_tick_val}"
@@ -1667,43 +1661,32 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
 
-    # Personal follows signal direction — SL is the webhook sl (swing level on signal side)
-    # Prop is inverse — SL is the opposite swing level
-    if payload.signal == "LONG":
-        prop_sl = payload.m15_swing_high  # prop SHORT stop: swing high above entry
-    else:
-        prop_sl = payload.m15_swing_low   # prop LONG stop: swing low below entry
-
-    sl_distance_pers = abs(payload.entry - payload.sl)
-    sl_distance_prop = abs(payload.entry - prop_sl)
-
-    prop_dollar_per_lot = (sl_distance_prop / prop_point) * prop_tick_val
-    pers_dollar_per_lot = (sl_distance_pers / pers_point) * pers_tick_val
-
-    prop_lots = round(prop_dollar_risk / prop_dollar_per_lot, 2)
-    pers_lots = round(pers_dollar_risk / pers_dollar_per_lot, 2)
-
-    # Price rounding: use MT5 digits from prop broker
+    # Prop SL is the mirror of the signal SL: same distance from entry, opposite side
     price_digits = prop_info["digits"]
-
     if payload.signal == "LONG":
-        # Personal: LONG — TP small above entry
-        # Prop: SHORT (inverse) — TP far below entry
-        pers_tp = round(payload.entry + sl_distance_pers * _RR_PERSONAL, price_digits)
-        prop_tp = round(payload.entry - sl_distance_prop * _RR_PROP,     price_digits)
-    else:  # SHORT
-        # Personal: SHORT — TP small below entry
-        # Prop: LONG (inverse) — TP far above entry
-        pers_tp = round(payload.entry - sl_distance_pers * _RR_PERSONAL, price_digits)
-        prop_tp = round(payload.entry + sl_distance_prop * _RR_PROP,     price_digits)
+        prop_sl = round(payload.entry + sl_distance, price_digits)  # prop SHORT: SL above entry
+    else:
+        prop_sl = round(payload.entry - sl_distance, price_digits)  # prop LONG: SL below entry
+
+    # Step D — Lot sizing
+    # Prop: dollar_risk / (sl_distance / point × tick_value)
+    # Personal: prop_lots × phase_ratio
+    prop_dollar_per_lot = (sl_distance / prop_point) * prop_tick_val
+    prop_lots            = round(prop_dollar_risk / prop_dollar_per_lot, 2)
+    pers_lots            = round(prop_lots * phase_ratio, 2)
+    pers_dollar_risk     = round(prop_dollar_risk * phase_ratio, 2)  # display only
+
+    # TP: personal uses signal TP directly; prop mirrors it (same distance, opposite direction)
+    pers_tp = round(payload.tp, price_digits)
+    prop_tp = round(2 * payload.entry - payload.tp, price_digits)
 
     logger.info(
         "LOTS  prop=%.2f lots ($%.2f risk)  personal=%.2f lots ($%.2f risk)  "
-        "phase=%d ×%.2f  baseline=%.2f  sl_dist_pers=%.5f  sl_dist_prop=%.5f  "
-        "prop point=%.5f tick=%.4f  pers point=%.5f tick=%.4f",
+        "phase=%d ×%.2f  baseline=%.2f  sl_dist=%.5f  "
+        "prop point=%.5f tick=%.4f",
         prop_lots, prop_dollar_risk, pers_lots, pers_dollar_risk,
-        phase, phase_ratio, baseline_equity, sl_distance_pers, sl_distance_prop,
-        prop_point, prop_tick_val, pers_point, pers_tick_val,
+        phase, phase_ratio, baseline_equity, sl_distance,
+        prop_point, prop_tick_val,
     )
 
     # Personal follows signal direction; prop is inverse
@@ -1711,7 +1694,7 @@ async def receive_signal(request: Request):
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
-        "sl":           prop_sl,                   # m15_swing_high or m15_swing_low
+        "sl":           prop_sl,                   # mirror of signal SL (same distance, opposite side)
         "tp":           prop_tp,
         "sl_pips":      payload.sl_pips,
         "signal":       _invert(payload.signal),   # prop is inverse

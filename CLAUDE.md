@@ -83,45 +83,40 @@ These rules never change between Phase 1 and Phase 2.
 
 **RR per account (immutable):**
 
-| Account | RR | TP distance from entry |
-|---|---|---|
-| Personal | 0.27 | `sl_distance × 0.27` (signal direction) |
-| Prop Firm | 1/0.27 ≈ 3.7037 | `sl_distance × 3.7037` (inverse direction) |
+Both accounts share the same RR (0.27) — they mirror each other in opposite directions.
+TP is taken from the signal (payload.tp) for personal; prop mirrors it symmetrically across entry.
 
 **Lot sizing sequence:**
 
 ```
-# Personal SL = webhook sl (swing level on signal side)
-# Prop SL     = opposite swing level (m15_swing_high for LONG, m15_swing_low for SHORT)
-sl_distance_pers = abs(entry − payload.sl)
-sl_distance_prop = abs(entry − prop_sl)
+# Single SL distance — both accounts use the same reference from the signal
+sl_distance = abs(entry − payload.sl)
 
 Step A — Prop dollar risk (uses BASELINE equity, not live equity)
   prop_dollar_risk = baseline_equity × 0.0067
 
-Step B+C — Personal dollar risk
-  phase_ratio      = 0.20 (Phase 1)  |  0.70 (Phase 2)
-  pers_dollar_risk = prop_dollar_risk × phase_ratio
+Step B — Prop lots (from prop contract data)
+  prop_lots = prop_dollar_risk / ((sl_distance / prop_point) × prop_tick_value)
 
-Step D — Lots (each account uses its own SL distance and broker contract data)
-  prop_lots = prop_dollar_risk / ((sl_distance_prop / prop_point) × prop_tick_value)
-  pers_lots = pers_dollar_risk / ((sl_distance_pers / pers_point) × pers_tick_value)
+Step C — Personal lots (phase ratio applied to prop lots directly)
+  phase_ratio = 0.20 (Phase 1)  |  0.70 (Phase 2)
+  pers_lots   = prop_lots × phase_ratio
 ```
 
-**TP/SL computed by Layer 2 (not taken from webhook):**
+**TP/SL computed by Layer 2:**
 
 ```
 LONG signal:
-  personal: LONG   sl = payload.sl (last_ltf_sl, below entry)
-                   tp = entry + sl_distance_pers × 0.27
-  prop:     SHORT  sl = m15_swing_high (above entry = inverse stop)
-                   tp = entry − sl_distance_prop × 3.7037
+  personal: LONG   sl = payload.sl  (last_ltf_sl, below entry)
+                   tp = payload.tp  (from signal, entry + sl_distance × 0.27)
+  prop:     SHORT  sl = entry + sl_distance  (mirror above entry)
+                   tp = 2 × entry − payload.tp  (mirror below entry)
 
 SHORT signal:
-  personal: SHORT  sl = payload.sl (last_ltf_sh, above entry)
-                   tp = entry − sl_distance_pers × 0.27
-  prop:     LONG   sl = m15_swing_low (below entry = inverse stop)
-                   tp = entry + sl_distance_prop × 3.7037
+  personal: SHORT  sl = payload.sl  (last_ltf_sh, above entry)
+                   tp = payload.tp  (from signal, entry − sl_distance × 0.27)
+  prop:     LONG   sl = entry − sl_distance  (mirror below entry)
+                   tp = 2 × entry − payload.tp  (mirror above entry)
 ```
 
 **Phase definitions:**
@@ -131,7 +126,7 @@ SHORT signal:
 | 1 | Prop firm Evaluation (Not Funded) | 0.20 |
 | 2 | Prop firm Funded | 0.70 |
 
-Only the phase ratio changes. Direction, RR, and prop sizing are identical in both phases.
+Only the phase ratio changes. Direction and prop sizing are identical in both phases. RR is 0.27 for both accounts (mirrored).
 
 ---
 
@@ -544,7 +539,7 @@ systemctl status layer2        # verify running
 - **Prop firm config is wizard-only.** Never edit `propfirm_config.json` manually.
 - **Phase switching is Telegram-only.**
 - **Lot sizing uses baseline_equity × 0.67%, not live equity.** This keeps sizing stable regardless of open trade P&L.
-- **Personal dollar risk = prop dollar risk × phase ratio, then converted to lots using personal broker pip value.** `pers_lots = prop_lots × ratio` is wrong.
+- **Personal lots = prop lots × phase ratio.** `pers_lots = prop_lots × phase_ratio`. Both accounts use the same SL distance from the signal. Do NOT compute personal lots from a separate dollar risk / pip value formula.
 - **VPS #2 and #3 must have distinct public IPs.**
 - **ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open** between VPS #1 and VPS #2/#3.
 - **TradingView Premium** required for webhook alert delivery.
