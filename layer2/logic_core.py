@@ -110,7 +110,8 @@ _TICKER_CURRENCIES: dict[str, frozenset[str]] = {
     "NAS100": frozenset({"USD"}),
 }
 
-_NEWS_PRECLOSE_WINDOW = 60   # minutes before news → close positions
+_NEWS_AWARENESS_WINDOW   = 60   # minutes before news → scan / log only
+_NEWS_TRADING_BAN_WINDOW = 30   # minutes before news → close positions + suppress
 
 # RR constants — immutable across all phases
 _RR_PERSONAL = 0.27
@@ -127,7 +128,7 @@ _news_closed_events: set[tuple[str, str]] = set()
 _news_events_lock = threading.Lock()
 
 # Active news suppression window per pair.
-# ticker → suppression_end (UTC datetime): the end of the ±60min window.
+# ticker → suppression_end (UTC datetime): event_utc + 30 min (post-event ban end).
 # Layer 3 workers are notified via ZMQ so they can independently refuse execution.
 _news_suppressed_pairs: dict[str, datetime] = {}
 _news_suppressed_lock = threading.Lock()
@@ -338,8 +339,9 @@ def _dispatch_news_clear(ticker: str) -> None:
 def _run_news_preclose_check() -> None:
     global _news_closed_events
 
-    now    = datetime.now(timezone.utc)
-    window = timedelta(minutes=_NEWS_PRECLOSE_WINDOW)
+    now            = datetime.now(timezone.utc)
+    awareness_td   = timedelta(minutes=_NEWS_AWARENESS_WINDOW)
+    ban_td         = timedelta(minutes=_NEWS_TRADING_BAN_WINDOW)
 
     try:
         events = _fetch_ff_events()
@@ -364,8 +366,11 @@ def _run_news_preclose_check() -> None:
         _dispatch_news_clear(t)
         logger.info("NEWS suppression window closed for %s", t)
 
-    # ── News-first scan ───────────────────────────────────────────────────
-    # One pass through events; fan out to all affected pairs per event.
+    # ── Two-stage news-first scan ─────────────────────────────────────────
+    # Outer loop: events. Inner loop: pairs affected by that event's currency.
+    #
+    # Stage 1 (awareness zone, 31–60 min before): log only, no action.
+    # Stage 2 (ban zone, 0–30 min before + 0–30 min after): close + suppress ONCE.
     for event in events:
         if event.get("impact") != "High":
             continue
@@ -374,50 +379,68 @@ def _run_news_preclose_check() -> None:
         if event_utc is None:
             continue
 
-        time_to_event = event_utc - now
-        if not (timedelta(0) < time_to_event <= window):
+        time_to_event = event_utc - now   # positive = upcoming, negative = past
+        mins_to_event = time_to_event.total_seconds() / 60
+
+        # Skip events outside the awareness window and beyond the post-event ban.
+        if not (-_NEWS_TRADING_BAN_WINDOW <= mins_to_event <= _NEWS_AWARENESS_WINDOW):
             continue
 
-        # This upcoming high-impact event is inside the window.
-        # Determine which of our 9 pairs its currency affects.
         for ticker, currencies in _TICKER_CURRENCIES.items():
             if event.get("currency") not in currencies:
                 continue
 
+            # Stage 1 — awareness only (31–60 min away): log, no close, no suppress.
+            if mins_to_event > _NEWS_TRADING_BAN_WINDOW:
+                logger.info(
+                    "NEWS AWARENESS %s — [%s] %s @ %s UTC (%.0f min away, watch only)",
+                    ticker, event["currency"], event["title"],
+                    event_utc.strftime("%Y-%m-%d %H:%M"), mins_to_event,
+                )
+                continue
+
+            # Stage 2 — ban zone (≤30 min away or ≤30 min past): close + suppress ONCE.
             key = (ticker, event_utc.isoformat())
             with _news_events_lock:
                 if key in _news_closed_events:
                     continue
                 _news_closed_events.add(key)
 
-            # Update in-memory suppression window (extend if multiple events overlap).
-            suppression_end = event_utc + window
+            # Suppression ends 30 min after the event.
+            suppression_end = event_utc + ban_td
             with _news_suppressed_lock:
                 existing = _news_suppressed_pairs.get(ticker)
                 if existing is None or suppression_end > existing:
                     _news_suppressed_pairs[ticker] = suppression_end
 
-            # Notify Layer 3 — refuse new execution tickets for this pair.
+            # Tell Layer 3 to refuse new execution tickets for this pair.
             _dispatch_news_suppress(ticker, suppression_end)
 
             # Close any existing positions for this pair.
-            mins_left  = int(time_to_event.total_seconds() / 60)
+            if mins_to_event >= 0:
+                direction = f"in {int(mins_to_event)} min"
+            else:
+                direction = f"{int(abs(mins_to_event))} min ago"
             event_desc = (
                 f"[{event['currency']}] {event['title']} "
-                f"@ {event_utc.strftime('%Y-%m-%d %H:%M')} UTC ({mins_left} min away)"
+                f"@ {event_utc.strftime('%Y-%m-%d %H:%M')} UTC ({direction})"
             )
-            logger.warning("NEWS PRE-CLOSE %s — %s", ticker, event_desc)
+            logger.warning("NEWS BAN %s — %s", ticker, event_desc)
             _dispatch_close_ticker(ticker, f"pre_news_{ticker}")
             _alert_sync(
                 f"<b>News Pre-Close — {ticker}</b>\n\n"
                 f"{event_desc}\n\n"
-                f"Existing positions closed.\n"
-                f"New signals suppressed ±{_NEWS_PRECLOSE_WINDOW} min."
+                f"Positions closed. New signals blocked until "
+                f"{suppression_end.strftime('%H:%M')} UTC "
+                f"(event +{_NEWS_TRADING_BAN_WINDOW} min)."
             )
 
 
 def _news_preclose_loop() -> None:
-    logger.info("News pre-close monitor started (ForexFactory, ±%dmin window)", _NEWS_PRECLOSE_WINDOW)
+    logger.info(
+        "News pre-close monitor started (ForexFactory, awareness=%dmin, ban=%dmin)",
+        _NEWS_AWARENESS_WINDOW, _NEWS_TRADING_BAN_WINDOW,
+    )
     while True:
         time.sleep(60)
         try:

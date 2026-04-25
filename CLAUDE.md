@@ -286,15 +286,22 @@ When a kill fires: pushes `{"action": "FORCE_CLOSE", "reason": "..."}` to both Z
 
 **News Pre-Close Monitor (60s interval, background thread):**
 
-Runs independently of signal flow. Every 60 seconds, fetches Finnhub events and checks all 9 pairs. If a high-impact event affecting a pair's currencies is within 60 minutes:
-- Dispatches `CLOSE_TICKER` to both workers (closes only that pair's positions, not all positions).
-- Sends Telegram alert naming the event, pair, and minutes remaining.
-- Tracks `(ticker, event_time)` pairs already acted on — fires once per event, not every 60s.
-- Only operates when `FINNHUB_API_KEY` is set; logs a warning and exits if missing.
+Runs independently of signal flow. Two-stage design using ForexFactory data (no API key):
 
-`CLOSE_TICKER` is handled in Layer 3's PULL loop and bypasses the dormant guard (same as FORCE_CLOSE).
+| Window | Time to event | Action |
+|---|---|---|
+| Awareness | 31–60 min before | Log only — no position close, no suppression |
+| Ban | 0–30 min before event + 0–30 min after | One-time: close ticker positions + suppress new entries |
 
-Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `FINNHUB_API_KEY` (optional — disables pre-close if missing).
+- Deduped by `(ticker, event_utc.isoformat())` — fires exactly once per event per pair.
+- Suppression ends 30 min after the event (`suppression_end = event_utc + 30 min`).
+- `CLOSE_TICKER` dispatched to both workers; `NEWS_SUPPRESS` sent so Layer 3 rejects new tickets.
+- `NEWS_CLEAR` sent when suppression window expires (checked every 60s).
+- Sends Telegram alert on ban-zone trigger naming event, pair, and suppression end time.
+
+`CLOSE_TICKER`, `NEWS_SUPPRESS`, `NEWS_CLEAR` are handled in Layer 3's PULL loop and bypass the dormant guard.
+
+Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (Finnhub no longer used — ForexFactory is public).
 
 ---
 
@@ -478,6 +485,43 @@ uv run python layer3/worker_personal.py
 - `&&` does not work in PowerShell — run commands one at a time
 - noVNC clipboard: use the clipboard icon on the left sidebar, paste into the box, then right-click in PowerShell to paste
 - Workers on VPS #2/#3 run in PowerShell — do NOT close the PowerShell window. Closing the noVNC browser tab is safe.
+
+---
+
+## Telegram — Updating TELEGRAM_CHAT_ID (personal → group)
+
+The bot ignores messages from any chat ID not in `.env`. To move the bot to a Telegram group:
+
+**Step 1 — Stop Layer 2 on VPS #1** (so the bot stops consuming updates):
+```bash
+ssh root@152.42.213.98
+sudo systemctl stop layer2
+```
+
+**Step 2 — Send a message to the group** (from your phone or Telegram desktop):
+- Add @HedgeHog_TEEBot to the group (or it should already be a member).
+- Send any message in the group (e.g. "hello").
+
+**Step 3 — Fetch the update to get the group chat ID**:
+```bash
+# Still in the VPS #1 SSH session:
+source /root/arbitrage-trading/.env
+curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates" | python3 -m json.tool | grep '"id"'
+```
+Group chat IDs are **negative** numbers (e.g. `-1001234567890`). Use the one under `"chat"`.
+
+**Step 4 — Update .env and restart**:
+```bash
+OLD_ID=$(grep TELEGRAM_CHAT_ID /root/arbitrage-trading/.env | cut -d= -f2)
+NEW_ID=-1001234567890          # replace with your actual group chat ID
+sed -i "s/TELEGRAM_CHAT_ID=${OLD_ID}/TELEGRAM_CHAT_ID=${NEW_ID}/" /root/arbitrage-trading/.env
+sudo systemctl start layer2
+systemctl status layer2        # verify running
+```
+
+**Step 5 — Verify**: Send `/status` in the group. The bot should reply with system status.
+
+**Note**: The bot's `CHAT_ID` lock means commands from any other chat are silently ignored — the group ID must match exactly.
 
 ---
 
