@@ -89,40 +89,42 @@ TP is taken from the signal (payload.tp) for personal; prop mirrors it symmetric
 **Lot sizing sequence:**
 
 ```
-# TP distance drives lot sizing (size so prop earns prop_dollar_risk when TP hits)
-# SL distance is only used for the prop account's mirror SL placement
-tp_distance = abs(payload.tp − entry)
-sl_distance = abs(entry − payload.sl)   # prop SL mirror only
+# Funded account SL = signal TP → funded SL distance = tp_distance
+# SL > 0.5% filter is checked from personal account perspective (signal SL distance)
+tp_distance = abs(payload.tp − entry)    # funded SL distance
+sl_distance = abs(entry − payload.sl)    # personal SL distance (signal perspective)
 
 Step A — Prop dollar risk (uses BASELINE equity, not live equity)
   prop_dollar_risk = baseline_equity × 0.0067
 
-Step B — Prop lots (from prop contract data, sized to TP distance)
+Step B — Funded lots (sized so funded account risks prop_dollar_risk if its SL hits)
   prop_lots = prop_dollar_risk / ((tp_distance / prop_point) × prop_tick_value)
 
   Example (EURUSD): tp_distance=0.00054, point=0.00001, tick_value=$1/lot
     dollar_per_lot = (0.00054 / 0.00001) × $1 = $54
     prop_lots = $670 / $54 = 12.41 lots ✓
 
-Step C — Personal lots (phase ratio applied to prop lots directly)
+Step C — Personal lots (phase ratio applied to funded lots)
   phase_ratio = 0.20 (Phase 1)  |  0.70 (Phase 2)
   pers_lots   = prop_lots × phase_ratio
+  Example: 12.41 × 0.20 = 2.48 lots
 ```
 
 **TP/SL computed by Layer 2:**
 
 ```
-LONG signal:
-  personal: LONG   sl = payload.sl  (last_ltf_sl, below entry)
-                   tp = payload.tp  (from signal, entry + sl_distance × 0.27)
-  prop:     SHORT  sl = entry + sl_distance  (mirror above entry)
-                   tp = 2 × entry − payload.tp  (mirror below entry)
+For any signal direction (BUY or SELL):
+  personal: follows signal exactly
+    sl = payload.sl
+    tp = payload.tp
 
-SHORT signal:
-  personal: SHORT  sl = payload.sl  (last_ltf_sh, above entry)
-                   tp = payload.tp  (from signal, entry − sl_distance × 0.27)
-  prop:     LONG   sl = entry − sl_distance  (mirror below entry)
-                   tp = 2 × entry − payload.tp  (mirror above entry)
+  funded: exact swap of personal SL/TP (direction-agnostic)
+    sl = payload.tp   (signal TP becomes funded SL — tight side)
+    tp = payload.sl   (signal SL becomes funded TP — wide side)
+
+Example (BUY signal, entry=1.08500, sl=1.08300, tp=1.08554):
+  personal BUY:  sl=1.08300  tp=1.08554
+  funded   SELL: sl=1.08554  tp=1.08300
 ```
 
 **Phase definitions:**

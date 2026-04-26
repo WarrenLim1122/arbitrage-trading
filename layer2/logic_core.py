@@ -2362,8 +2362,10 @@ async def receive_signal(request: Request):
     prop_dollar_risk = baseline_equity * PROP_RISK_PCT
     phase_ratio      = PHASE_MULT.get(phase, PHASE_MULT[1])
 
-    sl_distance = abs(payload.entry - payload.sl)  # used for prop SL mirror only
-    tp_distance = abs(payload.tp   - payload.entry)  # used for lot sizing
+    # Personal account SL distance (signal perspective — used for lot sizing of funded account)
+    # Funded account SL = signal TP, so funded SL distance = tp_distance
+    sl_distance = abs(payload.entry - payload.sl)   # personal SL distance (signal perspective)
+    tp_distance = abs(payload.tp   - payload.entry) # funded SL distance = signal TP distance
 
     prop_point    = prop_info["point"]
     prop_tick_val = prop_info["trade_tick_value"]
@@ -2380,24 +2382,23 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=422, detail=msg)
 
-    # Prop SL is the mirror of the signal SL: same distance from entry, opposite side
+    # Funded account SL/TP are the exact swap of the personal account SL/TP:
+    #   Funded SL = signal TP  (tight side, 54 pipettes)
+    #   Funded TP = signal SL  (wide side, 200 pipettes)
+    # This is direction-agnostic — same formula for BUY and SELL signals.
     price_digits = prop_info["digits"]
-    if payload.signal == "LONG":
-        prop_sl = round(payload.entry + sl_distance, price_digits)  # prop SHORT: SL above entry
-    else:
-        prop_sl = round(payload.entry - sl_distance, price_digits)  # prop LONG: SL below entry
+    prop_sl = round(payload.tp, price_digits)   # funded SL = signal TP
+    prop_tp = round(payload.sl, price_digits)   # funded TP = signal SL
 
-    # Lot sizing — size to TP distance so prop account earns prop_dollar_risk at TP.
-    # Formula: lots = dollar_risk / (tp_distance / point × tick_value_per_lot)
-    # Personal: prop_lots × phase_ratio (applies the funded/personal account ratio).
+    # Lot sizing: funded account risks prop_dollar_risk if its SL hits.
+    # Funded SL distance = tp_distance (signal TP − entry = 54 pipettes).
+    # Formula: lots = dollar_risk / (funded_sl_distance / point × tick_value_per_lot)
     prop_dollar_per_lot = (tp_distance / prop_point) * prop_tick_val
     prop_lots            = round(prop_dollar_risk / prop_dollar_per_lot, 2)
     pers_lots            = round(prop_lots * phase_ratio, 2)
     pers_dollar_risk     = round(prop_dollar_risk * phase_ratio, 2)  # display only
 
-    # TP: personal uses signal TP directly; prop mirrors it (same distance, opposite direction)
-    pers_tp = round(payload.tp, price_digits)
-    prop_tp = round(2 * payload.entry - payload.tp, price_digits)
+    pers_tp = round(payload.tp, price_digits)   # personal TP = signal TP
 
     logger.info(
         "LOTS  prop=%.2f lots ($%.2f at TP)  personal=%.2f lots ($%.2f at TP)  "
@@ -2413,7 +2414,7 @@ async def receive_signal(request: Request):
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
-        "sl":           prop_sl,                   # mirror of signal SL (same distance, opposite side)
+        "sl":           prop_sl,                   # funded SL = signal TP
         "tp":           prop_tp,
         "sl_pips":      payload.sl_pips,
         "signal":       _invert(payload.signal),   # prop is inverse
