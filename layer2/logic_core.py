@@ -2362,8 +2362,8 @@ async def receive_signal(request: Request):
     prop_dollar_risk = baseline_equity * PROP_RISK_PCT
     phase_ratio      = PHASE_MULT.get(phase, PHASE_MULT[1])
 
-    # Single SL distance from signal — both accounts use the same reference
-    sl_distance = abs(payload.entry - payload.sl)
+    sl_distance = abs(payload.entry - payload.sl)  # used for prop SL mirror only
+    tp_distance = abs(payload.tp   - payload.entry)  # used for lot sizing
 
     prop_point    = prop_info["point"]
     prop_tick_val = prop_info["trade_tick_value"]
@@ -2374,6 +2374,12 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
 
+    if tp_distance <= 0:
+        msg = f"TP distance is zero for {payload.ticker} — tp={payload.tp} entry={payload.entry}"
+        logger.error(msg)
+        await _telegram_alert(msg)
+        raise HTTPException(status_code=422, detail=msg)
+
     # Prop SL is the mirror of the signal SL: same distance from entry, opposite side
     price_digits = prop_info["digits"]
     if payload.signal == "LONG":
@@ -2381,10 +2387,10 @@ async def receive_signal(request: Request):
     else:
         prop_sl = round(payload.entry - sl_distance, price_digits)  # prop LONG: SL below entry
 
-    # Step D — Lot sizing
-    # Prop: dollar_risk / (sl_distance / point × tick_value)
-    # Personal: prop_lots × phase_ratio
-    prop_dollar_per_lot = (sl_distance / prop_point) * prop_tick_val
+    # Lot sizing — size to TP distance so prop account earns prop_dollar_risk at TP.
+    # Formula: lots = dollar_risk / (tp_distance / point × tick_value_per_lot)
+    # Personal: prop_lots × phase_ratio (applies the funded/personal account ratio).
+    prop_dollar_per_lot = (tp_distance / prop_point) * prop_tick_val
     prop_lots            = round(prop_dollar_risk / prop_dollar_per_lot, 2)
     pers_lots            = round(prop_lots * phase_ratio, 2)
     pers_dollar_risk     = round(prop_dollar_risk * phase_ratio, 2)  # display only
@@ -2394,11 +2400,11 @@ async def receive_signal(request: Request):
     prop_tp = round(2 * payload.entry - payload.tp, price_digits)
 
     logger.info(
-        "LOTS  prop=%.2f lots ($%.2f risk)  personal=%.2f lots ($%.2f risk)  "
-        "phase=%d ×%.2f  baseline=%.2f  sl_dist=%.5f  "
+        "LOTS  prop=%.2f lots ($%.2f at TP)  personal=%.2f lots ($%.2f at TP)  "
+        "phase=%d ×%.2f  baseline=%.2f  tp_dist=%.5f  sl_dist=%.5f  "
         "prop point=%.5f tick=%.4f",
         prop_lots, prop_dollar_risk, pers_lots, pers_dollar_risk,
-        phase, phase_ratio, baseline_equity, sl_distance,
+        phase, phase_ratio, baseline_equity, tp_distance, sl_distance,
         prop_point, prop_tick_val,
     )
 

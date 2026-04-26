@@ -89,14 +89,20 @@ TP is taken from the signal (payload.tp) for personal; prop mirrors it symmetric
 **Lot sizing sequence:**
 
 ```
-# Single SL distance — both accounts use the same reference from the signal
-sl_distance = abs(entry − payload.sl)
+# TP distance drives lot sizing (size so prop earns prop_dollar_risk when TP hits)
+# SL distance is only used for the prop account's mirror SL placement
+tp_distance = abs(payload.tp − entry)
+sl_distance = abs(entry − payload.sl)   # prop SL mirror only
 
 Step A — Prop dollar risk (uses BASELINE equity, not live equity)
   prop_dollar_risk = baseline_equity × 0.0067
 
-Step B — Prop lots (from prop contract data)
-  prop_lots = prop_dollar_risk / ((sl_distance / prop_point) × prop_tick_value)
+Step B — Prop lots (from prop contract data, sized to TP distance)
+  prop_lots = prop_dollar_risk / ((tp_distance / prop_point) × prop_tick_value)
+
+  Example (EURUSD): tp_distance=0.00054, point=0.00001, tick_value=$1/lot
+    dollar_per_lot = (0.00054 / 0.00001) × $1 = $54
+    prop_lots = $670 / $54 = 12.41 lots ✓
 
 Step C — Personal lots (phase ratio applied to prop lots directly)
   phase_ratio = 0.20 (Phase 1)  |  0.70 (Phase 2)
