@@ -83,8 +83,9 @@ These rules never change between Phase 1 and Phase 2.
 
 **RR per account (immutable):**
 
-Both accounts share the same RR (0.27) — they mirror each other in opposite directions.
-TP is taken from the signal (payload.tp) for personal; prop mirrors it symmetrically across entry.
+Personal follows the signal exactly (SL and TP from webhook).
+Funded is the exact inverse: SL = signal TP, TP = signal SL.
+RR of 0.27 is baked into the signal at Layer 0 — Layer 2 does not recompute it.
 
 **Lot sizing sequence:**
 
