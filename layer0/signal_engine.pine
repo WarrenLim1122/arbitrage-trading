@@ -8,9 +8,9 @@ int   N_HTF = 2
 int   N_LTF = 6
 float RR    = 0.27
 
-float minStopPct = input.float(0.20, "Minimum Stop Loss %", minval=0.0, step=0.01,
+float minStopPct = input.float(0.50, "Minimum Stop Loss %", minval=0.0, step=0.01,
      tooltip="Skip trades if SL distance is less than this % of entry price.")
-float maxStopPct = input.float(2.00, "Maximum Stop Loss %", minval=0.0, step=0.01,
+float maxStopPct = input.float(10.00, "Maximum Stop Loss %", minval=0.0, step=0.01,
      tooltip="Skip trades if SL distance is greater than this % of entry price.")
 
 bool showLabels      = input.bool(true, "Show LTF Labels")
