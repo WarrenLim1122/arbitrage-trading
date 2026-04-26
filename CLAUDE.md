@@ -213,7 +213,8 @@ Only the phase ratio changes. Direction and prop sizing are identical in both ph
 | Command | Description |
 |---|---|
 | `/emergency` | **Nuclear button** — force-close ALL positions on both MT5 accounts immediately + halt |
-| `/changepropfirm` | 8-step wizard — collects raw prop firm limits, auto-applies buffers, saves config |
+| `/changepropfirm` | 9-step wizard — collects raw prop firm limits, auto-applies buffers, saves config |
+| `/consistency` | Show Phase 2 daily profit breakdown and consistency rule status |
 | `/propfirm` | Display current prop firm config |
 | `/equity` | Query live balance + equity from both MT5 accounts on demand |
 | `/positions` | Show all open positions on both accounts (ticker, direction, lots, entry, SL, TP, P&L) |
@@ -245,7 +246,7 @@ Every time a signal is successfully dispatched to both workers, a Telegram messa
 - Dollar risk for each account
 - Phase and baseline equity
 
-### /changepropfirm Wizard (8 steps)
+### /changepropfirm Wizard (9 steps)
 
 On-demand utility — only needed when switching prop firms, starting a new challenge, or resetting baseline equity. The config in `propfirm_config.json` persists across all restarts and can run unchanged for months.
 
@@ -257,6 +258,7 @@ Asks for the firm's **raw** values. Buffers are applied automatically before sav
 | Max DD Overall % | e.g. 6% | no buffer | 6% |
 | Profit Target % | e.g. 10% | none | 10% |
 | Daily Profit Cap | computed internally | `profit_target × 0.25` | 2.5% |
+| Consistency Threshold % | e.g. 30% | use 29% (1% safety buffer) | 29% |
 
 `drawdown_is_static` and `raw_spread_account` must be `true`. If either is entered as `false`/`no`/`dynamic`, the wizard warns and requires explicit `CONFIRM` before accepting — both are flagged in the review summary.
 
@@ -270,8 +272,16 @@ Queries **prop firm worker equity only** via ZMQ REQ/REP. All kill conditions ar
 |---|---|---|---|---|
 | Kill 1 | All | Daily from `day_start_equity` | daily loss ≥ `max_drawdown_daily_pct` (2%) | FORCE_CLOSE both + halt |
 | Kill 2 | All | Overall from `baseline_equity` | overall loss ≥ `max_drawdown_overall_pct` | FORCE_CLOSE both + **permanent halt** |
-| Kill 3 | **All** | Daily from `day_start_equity` | daily profit ≥ `daily_profit_cap_pct` (2.5%) | FORCE_CLOSE both + halt (prop firm consistency rule) |
-| Kill 4 | **All** | Overall from `baseline_equity` | overall profit ≥ `profit_target_pct` (10%) | FORCE_CLOSE both + **permanent halt** → /phase2 to continue |
+| Kill 3 | All | Daily from `day_start_equity` | daily profit ≥ `daily_profit_cap_pct` (2.5%) | FORCE_CLOSE both + halt |
+| Kill 4 | All | Overall from `baseline_equity` | overall profit ≥ `profit_target_pct` (10%) | FORCE_CLOSE both + **permanent halt** → /phase2 to continue |
+| Kill 5 | **Phase 2 only** | Consistency log | `max_day_profit / total_profit < consistency_threshold_pct` (default 29%) AND ≥2 profitable days | FORCE_CLOSE both + **permanent halt** → submit payout claim → /phase2 + /resume |
+
+**Kill 5 — Consistency Rule details:**
+- Tracks daily profits in `config/consistency_log.json` during Phase 2. Each day's profit is locked in at the 11:00 SGT reset.
+- Today's live P&L (including open positions) is included so positions exit the moment the rule is satisfied mid-day.
+- When triggered: Telegram sends structured table of daily breakdown + prompt to submit payout claim.
+- Log resets on each `/phase2` confirm (new funded cycle).
+- `consistency_threshold_pct` is configurable per firm (asked in `/changepropfirm` wizard, default 29%). A 29% threshold with a 2.5% daily cap guarantees the rule is met around ~8.6% total profit — before Kill 4's 10% target.
 
 When a kill fires: pushes `{"action": "FORCE_CLOSE", "reason": "..."}` to both ZMQ PUSH sockets + Telegram alert.
 
@@ -295,8 +305,9 @@ Before dispatching any signal, Layer 2 queries prop worker position count. Prop 
 
 ### SGT Curfew Gate (inline in `/signal` endpoint)
 
-- Signals 00:00–08:59 SGT or Saturday/Sunday: rejected, no state change to `active`.
-- At curfew transition: monitor thread dispatches FORCE_CLOSE with `halt=False` — positions closed, `active` flag untouched. Trading resumes automatically at 09:00 SGT on next weekday.
+- Signals 00:00–11:59 SGT or Saturday/Sunday: rejected, no state change to `active`.
+- At curfew transition: monitor thread dispatches FORCE_CLOSE with `halt=False` — positions closed, `active` flag untouched. Trading resumes automatically at 12:00 SGT on next weekday.
+- **Trading window: 12:00–00:00 SGT, weekdays only** (12 hours per day). Chosen so the 11:00 SGT prop-firm daily reset is safely behind the open before trading begins.
 
 ### Signal Processing Sequence
 
@@ -389,18 +400,19 @@ Env vars: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `ZMQ_PULL_ADDR`, `ZMQ_REP_A
 
 ```json
 {
-  "propfirm_name":            "FundingPips",
-  "profit_target_pct":        10.0,
-  "max_drawdown_overall_pct": 5.0,
-  "max_drawdown_daily_pct":   2.0,
-  "drawdown_is_static":       true,
-  "raw_spread_account":       true,
-  "profit_sharing_pct":       80.0,
-  "min_profit_days":          3,
-  "daily_profit_cap_pct":     2.5,
-  "baseline_equity":          100000.0,
-  "day_start_equity":         100000.0,
-  "day_start_date_utc":       "2026-04-25"
+  "propfirm_name":             "FundingPips",
+  "profit_target_pct":         10.0,
+  "max_drawdown_overall_pct":  5.0,
+  "max_drawdown_daily_pct":    2.0,
+  "drawdown_is_static":        true,
+  "raw_spread_account":        true,
+  "profit_sharing_pct":        80.0,
+  "min_profit_days":           3,
+  "daily_profit_cap_pct":      2.5,
+  "consistency_threshold_pct": 29.0,
+  "baseline_equity":           100000.0,
+  "day_start_equity":          100000.0,
+  "day_start_date_utc":        "2026-04-25"
 }
 ```
 
@@ -572,10 +584,10 @@ systemctl status layer2        # verify running
 | SGT | UTC | Event |
 |---|---|---|
 | 00:00 SGT | 16:00 UTC (prev day) | Curfew begins — force-close all positions |
-| 09:00 SGT | 01:00 UTC | Trading resumes (weekdays only) |
-| 11:00 SGT | 03:00 UTC | Prop firm daily reset — day_start_equity resets |
+| 11:00 SGT | 03:00 UTC | Prop firm daily reset — day_start_equity resets, completed day profit locked to consistency log |
+| 12:00 SGT | 04:00 UTC | Trading resumes (weekdays only) |
 | Saturday 00:00 SGT | Friday 16:00 UTC | Weekend dormant begins |
-| Monday 09:00 SGT | Monday 01:00 UTC | Weekend dormant ends |
+| Monday 12:00 SGT | Monday 04:00 UTC | Weekend dormant ends |
 
 ---
 

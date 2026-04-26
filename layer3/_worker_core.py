@@ -6,7 +6,7 @@ VPS #3 (personal — Fusion Markets). Configured entirely via env vars.
 
 New in v2:
   - FORCE_CLOSE message type: closes all open positions on this MT5 account.
-  - SGT kill switch thread: force-closes at midnight SGT, dormant until 09:00 SGT.
+  - SGT kill switch thread: force-closes at midnight SGT, dormant until 12:00 SGT.
     Dormant window also covers weekends (Sat–Sun full day).
   - Weekday guard: incoming execution tickets are silently dropped while dormant.
 
@@ -74,7 +74,7 @@ _mt5_lock            = threading.Lock()
 _dormant_lock        = threading.Lock()
 _dd_params_lock      = threading.Lock()
 _news_suppressed_lock = threading.Lock()
-_dormant             = False             # True during 00:00–08:59 SGT and weekends
+_dormant             = False             # True during 00:00–11:59 SGT and weekends
 
 _filling_cache: dict[str, int] = {}
 _last_curfew_close_date: date | None = None
@@ -315,7 +315,7 @@ def _sgt_scheduler() -> None:
         weekday  = now_sgt.weekday()   # 0=Mon … 6=Sun
         today    = now_sgt.date()
 
-        in_curfew  = h < 9             # 00:00–08:59 SGT
+        in_curfew  = h < 12            # 00:00–11:59 SGT
         is_weekend = weekday >= 5      # Sat or Sun
 
         should_be_dormant = in_curfew or is_weekend

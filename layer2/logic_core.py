@@ -14,8 +14,8 @@ Telegram bot responsibilities:
 Equity monitor (background thread, 30 s interval):
   - Kill 1 (all phases) : daily loss ≥ max_drawdown_daily_pct     → FORCE_CLOSE + halt
   - Kill 2 (all phases) : overall loss ≥ max_drawdown_overall_pct → FORCE_CLOSE + permanent halt (no buffer — exact user input)
-  - Kill 3 (Phase 2)    : daily profit ≥ daily_profit_cap_pct     → FORCE_CLOSE + halt
-  - Kill 4 (Phase 1)    : overall profit ≥ profit_target_pct      → FORCE_CLOSE + permanent halt
+  - Kill 3 (All phases) : daily profit ≥ daily_profit_cap_pct     → FORCE_CLOSE + halt
+  - Kill 4 (All phases) : overall profit ≥ profit_target_pct      → FORCE_CLOSE + permanent halt
 
 SGT kill switch (enforced inline in /signal endpoint):
   - Rejects signals 00:00–08:59 SGT and on weekends
@@ -67,10 +67,11 @@ logging.basicConfig(
 logger = logging.getLogger("layer2")
 
 # ── Paths ─────────────────────────────────────────────────────────────────
-ROOT                 = Path(__file__).parent.parent
-PHASE_CONFIG_PATH    = ROOT / "config" / "phase_config.json"
-RISK_PARAMS_PATH     = ROOT / "config" / "risk_params.json"
-PROPFIRM_CONFIG_PATH = ROOT / "config" / "propfirm_config.json"
+ROOT                   = Path(__file__).parent.parent
+PHASE_CONFIG_PATH      = ROOT / "config" / "phase_config.json"
+RISK_PARAMS_PATH       = ROOT / "config" / "risk_params.json"
+PROPFIRM_CONFIG_PATH   = ROOT / "config" / "propfirm_config.json"
+CONSISTENCY_LOG_PATH   = ROOT / "config" / "consistency_log.json"
 
 # ── Timezone ──────────────────────────────────────────────────────────────
 SGT = ZoneInfo("Asia/Singapore")
@@ -157,6 +158,114 @@ def _load_propfirm() -> dict:
 def _save_propfirm(data: dict) -> None:
     with PROPFIRM_CONFIG_PATH.open("w") as f:
         json.dump(data, f, indent=2)
+
+
+# ── Consistency log ───────────────────────────────────────────────────────
+# Tracks per-day profits for Phase 2. Each entry: {date, profit_usd}.
+# Only positive-profit days are stored. Reset at the start of each Phase 2.
+
+_consistency_log: dict = {"days": []}
+_cons_lock = threading.Lock()
+
+
+def _load_consistency_log() -> None:
+    global _consistency_log
+    if CONSISTENCY_LOG_PATH.exists():
+        with CONSISTENCY_LOG_PATH.open() as f:
+            _consistency_log = json.load(f)
+    else:
+        _consistency_log = {"days": []}
+
+
+def _save_consistency_log() -> None:
+    CONSISTENCY_LOG_PATH.parent.mkdir(exist_ok=True)
+    with CONSISTENCY_LOG_PATH.open("w") as f:
+        json.dump(_consistency_log, f, indent=2)
+
+
+def _reset_consistency_log() -> None:
+    with _cons_lock:
+        _consistency_log["days"] = []
+        _save_consistency_log()
+    logger.info("Consistency log reset for new Phase 2 cycle")
+
+
+def _record_day_profit(date_str: str, profit_usd: float) -> None:
+    """Append a completed trading day's profit. Skips duplicates and non-positive values."""
+    if profit_usd <= 0:
+        return
+    with _cons_lock:
+        days = _consistency_log.setdefault("days", [])
+        if any(d["date"] == date_str for d in days):
+            return
+        days.append({"date": date_str, "profit_usd": round(profit_usd, 2)})
+        _save_consistency_log()
+    logger.info("Consistency: recorded day %s  profit=%.2f", date_str, profit_usd)
+
+
+def _build_consistency_table(
+    locked_days: list[dict],
+    today_profit: float,
+    today_date: str,
+    baseline: float,
+    threshold: float,
+) -> tuple[str, float, float, float, bool]:
+    """Format the consistency table for Telegram.
+
+    Returns (table_str, total, max_day_val, ratio_pct, rule_met).
+    rule_met is True only when len >= 2 AND ratio_pct < threshold.
+    """
+    all_days: list[dict] = [
+        {"date": d["date"], "profit_usd": d["profit_usd"], "live": False}
+        for d in locked_days if d["profit_usd"] > 0
+    ]
+    if today_profit > 0:
+        all_days.append({"date": today_date, "profit_usd": today_profit, "live": True})
+
+    if not all_days:
+        return "No profitable days recorded yet.", 0.0, 0.0, 100.0, False
+
+    total       = sum(d["profit_usd"] for d in all_days)
+    max_day_val = max(d["profit_usd"] for d in all_days)
+    ratio_pct   = max_day_val / total * 100 if total > 0 else 100.0
+    rule_met    = len(all_days) >= 2 and ratio_pct < threshold
+
+    header = f"{'':1}{'Day':<5} {'Date':<10} {'Profit ($)':>12}  {'%Base':>6}  {'%Total':>7}"
+    sep    = "─" * 52
+    rows   = [header, sep]
+
+    for i, d in enumerate(all_days, 1):
+        p         = d["profit_usd"]
+        pct_base  = p / baseline * 100 if baseline > 0 else 0.0
+        pct_total = p / total * 100
+        is_max    = abs(p - max_day_val) < 0.01
+        flag      = "★" if is_max else " "
+        live_tag  = "~" if d["live"] else " "
+        try:
+            date_str = datetime.fromisoformat(d["date"]).strftime("%b %d")
+        except Exception:
+            date_str = d["date"][:6]
+        rows.append(
+            f"{flag}D{i:<4} {date_str:<10} ${p:>10,.2f}  "
+            f"{pct_base:>+5.2f}%  {pct_total:>6.1f}%{live_tag}"
+        )
+
+    overall_pct = total / baseline * 100 if baseline > 0 else 0.0
+    rows.append(sep)
+    rows.append(f" {'Total':<14} ${total:>10,.2f}  {overall_pct:>+5.2f}%")
+    rows.append(f" Largest day : {ratio_pct:.1f}%   Threshold: < {threshold:.1f}%")
+    rows.append(f" Status      : {'RULE MET ✓' if rule_met else 'not met yet'}")
+
+    legend = []
+    if any(d["live"] for d in all_days):
+        legend.append("~ today's live P&L (unrealised included)")
+    if any(abs(d["profit_usd"] - max_day_val) < 0.01 for d in all_days):
+        legend.append("★ largest day")
+    if legend:
+        rows.append("")
+        rows.extend(f" {ln}" for ln in legend)
+
+    return "\n".join(rows), total, max_day_val, ratio_pct, rule_met
 
 
 _phase_state: dict = _load_phase()
@@ -249,7 +358,7 @@ def _propfirm_day(now_sgt: datetime) -> str:
 
 def _is_sgt_curfew() -> bool:
     now = _sgt_now()
-    return now.hour < 9 or now.weekday() >= 5
+    return now.hour < 12 or now.weekday() >= 5
 
 
 # ── Telegram alert (sync — safe to call from any thread) ──────────────────
@@ -638,14 +747,14 @@ def _run_equity_check() -> None:
         return
 
     now_sgt  = _sgt_now()
-    curfew   = now_sgt.hour < 9 or now_sgt.weekday() >= 5
+    curfew   = now_sgt.hour < 12 or now_sgt.weekday() >= 5
     today    = now_sgt.date()
 
     if curfew:
         if _last_curfew_close_date != today:
             logger.info("Monitor: SGT curfew transition — dispatching force-close (positions only)")
             _dispatch_force_close("sgt_curfew", halt=False)
-            _alert_sync("<b>SGT Curfew</b> — All positions closed.\nResumes 09:00 SGT on next weekday.")
+            _alert_sync("<b>SGT Curfew</b> — All positions closed.\nResumes 12:00 SGT on next weekday.")
             _last_curfew_close_date = today
         return
 
@@ -727,6 +836,10 @@ def _run_equity_check() -> None:
     # Reset day-start equity when the prop firm's 11:00 SGT window rolls over
     stored_date = pf.get("day_start_date_utc", "")
     if stored_date != _propfirm_day(now_sgt):
+        # Lock completed day's profit into consistency log (Phase 2 only)
+        if phase == 2 and stored_date:
+            day_profit = prop_equity - pf.get("day_start_equity", prop_equity)
+            _record_day_profit(stored_date, day_profit)
         _update_day_start(prop_equity)
         return
 
@@ -820,14 +933,49 @@ def _run_equity_check() -> None:
             logger.warning(msg)
             _dispatch_force_close("profit_target", halt=True, permanent=True)
             _alert_sync(msg)
+            return
+
+    # Kill 5 — Consistency Rule (Phase 2 only)
+    # Fires when the largest single profitable day falls below the threshold % of total profit.
+    # Includes today's live running P&L so positions are closed the moment the rule is satisfied.
+    if phase == 2:
+        cons_threshold = pf.get("consistency_threshold_pct", 0.0)
+        if cons_threshold > 0:
+            with _cons_lock:
+                locked_days = list(_consistency_log.get("days", []))
+            today_running = prop_equity - day_start if day_start > 0 else 0.0
+            today_date_str = _propfirm_day(now_sgt)
+
+            table_str, total, max_day_val, ratio_pct, rule_met = _build_consistency_table(
+                locked_days, today_running, today_date_str,
+                baseline, cons_threshold,
+            )
+
+            if rule_met:
+                firm = pf.get("propfirm_name", "prop firm")
+                overall_pct = total / baseline * 100 if baseline > 0 else 0.0
+                msg = (
+                    f"<b>KILL 5 — Consistency Rule Met</b>\n\n"
+                    f"All positions closed. Trading halted.\n\n"
+                    f"<pre>{table_str}</pre>\n\n"
+                    f"<b>Overall profit: {overall_pct:.2f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
+                    f"<b>Action required:</b>\n"
+                    f"Log in to <b>{firm}</b> and submit your\n"
+                    f"profit share withdrawal claim now.\n\n"
+                    f"Send /phase2 + /resume to start a new cycle."
+                )
+                logger.warning("KILL 5 — consistency rule met: %.1f%% < %.1f%%", ratio_pct, cons_threshold)
+                _dispatch_force_close("consistency_rule", halt=True, permanent=True)
+                _alert_sync(msg)
 
 
 # ── Telegram wizard — /changepropfirm ────────────────────────────────────
 
 (PF_NAME, PF_PROFIT_TARGET, PF_MAX_DD_OVERALL, PF_MAX_DD_DAILY,
- PF_DD_TYPE, PF_RAW_SPREAD, PF_PROFIT_SHARE, PF_MIN_DAYS, PF_CONFIRM) = range(9)
+ PF_DD_TYPE, PF_RAW_SPREAD, PF_PROFIT_SHARE, PF_MIN_DAYS,
+ PF_CONSISTENCY, PF_CONFIRM) = range(10)
 
-(P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_CONFIRM) = range(9, 13)
+(P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_CONFIRM) = range(10, 14)
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
@@ -1022,6 +1170,29 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text("Invalid — enter a whole number (e.g. 5):")
         return PF_MIN_DAYS
     _wizard_data["min_profit_days"] = v
+    await update.message.reply_text(
+        "<b>Step 9 of 9</b> — Consistency Rule Threshold\n\n"
+        "When the largest single profitable day falls below this % of total profit, "
+        "the system halts and prompts you to submit a payout claim.\n\n"
+        "Most prop firms require the largest day &lt; 30% of total profit.\n"
+        "We default to <b>29%</b> as a 1% safety buffer.\n\n"
+        "Enter a % between 1 and 50, or reply <code>29</code> to use the default:",
+        parse_mode="HTML",
+    )
+    return PF_CONSISTENCY
+
+
+async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        v = float(update.message.text.strip())
+        assert 1.0 <= v <= 50.0
+    except Exception:
+        await update.message.reply_text(
+            "Invalid — enter a number between 1 and 50 (e.g. <code>29</code>):",
+            parse_mode="HTML",
+        )
+        return PF_CONSISTENCY
+    _wizard_data["consistency_threshold_pct"] = v
 
     eff = _apply_buffers(_wizard_data)
     dd_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["drawdown_is_static"] else ""
@@ -1035,12 +1206,14 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         f"<b>Drawdown Type:</b> {'Static' if _wizard_data['drawdown_is_static'] else 'Dynamic'}{dd_flag}\n"
         f"<b>Raw Spread Acct:</b> {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
         f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']}%\n"
-        f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n\n"
+        f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n"
+        f"<b>Consistency Threshold:</b> {v}%\n\n"
         f"<b>Kill conditions:</b>\n"
         f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']}% → close all + halt\n"
         f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}% from baseline → close all + <b>permanent halt</b>\n"
-        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}% (Phase 2) → close all + halt\n"
-        f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']}% (Phase 1) → permanent halt\n\n"
+        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}% → close all + halt\n"
+        f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']}% → permanent halt\n"
+        f"Kill 5 — consistency: largest day &lt; {v}% of total → permanent halt <i>(Phase 2 only)</i>\n\n"
         f"<i>Baseline equity will be fetched live from MT5 on confirm.</i>\n\n"
         f"Reply <b>YES</b> to save  |  <b>NO</b> to cancel"
     )
@@ -1073,31 +1246,34 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             parse_mode="HTML",
         )
 
+    cons_threshold = _wizard_data.get("consistency_threshold_pct", 29.0)
     with _pf_lock:
         _propfirm.update({
-            "propfirm_name":            _wizard_data["propfirm_name"],
-            "profit_target_pct":        _wizard_data["profit_target_pct"],
-            "max_drawdown_overall_pct": eff["max_drawdown_overall_pct"],
-            "max_drawdown_daily_pct":   eff["max_drawdown_daily_pct"],
-            "drawdown_is_static":       _wizard_data["drawdown_is_static"],
-            "raw_spread_account":       _wizard_data["raw_spread_account"],
-            "profit_sharing_pct":       _wizard_data["profit_sharing_pct"],
-            "min_profit_days":          _wizard_data["min_profit_days"],
-            "daily_profit_cap_pct":     eff["daily_profit_cap_pct"],
-            "baseline_equity":          baseline,
-            "day_start_equity":         baseline,
-            "day_start_date_utc":       _propfirm_day(_sgt_now()),
+            "propfirm_name":              _wizard_data["propfirm_name"],
+            "profit_target_pct":          _wizard_data["profit_target_pct"],
+            "max_drawdown_overall_pct":   eff["max_drawdown_overall_pct"],
+            "max_drawdown_daily_pct":     eff["max_drawdown_daily_pct"],
+            "drawdown_is_static":         _wizard_data["drawdown_is_static"],
+            "raw_spread_account":         _wizard_data["raw_spread_account"],
+            "profit_sharing_pct":         _wizard_data["profit_sharing_pct"],
+            "min_profit_days":            _wizard_data["min_profit_days"],
+            "daily_profit_cap_pct":       eff["daily_profit_cap_pct"],
+            "consistency_threshold_pct":  cons_threshold,
+            "baseline_equity":            baseline,
+            "day_start_equity":           baseline,
+            "day_start_date_utc":         _propfirm_day(_sgt_now()),
         })
         # Store raw Phase 1 values for /phase2 wizard (raw = before buffers, what the firm states)
         _propfirm.setdefault("phase_configs", {})["1"] = {
-            "propfirm_name":            _wizard_data["propfirm_name"],
-            "profit_target_pct":        _wizard_data["profit_target_pct"],
-            "max_drawdown_overall_pct": _wizard_data["max_drawdown_overall_pct"],
-            "max_drawdown_daily_pct":   _wizard_data["max_drawdown_daily_pct"],
-            "drawdown_is_static":       _wizard_data["drawdown_is_static"],
-            "raw_spread_account":       _wizard_data["raw_spread_account"],
-            "profit_sharing_pct":       _wizard_data["profit_sharing_pct"],
-            "min_profit_days":          _wizard_data["min_profit_days"],
+            "propfirm_name":              _wizard_data["propfirm_name"],
+            "profit_target_pct":          _wizard_data["profit_target_pct"],
+            "max_drawdown_overall_pct":   _wizard_data["max_drawdown_overall_pct"],
+            "max_drawdown_daily_pct":     _wizard_data["max_drawdown_daily_pct"],
+            "drawdown_is_static":         _wizard_data["drawdown_is_static"],
+            "raw_spread_account":         _wizard_data["raw_spread_account"],
+            "profit_sharing_pct":         _wizard_data["profit_sharing_pct"],
+            "min_profit_days":            _wizard_data["min_profit_days"],
+            "consistency_threshold_pct":  cons_threshold,
         }
         _save_propfirm(_propfirm)
 
@@ -1163,14 +1339,15 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # Ordered field definitions used to display and collect Phase 2 settings.
 # Each entry: (1-based index, config_key, display_name, input_type)
 _P2_FIELD_DEFS = [
-    (1, "propfirm_name",            "Propfirm name",       "str"),
-    (2, "profit_target_pct",        "Profit target %",     "float_pos"),
-    (3, "max_drawdown_overall_pct", "Max DD overall %",    "float_pos"),
-    (4, "max_drawdown_daily_pct",   "Max DD daily %",      "float_pos"),
-    (5, "drawdown_is_static",       "Drawdown type",       "static_dynamic"),
-    (6, "raw_spread_account",       "Raw spread account",  "yes_no"),
-    (7, "profit_sharing_pct",       "Profit sharing %",    "float_pos"),
-    (8, "min_profit_days",          "Min profit days",     "int_nn"),
+    (1, "propfirm_name",             "Propfirm name",              "str"),
+    (2, "profit_target_pct",         "Profit target %",            "float_pos"),
+    (3, "max_drawdown_overall_pct",  "Max DD overall %",           "float_pos"),
+    (4, "max_drawdown_daily_pct",    "Max DD daily %",             "float_pos"),
+    (5, "drawdown_is_static",        "Drawdown type",              "static_dynamic"),
+    (6, "raw_spread_account",        "Raw spread account",         "yes_no"),
+    (7, "profit_sharing_pct",        "Profit sharing %",           "float_pos"),
+    (8, "min_profit_days",           "Min profit days",            "int_nn"),
+    (9, "consistency_threshold_pct", "Consistency threshold %",    "float_pos"),
 ]
 _P2_FIELD_BY_IDX: dict[int, tuple] = {d[0]: d for d in _P2_FIELD_DEFS}
 
@@ -1182,7 +1359,8 @@ def _p2_display(key: str, value) -> str:
         return "Yes" if value else "No"
     if key == "max_drawdown_daily_pct":
         return f"{value}% (enforced at {round(value - 1.0, 2)}% after −1pp buffer)"
-    if key in ("profit_target_pct", "max_drawdown_overall_pct", "profit_sharing_pct"):
+    if key in ("profit_target_pct", "max_drawdown_overall_pct",
+               "profit_sharing_pct", "consistency_threshold_pct"):
         return f"{value}%"
     return str(value)
 
@@ -1215,7 +1393,9 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     _p2_wizard_data.clear()
     _p2_wizard_data["phase1_config"] = dict(phase1_cfg)
-    _p2_wizard_data["new_config"]    = dict(phase1_cfg)
+    new_cfg = dict(phase1_cfg)
+    new_cfg.setdefault("consistency_threshold_pct", 29.0)
+    _p2_wizard_data["new_config"] = new_cfg
 
     block = _p2_settings_block(phase1_cfg)
     await update.message.reply_text(
@@ -1237,7 +1417,7 @@ async def _p2_same_or_diff(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(
             f"<pre>{block}</pre>\n\n"
             f"Which settings to change? Reply with numbers separated by spaces.\n"
-            f"Example: <code>2 4</code>",
+            f"Example: <code>2 4</code> — numbers 1–9",
             parse_mode="HTML",
         )
         return P2_WHICH_FIELDS
@@ -1250,13 +1430,13 @@ async def _p2_which_fields(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     for t in update.message.text.strip().split():
         try:
             n = int(t)
-            if 1 <= n <= 8 and n not in indices:
+            if 1 <= n <= 9 and n not in indices:
                 indices.append(n)
         except ValueError:
             pass
     if not indices:
         await update.message.reply_text(
-            "No valid numbers. Enter numbers 1–8 separated by spaces (e.g. <code>2 4</code>):",
+            "No valid numbers. Enter numbers 1–9 separated by spaces (e.g. <code>2 4</code>):",
             parse_mode="HTML",
         )
         return P2_WHICH_FIELDS
@@ -1346,6 +1526,7 @@ async def _p2_show_review(update) -> int:
         f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}%\n"
         f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}%\n"
         f"Kill 4 — overall profit ≥ {new['profit_target_pct']}%\n"
+        f"Kill 5 — consistency: largest day &lt; {new.get('consistency_threshold_pct', 29.0)}% of total → permanent halt\n"
         f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
         f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
         f"<i>Baseline equity locked from live MT5 on confirm.</i>\n\n"
@@ -1379,24 +1560,29 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         )
 
     today = _propfirm_day(_sgt_now())
+    cons_threshold = new.get("consistency_threshold_pct", 29.0)
     with _pf_lock:
         _propfirm.update({
-            "propfirm_name":            new["propfirm_name"],
-            "profit_target_pct":        new["profit_target_pct"],
-            "max_drawdown_overall_pct": eff["max_drawdown_overall_pct"],
-            "max_drawdown_daily_pct":   eff["max_drawdown_daily_pct"],
-            "drawdown_is_static":       new["drawdown_is_static"],
-            "raw_spread_account":       new["raw_spread_account"],
-            "profit_sharing_pct":       new["profit_sharing_pct"],
-            "min_profit_days":          new["min_profit_days"],
-            "daily_profit_cap_pct":     eff["daily_profit_cap_pct"],
-            "baseline_equity":          baseline,
-            "day_start_equity":         baseline,
-            "day_start_date_utc":       today,
+            "propfirm_name":              new["propfirm_name"],
+            "profit_target_pct":          new["profit_target_pct"],
+            "max_drawdown_overall_pct":   eff["max_drawdown_overall_pct"],
+            "max_drawdown_daily_pct":     eff["max_drawdown_daily_pct"],
+            "drawdown_is_static":         new["drawdown_is_static"],
+            "raw_spread_account":         new["raw_spread_account"],
+            "profit_sharing_pct":         new["profit_sharing_pct"],
+            "min_profit_days":            new["min_profit_days"],
+            "daily_profit_cap_pct":       eff["daily_profit_cap_pct"],
+            "consistency_threshold_pct":  cons_threshold,
+            "baseline_equity":            baseline,
+            "day_start_equity":           baseline,
+            "day_start_date_utc":         today,
         })
         # Store raw Phase 2 config for future reference
         _propfirm.setdefault("phase_configs", {})["2"] = {k: new[k] for k in new}
         _save_propfirm(_propfirm)
+
+    # Reset consistency log — fresh start for this funded cycle
+    _reset_consistency_log()
 
     with _state_lock:
         _phase_state["phase"] = 2
@@ -1455,7 +1641,7 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     with _state_lock:
         _phase_state["active"] = True
         _save_phase(_phase_state)
-    curfew_note = "\n\n<i>Note: SGT curfew active — signals will be processed from 09:00 SGT.</i>" if _is_sgt_curfew() else ""
+    curfew_note = "\n\n<i>Note: SGT curfew active — signals will be processed from 12:00 SGT.</i>" if _is_sgt_curfew() else ""
     await update.message.reply_text(
         f"<b>Signal Processing Resumed</b>{curfew_note}",
         parse_mode="HTML",
@@ -1868,6 +2054,64 @@ async def _cmd_maxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    with _state_lock:
+        phase = int(_phase_state.get("phase", 1))
+
+    if phase != 2:
+        await update.message.reply_text(
+            "<b>Consistency Tracker</b>\n\n"
+            "Not active — Phase 2 (funded) only.\n"
+            "Run /phase2 to start the funded phase.",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        prop_equity = prop["equity"]
+    except Exception as exc:
+        await update.message.reply_text(f"Prop worker offline: {exc}")
+        return
+
+    with _pf_lock:
+        pf = dict(_propfirm)
+
+    day_start = pf.get("day_start_equity",          0.0)
+    baseline  = pf.get("baseline_equity",            0.0)
+    threshold = pf.get("consistency_threshold_pct",  0.0) or 29.0
+    firm      = pf.get("propfirm_name",              "—")
+
+    with _cons_lock:
+        locked_days = list(_consistency_log.get("days", []))
+
+    today_date    = _propfirm_day(_sgt_now())
+    today_running = prop_equity - day_start if day_start > 0 else 0.0
+
+    table_str, total, max_day_val, ratio_pct, rule_met = _build_consistency_table(
+        locked_days, today_running, today_date, baseline, threshold,
+    )
+
+    if rule_met:
+        status_line = f"<b>RULE MET ✓ — ready to submit payout claim to {firm}</b>"
+    else:
+        days_with_profit = len(locked_days) + (1 if today_running > 0 else 0)
+        if days_with_profit < 2:
+            status_line = "Need at least 2 profitable days to evaluate"
+        else:
+            status_line = f"Not met yet — largest day at {ratio_pct:.1f}% (need &lt; {threshold:.1f}%)"
+
+    await update.message.reply_text(
+        f"<b>Consistency Tracker</b>\n"
+        f"Phase 2  ·  {firm}  ·  Threshold: &lt; {threshold:.0f}%\n\n"
+        f"<pre>{table_str}</pre>\n\n"
+        f"{status_line}",
+        parse_mode="HTML",
+    )
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -1890,18 +2134,21 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/positions — Open positions on both accounts\n"
         "/equity — Live balance + equity on both accounts\n"
         "/pnl — Today's P&amp;L vs daily cap and DD limits\n"
+        "/consistency — Consistency rule tracker (Phase 2 only)\n"
         "/health — Ping all 4 layers\n"
         "/news — Upcoming high-impact events (next 4h)\n"
         "/suppressed — Active suppression blackboard\n"
         "/status — Live system status\n"
         "/propfirm — Current prop firm config\n"
-        "/changepropfirm — Set up new prop firm (8-step wizard)\n"
+        "/changepropfirm — Set up new prop firm (9-step wizard)\n"
         "/cancel — Cancel wizard mid-flow\n\n"
-        "<b>Kill Conditions</b> (automatic, all phases)\n"
+        "<b>Kill Conditions</b> (automatic)\n"
         "Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
         "Kill 2 — overall loss ≥ DD overall limit → close all + permanent halt\n"
-        "Kill 3 — daily profit ≥ cap → close all + halt (consistency rule)\n"
-        "Kill 4 — overall profit ≥ target → close all + permanent halt → /phase2\n\n"
+        "Kill 3 — daily profit ≥ cap → close all + halt\n"
+        "Kill 4 — overall profit ≥ target → close all + permanent halt → /phase2\n"
+        "Kill 5 — consistency rule met (largest day &lt; threshold%) → close all + permanent halt → claim payout\n\n"
+        "<b>Trading window:</b> 12:00–00:00 SGT, weekdays only\n\n"
         "<b>Startup Sequence</b>\n"
         "/changepropfirm → /phase1 → /resume",
         parse_mode="HTML",
@@ -1922,6 +2169,7 @@ def _run_bot() -> None:
             PF_RAW_SPREAD:     [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_raw_spread)],
             PF_PROFIT_SHARE:   [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_share)],
             PF_MIN_DAYS:       [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_min_days)],
+            PF_CONSISTENCY:    [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_consistency)],
             PF_CONFIRM:        [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_confirm)],
         },
         fallbacks=[CommandHandler("cancel", _wiz_cancel)],
@@ -1960,6 +2208,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))
     tg_app.add_handler(CommandHandler("setmaxpos",     _cmd_setmaxpos))
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
+    tg_app.add_handler(CommandHandler("consistency",   _cmd_consistency))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
 
     async def _poll():
@@ -1974,6 +2223,7 @@ def _run_bot() -> None:
     loop.run_until_complete(_poll())
 
 
+_load_consistency_log()
 threading.Thread(target=_run_bot,              daemon=True, name="tg-bot").start()
 threading.Thread(target=_equity_monitor_loop,  daemon=True, name="equity-monitor").start()
 threading.Thread(target=_news_preclose_loop,   daemon=True, name="news-preclose").start()
@@ -2029,7 +2279,7 @@ async def receive_signal(request: Request):
     # SGT curfew / weekend gate — no state change, just reject inline
     if _is_sgt_curfew():
         now_sgt = _sgt_now()
-        reason  = "weekend" if now_sgt.weekday() >= 5 else "SGT curfew 00:00–09:00"
+        reason  = "weekend" if now_sgt.weekday() >= 5 else "SGT curfew 00:00–12:00"
         logger.info("GATE %s %s — %s", payload.signal, payload.ticker, reason)
         return JSONResponse({"status": "rejected", "reason": reason})
 
