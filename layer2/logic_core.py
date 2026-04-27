@@ -2686,6 +2686,11 @@ async def receive_signal(request: Request):
 
     if open_count >= max_pos:
         logger.info("MAX_POS  %s %s — %d/%d open", payload.signal, payload.ticker, open_count, max_pos)
+        await _telegram_alert(
+            f"🚫 <b>Signal skipped — {payload.ticker}</b>\n"
+            f"Already at max open positions ({open_count}/{max_pos}).\n"
+            f"Signal: {payload.signal}  |  /maxpositions N to increase the limit."
+        )
         return JSONResponse({
             "status": "rejected",
             "reason": "max_positions_reached",
@@ -2758,14 +2763,15 @@ async def receive_signal(request: Request):
     prop_tp = round(payload.sl, price_digits)   # funded TP = signal SL
 
     # Lot sizing: funded account risks prop_dollar_risk if its SL hits.
-    # For XAGUSD and XAUUSD (USD-denominated commodities), use contract_size directly.
-    # MetaQuotes demo reports tick_size=0.001 and tick_value=$0.5 for XAGUSD — a mismatched
-    # pair that still inflates lots 10×. Direct formula: dollar_per_lot = tp_distance × contract_size
-    # is reliable regardless of broker tick data.
-    # For all other pairs (especially USDCAD/USDCHF/USDJPY), tick_size/tick_value must be used
-    # because SL is in the foreign currency and the conversion is embedded in tick_value.
+    # Universal rule: when the ticker's quote currency is USD (symbol ends in "USD"),
+    # P&L is directly in USD — dollar_per_lot = tp_distance × contract_size.
+    # This is reliable regardless of broker tick data (avoids MetaQuotes demo XAGUSD
+    # inconsistency where tick_size=0.001 but tick_value=$0.5 instead of the correct $5).
+    # When USD is the base (USDxxx: USDCAD, USDCHF, USDJPY), P&L is in the foreign currency;
+    # broker tick_value already embeds the live conversion rate, so use the tick formula.
+    # Any future xxxUSD pair added to ALLOWED_PAIRS is handled automatically.
     prop_contract_size = prop_info.get("contract_size", 0.0)
-    if payload.ticker in ("XAGUSD", "XAUUSD") and prop_contract_size > 0:
+    if payload.ticker.endswith("USD") and prop_contract_size > 0:
         prop_dollar_per_lot = tp_distance * prop_contract_size
     else:
         prop_dollar_per_lot = (tp_distance / prop_tick_size) * prop_tick_val
