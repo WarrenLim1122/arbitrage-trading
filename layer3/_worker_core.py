@@ -183,9 +183,10 @@ def _ensure_connected() -> None:
 def _contract_info(canonical: str) -> tuple[float, float, float, float, int]:
     """Return (point, contract_size, trade_tick_size, trade_tick_value, digits) for canonical ticker.
 
-    All values come directly from MT5 symbol_info after broker symbol resolution.
-    Used by Layer 2 for lot sizing: lots = dollar_risk / (sl_distance / tick_size * tick_value)
-    tick_size (not point) must be used — for some instruments (e.g. XAGUSD) they differ by 10x.
+    All values come directly from mt5.symbol_info() after broker symbol resolution.
+    Layer 2 lot sizing uses contract_size for xxxUSD pairs (price already in USD/unit,
+    so dollar_per_lot = sl_distance × contract_size) and tick_size/tick_value for USDxxx
+    pairs where the broker tick_value handles the foreign-currency conversion.
     """
     resolved = _resolve_symbol(canonical)
     with _mt5_lock:
