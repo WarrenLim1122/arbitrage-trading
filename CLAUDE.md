@@ -230,7 +230,7 @@ Only the phase ratio changes. Direction and prop sizing are identical in both ph
 | `/pnl` | Today's P&L vs daily profit cap and drawdown limits |
 | `/health` | Ping all 4 layers and report live/dead status |
 | `/news` | Upcoming high-impact events in the next 4 hours for all covered pairs |
-| `/suppressed` | Active suppression blackboard — pairs currently blocked and why |
+| `/blackboard` | Active suppression blackboard — pairs currently blocked and why (manual vs news) |
 | `/closepair EURUSD` | Close all positions for a pair on both accounts + block new signals until /resumepair |
 | `/resumepair EURUSD` | Unblock a pair closed with /closepair |
 | `/setmaxpos 2` | Set max simultaneous open trades (1–10). Default 2. If >5, warns about daily DD exposure |
