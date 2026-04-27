@@ -7,6 +7,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Auto-push to GitHub after every code change.** Warren has given standing permission for all pushes to `main`. Never wait to be reminded — commit and push immediately after making any file edits.
 - **Always include full deployment steps** in responses after a push: the exact SSH command, `git pull`, and restart commands for every affected VPS, ready to copy-paste.
 
+### Deployment steps after every push
+
+**VPS #1 — Layer 1 or 2 changes (SSH from Mac terminal):**
+```bash
+ssh root@152.42.213.98
+cd /root/arbitrage-trading && git pull && sudo systemctl restart layer2
+systemctl status layer2
+```
+Restart `layer1` instead if only Layer 1 changed; restart both if both changed.
+
+**VPS #2 / VPS #3 — Layer 3 changes (noVNC PowerShell):**
+
+Warren's workflow — always write steps this way:
+1. Close the PowerShell window with the **X button** (kills the worker — Warren cannot type Ctrl+C in noVNC)
+2. Open a new PowerShell window
+3. Run:
+```
+cd C:\arbitrage
+git pull
+uv run python layer3/worker_prop.py
+```
+Use `worker_personal.py` for VPS #3. `uv sync --extra layer3` is only needed if `pyproject.toml` changed.
+
 ## Project: Automated Trade Execution Engine (TEE)
 
 A four-layer cross-hedging dual-account system. The personal Fusion Markets account follows the signal direction; the FundingPips prop firm account simultaneously executes the **inverse direction** as a hedge. Position sizing is phase-dependent and remotely controlled via Telegram.
