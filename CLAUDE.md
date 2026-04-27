@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Workflow Rules
+
+- **Auto-push to GitHub after every code change.** Warren has given standing permission for all pushes to `main`. Never wait to be reminded — commit and push immediately after making any file edits.
+- **Always include full deployment steps** in responses after a push: the exact SSH command, `git pull`, and restart commands for every affected VPS, ready to copy-paste.
+
 ## Project: Automated Trade Execution Engine (TEE)
 
 A four-layer cross-hedging dual-account system. The personal Fusion Markets account follows the signal direction; the FundingPips prop firm account simultaneously executes the **inverse direction** as a hedge. Position sizing is phase-dependent and remotely controlled via Telegram.
