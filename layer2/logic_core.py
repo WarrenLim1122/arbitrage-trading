@@ -2048,7 +2048,7 @@ async def _cmd_news(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-async def _cmd_suppressed(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     now     = datetime.now(timezone.utc)
@@ -2062,7 +2062,7 @@ async def _cmd_suppressed(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
 
     all_pairs = set(news_active) | manual_active
     if not all_pairs:
-        await update.message.reply_text("No pairs currently suppressed.")
+        await update.message.reply_text("No pairs currently suppressed. Blackboard is clear.")
         return
 
     for ticker in sorted(all_pairs):
@@ -2348,7 +2348,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "Ping all 4 layers and report live/dead\n"
         "/news\n"
         "Upcoming high-impact events (next 4h)\n"
-        "/suppressed\n"
+        "/blackboard\n"
         "Active suppression blackboard (manual + news)\n"
         "/status\n"
         "Live system status and last signal time\n"
@@ -2441,7 +2441,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
     tg_app.add_handler(CommandHandler("health",        _cmd_health))
     tg_app.add_handler(CommandHandler("news",          _cmd_news))
-    tg_app.add_handler(CommandHandler("suppressed",    _cmd_suppressed))
+    tg_app.add_handler(CommandHandler("blackboard",    _cmd_blackboard))
     tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))
     tg_app.add_handler(CommandHandler("setmaxpos",     _cmd_setmaxpos))
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
