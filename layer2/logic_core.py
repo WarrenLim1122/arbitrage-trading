@@ -865,8 +865,8 @@ def _run_equity_check() -> None:
         _dispatch_force_close("daily_loss_limit", halt=True)
         msg = (
             f"<b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
-            f"Daily loss: <b>{daily_loss_pct:.2f}%</b> ≥ {pf['max_drawdown_daily_pct']}%\n"
-            f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+            f"Daily loss: <b>{daily_loss_pct:.1f}%</b> ≥ {pf['max_drawdown_daily_pct']:.1f}%\n"
+            f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
             f"<b>Positions closed:</b>\n{pos_str}\n\n"
             f"All positions force-closed. System halted.\n\n"
             f"<b>Next steps:</b>\n"
@@ -889,8 +889,8 @@ def _run_equity_check() -> None:
                 _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
                 msg = (
                     f"<b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
-                    f"Overall loss: <b>{overall_loss_pct:.2f}%</b> ≥ {overall_dd_limit}%\n"
-                    f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  Equity: <b>{prop_equity:.2f}</b>\n\n"
+                    f"Overall loss: <b>{overall_loss_pct:.1f}%</b> ≥ {overall_dd_limit:.1f}%\n"
+                    f"Baseline: ${baseline:,.2f}  |  Floor: ${floor:,.2f}  |  Equity: <b>${prop_equity:,.2f}</b>\n\n"
                     f"<b>Positions closed:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. Prop firm account blown. <b>Permanent halt.</b>\n\n"
                     f"<b>Next steps:</b>\n"
@@ -908,8 +908,8 @@ def _run_equity_check() -> None:
         _dispatch_force_close("daily_profit_cap", halt=True)
         msg = (
             f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
-            f"Daily profit: <b>{daily_profit_pct:.2f}%</b> ≥ {cap}%\n"
-            f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+            f"Daily profit: <b>{daily_profit_pct:.1f}%</b> ≥ {cap:.1f}%\n"
+            f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
             f"<b>Positions closed:</b>\n{pos_str}\n\n"
             f"All positions force-closed. Daily cap enforced.\n\n"
             f"<b>Next steps:</b>\n"
@@ -929,8 +929,8 @@ def _run_equity_check() -> None:
             if phase == 1:
                 msg = (
                     f"<b>KILL 4 — Evaluation PASSED! Phase 1 Complete.</b>\n\n"
-                    f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
-                    f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+                    f"Overall profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}%\n"
+                    f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
                     f"<b>Positions closed:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. System halted.\n\n"
                     f"<b>Ready to move to funded phase?</b>\n"
@@ -940,8 +940,8 @@ def _run_equity_check() -> None:
             else:
                 msg = (
                     f"<b>KILL 4 — Phase {phase} Target Reached!</b>\n\n"
-                    f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
-                    f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+                    f"Overall profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}%\n"
+                    f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
                     f"<b>Positions closed:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. System halted.\n\n"
                     f"<b>Options:</b>\n"
@@ -976,7 +976,7 @@ def _run_equity_check() -> None:
                 msg = (
                     f"<b>KILL 5 — Consistency Rule Met</b>\n\n"
                     f"<pre>{table_str}</pre>\n\n"
-                    f"<b>Overall profit: {overall_pct:.2f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
+                    f"<b>Overall profit: {overall_pct:.1f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
                     f"<b>Positions closed:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. Trading halted.\n\n"
                     f"<b>Action required:</b>\n"
@@ -1222,20 +1222,20 @@ async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     summary = (
         f"<b>Review Before Saving</b>\n\n"
         f"<b>Firm:</b> {_wizard_data['propfirm_name']}\n"
-        f"<b>Profit Target:</b> {_wizard_data['profit_target_pct']}%\n"
-        f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']}% → enforced at <b>{eff['max_drawdown_overall_pct']}%</b> (no buffer — exact)\n"
-        f"<b>Max DD Daily:</b> {_wizard_data['max_drawdown_daily_pct']}% → enforced at <b>{eff['max_drawdown_daily_pct']}%</b> (−1pp buffer)\n"
+        f"<b>Profit Target:</b> {_wizard_data['profit_target_pct']:.1f}%\n"
+        f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']:.1f}% → enforced at <b>{eff['max_drawdown_overall_pct']:.1f}%</b> (no buffer — exact)\n"
+        f"<b>Max DD Daily:</b> {_wizard_data['max_drawdown_daily_pct']:.1f}% → enforced at <b>{eff['max_drawdown_daily_pct']:.1f}%</b> (−1pp buffer)\n"
         f"<b>Drawdown Type:</b> {'Static' if _wizard_data['drawdown_is_static'] else 'Dynamic'}{dd_flag}\n"
         f"<b>Raw Spread Acct:</b> {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
-        f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']}%\n"
+        f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']:.1f}%\n"
         f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n"
-        f"<b>Consistency Threshold:</b> {v}%\n\n"
+        f"<b>Consistency Threshold:</b> {v:.1f}%\n\n"
         f"<b>Kill conditions:</b>\n"
-        f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']}% → close all + halt\n"
-        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}% from baseline → close all + <b>permanent halt</b>\n"
-        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}% → close all + halt\n"
-        f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']}% → permanent halt\n"
-        f"Kill 5 — consistency: largest day &lt; {v}% of total → permanent halt <i>(Phase 2 only)</i>\n\n"
+        f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']:.1f}% → close all + halt\n"
+        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']:.1f}% from baseline → close all + <b>permanent halt</b>\n"
+        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']:.1f}% → close all + halt\n"
+        f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']:.1f}% → permanent halt\n"
+        f"Kill 5 — consistency: largest day &lt; {v:.1f}% of total → permanent halt <i>(Phase 2 only)</i>\n\n"
         f"<i>Baseline equity will be fetched live from MT5 on confirm.</i>\n\n"
         f"Reply <b>YES</b> to save  |  <b>NO</b> to cancel"
     )
@@ -1306,7 +1306,7 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         f"<b>Config Saved</b>\n\n"
         f"<b>Firm:</b> {_propfirm['propfirm_name']}\n"
-        f"<b>Baseline equity:</b> {baseline:.2f}\n\n"
+        f"<b>Baseline equity:</b> ${baseline:,.2f}\n\n"
         f"All kill-switch thresholds are now active.",
         parse_mode="HTML",
     )
@@ -1352,7 +1352,7 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"<b>Phase 1 Active</b>\n\n"
         f"Personal lots multiplier: ×{PHASE_MULT[1]:.2f}\n"
-        f"Baseline equity locked: <b>{balance:.2f}</b>\n\n"
+        f"Baseline equity locked: <b>${balance:,.2f}</b>\n\n"
         f"Send /resume to start trading.",
         parse_mode="HTML",
     )
@@ -1383,10 +1383,10 @@ def _p2_display(key: str, value) -> str:
     if key == "raw_spread_account":
         return "Yes" if value else "No"
     if key == "max_drawdown_daily_pct":
-        return f"{value}% (enforced at {round(value - 1.0, 2)}% after −1pp buffer)"
+        return f"{value:.1f}% (enforced at {value - 1.0:.1f}% after −1pp buffer)"
     if key in ("profit_target_pct", "max_drawdown_overall_pct",
                "profit_sharing_pct", "consistency_threshold_pct"):
-        return f"{value}%"
+        return f"{value:.1f}%"
     return str(value)
 
 
@@ -1547,11 +1547,11 @@ async def _p2_show_review(update) -> int:
         f"<b>Phase 2 Review</b>\n\n"
         f"<pre>{block}</pre>\n\n"
         f"<b>Kill conditions:</b>\n"
-        f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']}%\n"
-        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']}%\n"
-        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']}%\n"
-        f"Kill 4 — overall profit ≥ {new['profit_target_pct']}%\n"
-        f"Kill 5 — consistency: largest day &lt; {new.get('consistency_threshold_pct', 29.0)}% of total → permanent halt\n"
+        f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']:.1f}%\n"
+        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']:.1f}%\n"
+        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']:.1f}%\n"
+        f"Kill 4 — overall profit ≥ {new['profit_target_pct']:.1f}%\n"
+        f"Kill 5 — consistency: largest day &lt; {new.get('consistency_threshold_pct', 29.0):.1f}% of total → permanent halt\n"
         f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
         f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
         f"<i>Baseline equity locked from live MT5 on confirm.</i>\n\n"
@@ -1623,7 +1623,7 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         f"<b>Phase 2 Active</b>\n\n"
         f"Firm: {_propfirm['propfirm_name']}\n"
         f"Personal lots multiplier: ×{PHASE_MULT[2]:.2f}\n"
-        f"Baseline equity locked: <b>{baseline:.2f}</b>\n\n"
+        f"Baseline equity locked: <b>${baseline:,.2f}</b>\n\n"
         f"Send /resume to start trading.",
         parse_mode="HTML",
     )
@@ -1713,11 +1713,11 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"<b>Max open positions:</b> {max_pos}\n"
         f"<b>Firm:</b> {pf_name}\n\n"
         f"<b>Equity</b>\n"
-        f"Baseline:         {baseline:.2f}\n"
-        f"DD floor:         {floor:.2f}  (−{dd_overall}% from baseline)\n"
-        f"Day-start:        {day_start:.2f}\n"
-        f"Daily DD limit:   {dd_daily}%\n"
-        f"Daily profit cap: {cap}%\n\n"
+        f"Baseline:         ${baseline:,.2f}\n"
+        f"DD floor:         ${floor:,.2f}  (−{dd_overall:.1f}% from baseline)\n"
+        f"Day-start:        ${day_start:,.2f}\n"
+        f"Daily DD limit:   {dd_daily:.1f}%\n"
+        f"Daily profit cap: {cap:.1f}%\n\n"
         f"<b>Last signal:</b> {last_ts_display}",
         parse_mode="HTML",
     )
@@ -1731,16 +1731,16 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(
         f"<b>Prop Firm Config</b>\n\n"
         f"<b>Firm:</b> {pf.get('propfirm_name', '—')}\n"
-        f"<b>Profit Target:</b> {pf.get('profit_target_pct', 0)}%\n"
-        f"<b>Max DD Overall:</b> {pf.get('max_drawdown_overall_pct', 0)}%  (buffered)\n"
-        f"<b>Max DD Daily:</b> {pf.get('max_drawdown_daily_pct', 0)}%  (buffered)\n"
+        f"<b>Profit Target:</b> {pf.get('profit_target_pct', 0):.1f}%\n"
+        f"<b>Max DD Overall:</b> {pf.get('max_drawdown_overall_pct', 0):.1f}%  (no buffer — exact firm limit)\n"
+        f"<b>Max DD Daily:</b> {pf.get('max_drawdown_daily_pct', 0):.1f}%  (−1pp buffer applied)\n"
         f"<b>Drawdown Type:</b> {'Static' if pf.get('drawdown_is_static') else 'Dynamic'}\n"
         f"<b>Raw Spread Acct:</b> {'Yes' if pf.get('raw_spread_account') else 'No'}\n"
-        f"<b>Profit Sharing:</b> {pf.get('profit_sharing_pct', 0)}%\n"
+        f"<b>Profit Sharing:</b> {pf.get('profit_sharing_pct', 0):.1f}%\n"
         f"<b>Min Profit Days:</b> {pf.get('min_profit_days', 0)}\n"
-        f"<b>Daily Profit Cap:</b> {pf.get('daily_profit_cap_pct', 0)}%\n"
-        f"<b>Baseline Equity:</b> {pf.get('baseline_equity', 0):.2f}\n"
-        f"<b>Day-Start Equity:</b> {pf.get('day_start_equity', 0):.2f}",
+        f"<b>Daily Profit Cap:</b> {pf.get('daily_profit_cap_pct', 0):.1f}%\n"
+        f"<b>Baseline Equity:</b> ${pf.get('baseline_equity', 0):,.2f}\n"
+        f"<b>Day-Start Equity:</b> ${pf.get('day_start_equity', 0):,.2f}",
         parse_mode="HTML",
     )
 
@@ -1750,12 +1750,12 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     try:
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_text = f"Balance: {prop['balance']:.2f}  |  Equity: {prop['equity']:.2f}"
+        prop_text = f"Balance: ${prop['balance']:,.2f}  |  Equity: ${prop['equity']:,.2f}"
     except Exception as exc:
         prop_text = f"OFFLINE — {exc}"
     try:
         pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_text = f"Balance: {pers['balance']:.2f}  |  Equity: {pers['equity']:.2f}"
+        pers_text = f"Balance: ${pers['balance']:,.2f}  |  Equity: ${pers['equity']:,.2f}"
     except Exception as exc:
         pers_text = f"OFFLINE — {exc}"
     await update.message.reply_text(
@@ -1802,7 +1802,7 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
                 direction = "LONG" if p["type"] == 0 else "SHORT"
                 lines.append(
                     f"  {p['symbol']}  {direction}  {p['volume']:.2f} lots"
-                    f"  |  P&amp;L: ${p['profit']:.2f}"
+                    f"  |  P&amp;L: ${p['profit']:+,.2f}"
                 )
                 total_open += 1
         lines.append("")
@@ -1873,7 +1873,7 @@ def _snapshot_positions_str() -> str:
                     arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
                     lines.append(
                         f"  {label}: {p['symbol']} {arrow} {p['volume']:.2f} lots"
-                        f"  P&amp;L: ${p['profit']:+.2f}"
+                        f"  P&amp;L: ${p['profit']:+,.2f}"
                     )
             else:
                 lines.append(f"  {label}: No open positions")
@@ -1919,7 +1919,7 @@ async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 lines.append(
                     f"{p['symbol']}  {direction}  {p['volume']:.2f} lots\n"
                     f"  Entry: {p['price_open']}  SL: {p['sl']}  TP: {p['tp']}\n"
-                    f"  P&amp;L: ${p['profit']:.2f}"
+                    f"  P&amp;L: ${p['profit']:+,.2f}"
                 )
         lines.append("")
 
@@ -2109,7 +2109,7 @@ async def _cmd_closepair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
                     arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
                     lines.append(
                         f"  {p['symbol']} {arrow} {p['volume']:.2f} lots"
-                        f"  |  P&amp;L: ${p['profit']:+.2f}"
+                        f"  |  P&amp;L: ${p['profit']:+,.2f}"
                     )
                     total_open += 1
             else:
@@ -2215,8 +2215,8 @@ async def _cmd_setmaxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         with _pf_lock:
             dd_daily_raw = _propfirm.get("max_drawdown_daily_pct", 0.0) + 1.0  # before buffer
         warning = (
-            f"\n\n<b>Warning:</b> {n} positions × {PROP_RISK_PCT*100:.2f}% = "
-            f"<b>{theoretical:.2f}% theoretical max daily loss</b> if all SLs hit simultaneously.\n"
+            f"\n\n<b>Warning:</b> {n} positions × {PROP_RISK_PCT*100:.1f}% = "
+            f"<b>{theoretical:.1f}% theoretical max daily loss</b> if all SLs hit simultaneously.\n"
             f"Daily DD limit (before buffer): {dd_daily_raw:.1f}%"
         )
 
@@ -2694,13 +2694,13 @@ async def receive_signal(request: Request):
         f"Entry: {payload.entry:.{price_digits}f}  "
         f"SL: {payload.sl:.{price_digits}f}  "
         f"TP: {pers_tp:.{price_digits}f}\n"
-        f"Risk: ${pers_dollar_risk:.2f}\n\n"
+        f"Risk: ${pers_dollar_risk:,.2f}\n\n"
         f"<b>Prop (inverse):</b> {prop_arrow}  {prop_lots:.2f} lots\n"
         f"Entry: {payload.entry:.{price_digits}f}  "
         f"SL: {prop_sl:.{price_digits}f}  "
         f"TP: {prop_tp:.{price_digits}f}\n"
-        f"Risk: ${prop_dollar_risk:.2f}\n\n"
-        f"Phase {phase}  |  Baseline: {baseline_equity:.2f}"
+        f"Risk: ${prop_dollar_risk:,.2f}\n\n"
+        f"Phase {phase}  |  Baseline: ${baseline_equity:,.2f}"
     )
 
     with _state_lock:

@@ -17,7 +17,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 _ET        = ZoneInfo("America/New_York")   # ForexFactory publishes in ET
-_CACHE_TTL = 3600                           # seconds — refresh once per hour
+_CACHE_TTL = 900                            # seconds — refresh every 15 minutes
 
 # Both weeks fetched so events near the Mon/Sun boundary are never missed.
 _FF_URLS = [
@@ -51,7 +51,7 @@ def _parse_event_utc(date_str: str, time_str: str) -> datetime | None:
 def fetch_events_sync() -> list[dict]:
     """Return ForexFactory calendar events for this week + next week.
 
-    Cached for 60 minutes. Thread-safe.
+    Cached for 15 minutes. Thread-safe.
 
     Each event dict contains:
         currency (str)      — e.g. "USD", "EUR", "GBP"  (FF "country" field)
