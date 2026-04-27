@@ -308,6 +308,7 @@ def _query_equity(zmq_url: str, ticker: str) -> dict:
         return {
             "balance":            float(reply.get("balance",            0.0)),
             "equity":             float(reply.get("equity",             0.0)),
+            "trade_allowed":      bool(reply.get("trade_allowed",       True)),
             "point":              float(reply.get("point",              0.0)),
             "contract_size":      float(reply.get("contract_size",      0.0)),
             "trade_tick_size":    float(reply.get("trade_tick_size",    0.0)),
@@ -2720,6 +2721,32 @@ async def receive_signal(request: Request):
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
+
+    # Gate: reject immediately if MT5 algo trading is disabled on either worker.
+    # This prevents a silent EXECUTION FAILURE caused by Layer 3 rejecting the order.
+    if not prop_info.get("trade_allowed", True):
+        msg = (
+            f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
+            f"Prop MT5 (VPS #2) algo trading is <b>DISABLED</b>.\n\n"
+            f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
+            f"Tools → Options → Expert Advisors → uncheck "
+            f"<i>'Disable algorithmic trading when the account has been changed'</i>"
+        )
+        logger.error("Prop trade_allowed=False — blocking %s %s", payload.signal, payload.ticker)
+        await _telegram_alert(msg)
+        raise HTTPException(status_code=503, detail="prop trade_allowed=False")
+
+    if not pers_info.get("trade_allowed", True):
+        msg = (
+            f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
+            f"Personal MT5 (VPS #3) algo trading is <b>DISABLED</b>.\n\n"
+            f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
+            f"Tools → Options → Expert Advisors → uncheck "
+            f"<i>'Disable algorithmic trading when the account has been changed'</i>"
+        )
+        logger.error("Personal trade_allowed=False — blocking %s %s", payload.signal, payload.ticker)
+        await _telegram_alert(msg)
+        raise HTTPException(status_code=503, detail="personal trade_allowed=False")
 
     # Step A — prop dollar risk: strictly 0.67% of static baseline (never live equity)
     with _pf_lock:

@@ -679,10 +679,26 @@ def _pull_loop(ctx: zmq.Context) -> None:
 
 # ── Entrypoint ────────────────────────────────────────────────────────────
 
+def _ensure_symbols_in_market_watch() -> None:
+    """Add all symbols from the symbol map to MT5 MarketWatch so tick data is available.
+
+    symbol_info_tick() returns None for symbols not in MarketWatch, which causes
+    _execute_order to abort silently. Calling symbol_select() at startup prevents this.
+    """
+    with _mt5_lock:
+        for resolved in _symbol_map.values():
+            ok = mt5.symbol_select(resolved, True)
+            if not ok:
+                logger.warning("symbol_select failed for %s — tick data may be unavailable", resolved)
+            else:
+                logger.info("symbol_select OK: %s", resolved)
+
+
 def main() -> None:
     _load_symbol_map()
     _load_dd_params()
     _connect_mt5()
+    _ensure_symbols_in_market_watch()
     ctx = zmq.Context.instance()
     threading.Thread(target=_rep_loop,      args=(ctx,), daemon=True, name="rep-equity").start()
     threading.Thread(target=_sgt_scheduler, daemon=True, name="sgt-scheduler").start()
