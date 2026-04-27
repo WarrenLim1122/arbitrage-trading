@@ -2758,11 +2758,17 @@ async def receive_signal(request: Request):
     prop_tp = round(payload.sl, price_digits)   # funded TP = signal SL
 
     # Lot sizing: funded account risks prop_dollar_risk if its SL hits.
-    # Uses trade_tick_size (NOT point) — they differ on some instruments (e.g. XAGUSD
-    # on MetaQuotes has point=0.001 but tick_size=0.0001, causing 10x lot inflation if
-    # point is used). trade_tick_value is always quoted per trade_tick_size, so the
-    # ratio (sl_distance / tick_size) × tick_value = correct USD risk per lot.
-    prop_dollar_per_lot = (tp_distance / prop_tick_size) * prop_tick_val
+    # For XAGUSD and XAUUSD (USD-denominated commodities), use contract_size directly.
+    # MetaQuotes demo reports tick_size=0.001 and tick_value=$0.5 for XAGUSD — a mismatched
+    # pair that still inflates lots 10×. Direct formula: dollar_per_lot = tp_distance × contract_size
+    # is reliable regardless of broker tick data.
+    # For all other pairs (especially USDCAD/USDCHF/USDJPY), tick_size/tick_value must be used
+    # because SL is in the foreign currency and the conversion is embedded in tick_value.
+    prop_contract_size = prop_info.get("contract_size", 0.0)
+    if payload.ticker in ("XAGUSD", "XAUUSD") and prop_contract_size > 0:
+        prop_dollar_per_lot = tp_distance * prop_contract_size
+    else:
+        prop_dollar_per_lot = (tp_distance / prop_tick_size) * prop_tick_val
     prop_lots            = round(prop_dollar_risk / prop_dollar_per_lot, 2)
     pers_lots            = round(prop_lots * phase_ratio, 2)
     pers_dollar_risk     = round(prop_dollar_risk * phase_ratio, 2)  # display only
