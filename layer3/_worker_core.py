@@ -471,6 +471,21 @@ def _static_dd_guard_loop() -> None:
             logger.error("Static DD guard error: %s", exc)
 
 
+# ── Socket bind with retry (handles Address in use after abrupt restart) ─────
+
+def _bind_with_retry(sock: zmq.Socket, addr: str, max_attempts: int = 5, delay: float = 3.0) -> None:
+    for attempt in range(1, max_attempts + 1):
+        try:
+            sock.bind(addr)
+            return
+        except zmq.error.ZMQError as exc:
+            if "Address in use" in str(exc) and attempt < max_attempts:
+                logger.warning("Port %s in use — retry %d/%d in %.0fs", addr, attempt, max_attempts - 1, delay)
+                time.sleep(delay)
+            else:
+                raise
+
+
 # ── REP thread — equity query responder ───────────────────────────────────
 
 def _build_positions_reply() -> dict:
@@ -532,7 +547,7 @@ def _build_equity_reply(ticker: str) -> dict:
 
 def _rep_loop(ctx: zmq.Context) -> None:
     sock = ctx.socket(zmq.REP)
-    sock.bind(REP_ADDR)
+    _bind_with_retry(sock, REP_ADDR)
     logger.info("REP socket bound on %s", REP_ADDR)
 
     while True:
@@ -542,7 +557,7 @@ def _rep_loop(ctx: zmq.Context) -> None:
             logger.error("REP recv failed: %s — reopening socket", exc)
             sock.close()
             sock = ctx.socket(zmq.REP)
-            sock.bind(REP_ADDR)
+            _bind_with_retry(sock, REP_ADDR)
             continue
 
         try:
@@ -567,7 +582,7 @@ def _rep_loop(ctx: zmq.Context) -> None:
 
 def _pull_loop(ctx: zmq.Context) -> None:
     sock = ctx.socket(zmq.PULL)
-    sock.bind(PULL_ADDR)
+    _bind_with_retry(sock, PULL_ADDR)
     logger.info("PULL socket bound on %s", PULL_ADDR)
 
     while True:
