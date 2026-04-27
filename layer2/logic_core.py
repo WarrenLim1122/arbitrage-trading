@@ -102,7 +102,7 @@ EQUITY_TIMEOUT = 3_000  # ms
 
 ALLOWED_PAIRS: frozenset[str] = frozenset({
     "EURUSD", "GBPUSD", "USDCHF", "USDCAD", "USDJPY",
-    "NZDUSD", "XAUUSD", "XAGUSD", "NAS100",
+    "NZDUSD", "XAUUSD", "XAGUSD",
 })
 
 # ForexFactory currency codes that each pair is sensitive to.
@@ -116,7 +116,6 @@ _TICKER_CURRENCIES: dict[str, frozenset[str]] = {
     "NZDUSD": frozenset({"NZD", "USD"}),
     "XAUUSD": frozenset({"USD"}),
     "XAGUSD": frozenset({"USD"}),
-    "NAS100": frozenset({"USD"}),
 }
 
 _NEWS_AWARENESS_WINDOW   = 60   # minutes before news → scan / log only
@@ -290,10 +289,11 @@ _zmq_ctx = zmq.Context.instance()
 
 def _query_equity(zmq_url: str, ticker: str) -> dict:
     """Query Layer 3 worker. Returns dict with keys:
-      balance, equity, point, contract_size, trade_tick_value, digits
+      balance, equity, point, contract_size, trade_tick_size, trade_tick_value, digits
 
     Pass ticker="" for balance/equity-only queries (monitor, baseline lock).
-    Pass the canonical ticker (e.g. "BTCUSD") for signal handler contract queries.
+    Pass the canonical ticker (e.g. "EURUSD") for signal handler contract queries.
+    trade_tick_size (not point) must be used in lot sizing — they differ on some instruments.
     """
     sock = _zmq_ctx.socket(zmq.REQ)
     sock.setsockopt(zmq.LINGER, 0)
@@ -306,12 +306,13 @@ def _query_equity(zmq_url: str, ticker: str) -> dict:
         if "balance" not in reply:
             raise RuntimeError(f"bad reply from {zmq_url}: {reply}")
         return {
-            "balance":          float(reply.get("balance",          0.0)),
-            "equity":           float(reply.get("equity",           0.0)),
-            "point":            float(reply.get("point",            0.0)),
-            "contract_size":    float(reply.get("contract_size",    0.0)),
-            "trade_tick_value": float(reply.get("trade_tick_value", 0.0)),
-            "digits":           int(reply.get("digits",             5)),
+            "balance":            float(reply.get("balance",            0.0)),
+            "equity":             float(reply.get("equity",             0.0)),
+            "point":              float(reply.get("point",              0.0)),
+            "contract_size":      float(reply.get("contract_size",      0.0)),
+            "trade_tick_size":    float(reply.get("trade_tick_size",    0.0)),
+            "trade_tick_value":   float(reply.get("trade_tick_value",   0.0)),
+            "digits":             int(reply.get("digits",               5)),
         }
     finally:
         sock.close()
@@ -2683,11 +2684,12 @@ async def receive_signal(request: Request):
     sl_distance = abs(payload.entry - payload.sl)   # personal SL distance (signal perspective)
     tp_distance = abs(payload.tp   - payload.entry) # funded SL distance = signal TP distance
 
-    prop_point    = prop_info["point"]
-    prop_tick_val = prop_info["trade_tick_value"]
+    prop_tick_size = prop_info["trade_tick_size"]
+    prop_tick_val  = prop_info["trade_tick_value"]
 
-    if prop_point <= 0 or prop_tick_val <= 0:
-        msg = f"Invalid contract data from prop worker for {payload.ticker} — point={prop_point} tick_value={prop_tick_val}"
+    if prop_tick_size <= 0 or prop_tick_val <= 0:
+        msg = (f"Invalid contract data from prop worker for {payload.ticker} — "
+               f"tick_size={prop_tick_size} tick_value={prop_tick_val}")
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
@@ -2699,17 +2701,19 @@ async def receive_signal(request: Request):
         raise HTTPException(status_code=422, detail=msg)
 
     # Funded account SL/TP are the exact swap of the personal account SL/TP:
-    #   Funded SL = signal TP  (tight side, 54 pipettes)
-    #   Funded TP = signal SL  (wide side, 200 pipettes)
+    #   Funded SL = signal TP  (tight side)
+    #   Funded TP = signal SL  (wide side)
     # This is direction-agnostic — same formula for BUY and SELL signals.
     price_digits = prop_info["digits"]
     prop_sl = round(payload.tp, price_digits)   # funded SL = signal TP
     prop_tp = round(payload.sl, price_digits)   # funded TP = signal SL
 
     # Lot sizing: funded account risks prop_dollar_risk if its SL hits.
-    # Funded SL distance = tp_distance (signal TP − entry = 54 pipettes).
-    # Formula: lots = dollar_risk / (funded_sl_distance / point × tick_value_per_lot)
-    prop_dollar_per_lot = (tp_distance / prop_point) * prop_tick_val
+    # Uses trade_tick_size (NOT point) — they differ on some instruments (e.g. XAGUSD
+    # on MetaQuotes has point=0.001 but tick_size=0.0001, causing 10x lot inflation if
+    # point is used). trade_tick_value is always quoted per trade_tick_size, so the
+    # ratio (sl_distance / tick_size) × tick_value = correct USD risk per lot.
+    prop_dollar_per_lot = (tp_distance / prop_tick_size) * prop_tick_val
     prop_lots            = round(prop_dollar_risk / prop_dollar_per_lot, 2)
     pers_lots            = round(prop_lots * phase_ratio, 2)
     pers_dollar_risk     = round(prop_dollar_risk * phase_ratio, 2)  # display only
@@ -2717,12 +2721,12 @@ async def receive_signal(request: Request):
     pers_tp = round(payload.tp, price_digits)   # personal TP = signal TP
 
     logger.info(
-        "LOTS  prop=%.2f lots ($%.2f at TP)  personal=%.2f lots ($%.2f at TP)  "
+        "LOTS  prop=%.2f lots ($%.2f at SL)  personal=%.2f lots ($%.2f at SL)  "
         "phase=%d ×%.2f  baseline=%.2f  tp_dist=%.5f  sl_dist=%.5f  "
-        "prop point=%.5f tick=%.4f",
+        "tick_size=%.5f tick_val=%.4f",
         prop_lots, prop_dollar_risk, pers_lots, pers_dollar_risk,
         phase, phase_ratio, baseline_equity, tp_distance, sl_distance,
-        prop_point, prop_tick_val,
+        prop_tick_size, prop_tick_val,
     )
 
     # Personal follows signal direction; prop is inverse

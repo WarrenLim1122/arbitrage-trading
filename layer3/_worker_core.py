@@ -180,18 +180,19 @@ def _ensure_connected() -> None:
 
 # ── Symbol helpers ────────────────────────────────────────────────────────
 
-def _contract_info(canonical: str) -> tuple[float, float, float, int]:
-    """Return (point, contract_size, trade_tick_value, digits) for canonical ticker.
+def _contract_info(canonical: str) -> tuple[float, float, float, float, int]:
+    """Return (point, contract_size, trade_tick_size, trade_tick_value, digits) for canonical ticker.
 
     All values come directly from MT5 symbol_info after broker symbol resolution.
-    Used by Layer 2 for universal lot sizing: lots = dollar_risk / (sl_distance/point * tick_value)
+    Used by Layer 2 for lot sizing: lots = dollar_risk / (sl_distance / tick_size * tick_value)
+    tick_size (not point) must be used — for some instruments (e.g. XAGUSD) they differ by 10x.
     """
     resolved = _resolve_symbol(canonical)
     with _mt5_lock:
         info = mt5.symbol_info(resolved)
     if info is None:
         raise RuntimeError(f"symbol_info returned None for {resolved} (canonical: {canonical})")
-    return info.point, info.trade_contract_size, info.trade_tick_value, info.digits
+    return info.point, info.trade_contract_size, info.trade_tick_size, info.trade_tick_value, info.digits
 
 
 def _get_filling_mode(resolved: str) -> int:
@@ -519,21 +520,22 @@ def _build_equity_reply(ticker: str) -> dict:
         balance = acct.balance if acct else 0.0
         equity  = acct.equity  if acct else 0.0
 
-        point = contract_size = tick_value = 0.0
+        point = contract_size = tick_size = tick_value = 0.0
         digits = 5
         if ticker:
             try:
-                point, contract_size, tick_value, digits = _contract_info(ticker)
+                point, contract_size, tick_size, tick_value, digits = _contract_info(ticker)
             except Exception as exc:
                 logger.warning("contract_info failed for %s: %s", ticker, exc)
 
         return {
-            "balance":          balance,
-            "equity":           equity,
-            "point":            point,
-            "contract_size":    contract_size,
-            "trade_tick_value": tick_value,
-            "digits":           digits,
+            "balance":            balance,
+            "equity":             equity,
+            "point":              point,
+            "contract_size":      contract_size,
+            "trade_tick_size":    tick_size,
+            "trade_tick_value":   tick_value,
+            "digits":             digits,
         }
     except Exception as exc:
         logger.error("equity reply error: %s", exc)
@@ -541,7 +543,7 @@ def _build_equity_reply(ticker: str) -> dict:
             "error": str(exc),
             "balance": 0.0, "equity": 0.0,
             "point": 0.0, "contract_size": 0.0,
-            "trade_tick_value": 0.0, "digits": 5,
+            "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,
         }
 
 
