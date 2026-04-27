@@ -2503,6 +2503,85 @@ class SignalPayload(BaseModel):
         return v
 
 
+async def _verify_and_notify(
+    *,
+    ticker: str,
+    prop_signal: str,
+    prop_lots: float,
+    prop_sl: float,
+    prop_tp: float,
+    prop_dollar_risk: float,
+    pers_signal: str,
+    pers_lots: float,
+    pers_sl: float,
+    pers_tp: float,
+    pers_dollar_risk: float,
+    phase: int,
+    baseline_equity: float,
+    price_digits: int,
+    entry: float,
+) -> None:
+    """Wait 5 s for orders to fill, query both workers, then send a single Telegram
+    notification reporting actual confirmed status instead of assumed status."""
+    await asyncio.sleep(5)
+
+    broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
+    prop_dir = 0 if prop_signal == "LONG" else 1   # MT5 position type: 0=BUY 1=SELL
+    pers_dir = 0 if pers_signal == "LONG" else 1
+
+    prop_ok = False
+    pers_ok = False
+    prop_err = ""
+    pers_err = ""
+
+    try:
+        prop_positions = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
+        prop_ok = any(p["symbol"] == broker_symbol and p["type"] == prop_dir for p in prop_positions)
+        if not prop_ok:
+            prop_err = "no matching position found on prop account"
+    except Exception as exc:
+        prop_err = str(exc)
+
+    try:
+        pers_positions = await asyncio.to_thread(_query_positions, ZMQ_REQ_PERS)
+        pers_ok = any(p["symbol"] == broker_symbol and p["type"] == pers_dir for p in pers_positions)
+        if not pers_ok:
+            pers_err = "no matching position found on personal account"
+    except Exception as exc:
+        pers_err = str(exc)
+
+    pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
+    prop_arrow = "↑ LONG" if prop_signal == "LONG" else "↓ SHORT"
+    ps = "✅" if pers_ok else "❌"
+    rs = "✅" if prop_ok else "❌"
+
+    title = f"Trade Confirmed — {ticker}" if (prop_ok and pers_ok) else f"⚠️ EXECUTION FAILURE — {ticker}"
+
+    msg = (
+        f"<b>{title}</b>\n\n"
+        f"<b>Personal (signal):</b> {ps} {pers_arrow}  {pers_lots:.2f} lots\n"
+        f"Entry: {entry:.{price_digits}f}  SL: {pers_sl:.{price_digits}f}  TP: {pers_tp:.{price_digits}f}\n"
+        f"Risk: ${pers_dollar_risk:,.2f}"
+    )
+    if not pers_ok and pers_err:
+        msg += f"\n<i>{pers_err}</i>"
+
+    msg += (
+        f"\n\n<b>Prop (inverse):</b> {rs} {prop_arrow}  {prop_lots:.2f} lots\n"
+        f"Entry: {entry:.{price_digits}f}  SL: {prop_sl:.{price_digits}f}  TP: {prop_tp:.{price_digits}f}\n"
+        f"Risk: ${prop_dollar_risk:,.2f}"
+    )
+    if not prop_ok and prop_err:
+        msg += f"\n<i>{prop_err}</i>"
+
+    msg += f"\n\nPhase {phase}  |  Baseline: ${baseline_equity:,.2f}"
+
+    if not prop_ok or not pers_ok:
+        msg += "\n\n<b>ACTION REQUIRED:</b> Check the failed account immediately.\nCheck VPS logs — MT5 algo trading may be disabled."
+
+    await _telegram_alert(msg)
+
+
 @app.post("/signal")
 async def receive_signal(request: Request):
     raw = await request.body()
@@ -2686,22 +2765,23 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
 
-    pers_arrow = "↑ LONG" if pers_ticket["signal"] == "LONG" else "↓ SHORT"
-    prop_arrow = "↑ LONG" if prop_ticket["signal"] == "LONG" else "↓ SHORT"
-    await _telegram_alert(
-        f"<b>Trade Fired — {payload.ticker}</b>\n\n"
-        f"<b>Personal (signal):</b> {pers_arrow}  {pers_lots:.2f} lots\n"
-        f"Entry: {payload.entry:.{price_digits}f}  "
-        f"SL: {payload.sl:.{price_digits}f}  "
-        f"TP: {pers_tp:.{price_digits}f}\n"
-        f"Risk: ${pers_dollar_risk:,.2f}\n\n"
-        f"<b>Prop (inverse):</b> {prop_arrow}  {prop_lots:.2f} lots\n"
-        f"Entry: {payload.entry:.{price_digits}f}  "
-        f"SL: {prop_sl:.{price_digits}f}  "
-        f"TP: {prop_tp:.{price_digits}f}\n"
-        f"Risk: ${prop_dollar_risk:,.2f}\n\n"
-        f"Phase {phase}  |  Baseline: ${baseline_equity:,.2f}"
-    )
+    asyncio.create_task(_verify_and_notify(
+        ticker=payload.ticker,
+        prop_signal=prop_ticket["signal"],
+        prop_lots=prop_lots,
+        prop_sl=prop_sl,
+        prop_tp=prop_tp,
+        prop_dollar_risk=prop_dollar_risk,
+        pers_signal=pers_ticket["signal"],
+        pers_lots=pers_lots,
+        pers_sl=payload.sl,
+        pers_tp=pers_tp,
+        pers_dollar_risk=pers_dollar_risk,
+        phase=phase,
+        baseline_equity=baseline_equity,
+        price_digits=price_digits,
+        entry=payload.entry,
+    ))
 
     with _state_lock:
         _phase_state["last_signal_ts"] = datetime.now(timezone.utc).isoformat()

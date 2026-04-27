@@ -79,6 +79,13 @@ _dormant             = False             # True during 00:00–11:59 SGT and wee
 _filling_cache: dict[str, int] = {}
 _last_curfew_close_date: date | None = None
 
+# mt5 Python binding does not export SYMBOL_FILLING_* flag constants.
+# Use raw bitmask values from the MT5 specification:
+#   bit 0 (1) = symbol supports ORDER_FILLING_FOK
+#   bit 1 (2) = symbol supports ORDER_FILLING_IOC
+_FILLING_FLAG_FOK = 1
+_FILLING_FLAG_IOC = 2
+
 # News suppression guard — ticker → expiry epoch seconds.
 # Populated by NEWS_SUPPRESS from Layer 2. Refuses execution tickets for
 # suppressed pairs even if Layer 1/2 somehow let one through.
@@ -193,9 +200,9 @@ def _get_filling_mode(resolved: str) -> int:
         return _filling_cache[resolved]
     with _mt5_lock:
         flags = mt5.symbol_info(resolved).filling_mode
-    if flags & mt5.SYMBOL_FILLING_IOC:
+    if flags & _FILLING_FLAG_IOC:
         mode = mt5.ORDER_FILLING_IOC
-    elif flags & mt5.SYMBOL_FILLING_FOK:
+    elif flags & _FILLING_FLAG_FOK:
         mode = mt5.ORDER_FILLING_FOK
     else:
         mode = mt5.ORDER_FILLING_RETURN
@@ -361,6 +368,17 @@ def _execute_order(ticket: dict) -> None:
     point = _sym.point if _sym else 0.0001
 
     _ensure_connected()
+
+    with _mt5_lock:
+        term = mt5.terminal_info()
+    if term is not None and not term.trade_allowed:
+        logger.error(
+            "MT5 algo trading DISABLED — cannot execute %s %s. "
+            "Fix: MT5 Tools → Options → Expert Advisors → uncheck "
+            "'Disable algorithmic trading when the account has been changed'.",
+            signal, ticker,
+        )
+        return
 
     for attempt in range(1, MAX_RETRIES + 1):
         with _mt5_lock:
