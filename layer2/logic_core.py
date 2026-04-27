@@ -100,22 +100,20 @@ ZMQ_REQ_PROP   = _risk["layer3_zmq"]["prop"]["rep"]
 ZMQ_REQ_PERS   = _risk["layer3_zmq"]["personal"]["rep"]
 EQUITY_TIMEOUT = 3_000  # ms
 
-ALLOWED_PAIRS: frozenset[str] = frozenset({
-    "EURUSD", "GBPUSD", "USDCHF", "USDCAD", "USDJPY",
-    "NZDUSD", "XAUUSD", "XAGUSD",
-})
+# ── Allowed pairs + news-filter currencies — loaded from config/allowed_pairs.json ──
+# To add or remove a pair, edit that file and restart Layer 2. No code change needed.
+# Format: { "EURUSD": ["EUR", "USD"], ... }
+_ALLOWED_PAIRS_PATH = ROOT / "config" / "allowed_pairs.json"
+with _ALLOWED_PAIRS_PATH.open() as _f:
+    _pair_config: dict[str, list[str]] = json.load(_f)
+
+ALLOWED_PAIRS: frozenset[str] = frozenset(_pair_config.keys())
 
 # ForexFactory currency codes that each pair is sensitive to.
 # FF tags events with currency codes directly (e.g. "USD", "EUR") — no country mapping needed.
 _TICKER_CURRENCIES: dict[str, frozenset[str]] = {
-    "EURUSD": frozenset({"EUR", "USD"}),
-    "GBPUSD": frozenset({"GBP", "USD"}),
-    "USDCHF": frozenset({"USD", "CHF"}),
-    "USDCAD": frozenset({"USD", "CAD"}),
-    "USDJPY": frozenset({"USD", "JPY"}),
-    "NZDUSD": frozenset({"NZD", "USD"}),
-    "XAUUSD": frozenset({"USD"}),
-    "XAGUSD": frozenset({"USD"}),
+    ticker: frozenset(currencies)
+    for ticker, currencies in _pair_config.items()
 }
 
 _NEWS_AWARENESS_WINDOW   = 60   # minutes before news → scan / log only

@@ -1,0 +1,10 @@
+{
+  "EURUSD": ["EUR", "USD"],
+  "GBPUSD": ["GBP", "USD"],
+  "USDCHF": ["USD", "CHF"],
+  "USDCAD": ["USD", "CAD"],
+  "USDJPY": ["USD", "JPY"],
+  "NZDUSD": ["NZD", "USD"],
+  "XAUUSD": ["USD"],
+  "XAGUSD": ["USD"]
+}
