@@ -83,18 +83,23 @@ Telegram Bot API ←→ layer2/logic_core.py   (phase control + prop firm config
 
 ## Covered Instruments
 
-9 pairs. Any other ticker is rejected at Layer 1.
+8 pairs. Any other ticker is rejected at Layer 1. NAS100 removed — non-standardised contract size across brokers.
 
 ```
-EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD  NAS100
+EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 ```
 
 `pip_type` in webhook:
 - `"jpy"` — USDJPY
-- `"index"` — NAS100
 - `"standard"` — all others (EURUSD, GBPUSD, USDCHF, USDCAD, NZDUSD, XAUUSD, XAGUSD)
 
-Symbol map (`config/symbol_map.json`): NAS100 → USTEC (MetaQuotes broker name).
+**Standard lot sizes (physical units per 1 lot):**
+
+| Symbol | Lot size |
+|---|---|
+| EURUSD, GBPUSD, USDCHF, USDCAD, USDJPY, NZDUSD | 100,000 currency units |
+| XAUUSD | 100 troy oz of gold |
+| XAGUSD | 5,000 troy oz of silver |
 
 ---
 
@@ -127,11 +132,26 @@ Step A — Prop dollar risk (uses BASELINE equity, not live equity)
   prop_dollar_risk = baseline_equity × 0.0067
 
 Step B — Funded lots (sized so funded account risks prop_dollar_risk if its SL hits)
-  prop_lots = prop_dollar_risk / ((tp_distance / prop_point) × prop_tick_value)
+  prop_lots = prop_dollar_risk / ((tp_distance / trade_tick_size) × trade_tick_value)
 
-  Example (EURUSD): tp_distance=0.00054, point=0.00001, tick_value=$1/lot
+  IMPORTANT: use trade_tick_size (NOT point) as the denominator.
+  On some instruments (e.g. XAGUSD on MetaQuotes), point ≠ trade_tick_size.
+  Using point inflates XAGUSD lots by 10× (risking 6.7% instead of 0.67%).
+
+  Equivalent formula by contract size (USD-denominated pairs only):
+    prop_lots = prop_dollar_risk / (tp_distance × contract_size)
+    XAGUSD: $670 / (0.277 × 5000) = 0.48 lots ✓
+    XAUUSD: $670 / (SL_dist × 100)
+    Forex:  $670 / (SL_dist × 100000)
+    Note: this shortcut does NOT work for USDJPY/USDCHF/USDCAD (SL is in foreign currency).
+
+  Example (EURUSD): tp_distance=0.00054, tick_size=0.00001, tick_value=$1/lot
     dollar_per_lot = (0.00054 / 0.00001) × $1 = $54
     prop_lots = $670 / $54 = 12.41 lots ✓
+
+  Example (XAGUSD): tp_distance=0.277, tick_size=0.0001, tick_value=$0.5/lot
+    dollar_per_lot = (0.277 / 0.0001) × $0.5 = $1,385
+    prop_lots = $670 / $1,385 = 0.48 lots ✓  (was 4.84 lots with bug)
 
 Step C — Personal lots (phase ratio applied to funded lots)
   phase_ratio = 0.20 (Phase 1)  |  0.70 (Phase 2)
@@ -232,11 +252,11 @@ Only the phase ratio changes. Direction and prop sizing are identical in both ph
 ## Layer 1 — Gatekeeper (`layer1/main.py`, FastAPI)
 
 - Port 8000, public-facing behind nginx + TLS.
-- Validates ticker against 9 allowed pairs (EURUSD, GBPUSD, USDCHF, USDCAD, USDJPY, NZDUSD, XAUUSD, XAGUSD, NAS100).
+- Validates ticker against 8 allowed pairs (EURUSD, GBPUSD, USDCHF, USDCAD, USDJPY, NZDUSD, XAUUSD, XAGUSD). NAS100 removed.
 - Queries Finnhub (`/calendar/economic`) via `layer1/news_filter.py`.
   - 60-minute in-memory cache.
   - Suppresses signal if any high-impact event for either currency is within ±60 min.
-  - NZD, CAD, NAS100 (→ US) are now correctly mapped to Finnhub country codes.
+  - NZD, CAD are correctly mapped to Finnhub country codes.
   - `FAIL_OPEN=true` by default.
 - Forwards clean signals to Layer 2 via internal HTTP POST.
 - Env vars: `FINNHUB_API_KEY`, `LAYER2_URL`, `NEWS_WINDOW_MINUTES`, `NEWS_FAIL_OPEN`.
@@ -388,8 +408,19 @@ Shared logic in `_worker_core.py`; wrappers `worker_prop.py` and `worker_persona
 - REP thread (daemon): answers equity + contract data queries from Layer 2.
 - SGT scheduler thread (daemon): manages `_dormant` flag, force-closes at curfew transition.
 
-### Pip Value — XAUUSD vs Forex
+### Contract Sizes and Tick Values
 
+| Symbol | Lot size | $/lot per $1 move |
+|---|---|---|
+| Forex (EURUSD etc.) | 100,000 units | $100,000 |
+| XAUUSD | 100 oz gold | $100 |
+| XAGUSD | 5,000 oz silver | $5,000 |
+
+**Critical: use `trade_tick_size` (not `info.point`) for lot sizing.**
+On MetaQuotes, XAGUSD has `point=0.001` but `trade_tick_size=0.0001`. Using `point` inflates lots by 10×.
+Layer 2 lot sizing formula: `dollar_per_lot = (sl_distance / trade_tick_size) × trade_tick_value`
+
+`_pip_value` in Layer 3 (used only for slippage display, not lot sizing):
 ```python
 def _pip_value(ticker: str) -> float:
     info = mt5.symbol_info(ticker)
@@ -611,7 +642,7 @@ systemctl status layer2        # verify running
 - **VPS #2 and #3 must have distinct public IPs.**
 - **ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open** between VPS #1 and VPS #2/#3.
 - **TradingView Premium** required for webhook alert delivery.
-- **One TradingView chart per instrument** — 9 charts total for 9 pairs.
+- **One TradingView chart per instrument** — 8 charts total for 8 pairs (NAS100 removed).
 - **Demo-first mandatory**: full pipeline on paper/demo MT5 for ≥7 trading days before live capital.
 
 ---
