@@ -18,13 +18,10 @@ bool showLevels      = input.bool(true, "Show Entry / SL / TP Levels")
 bool showTable       = input.bool(true, "Show Diagnostic Table")
 bool showSkipMarkers = input.bool(true, "Show Skipped Trade Markers")
 
-float pip_size  = syminfo.ticker == "USDJPY"                                 ? 0.01  :
-                  syminfo.ticker == "XAUUSD" or syminfo.ticker == "XAGUSD"   ? 0.01  :
-                  syminfo.ticker == "NAS100"                                 ? 1.0   :
+float pip_size  = syminfo.ticker == "USDJPY"                               ? 0.01  :
+                  syminfo.ticker == "XAUUSD" or syminfo.ticker == "XAGUSD" ? 0.01  :
                   0.0001
-string pip_type = syminfo.ticker == "USDJPY" ? "jpy"   :
-                  syminfo.ticker == "NAS100" ? "index" :
-                  "standard"
+string pip_type = syminfo.ticker == "USDJPY" ? "jpy" : "standard"
 
 bool is_15m = timeframe.period == "15"
 
@@ -73,6 +70,11 @@ var float last_ltf_sh = na, var float last_ltf_sl = na
 var int   last_sh_idx = na, var int   last_sl_idx = na
 var bool  long_fired  = false, var bool short_fired = false
 
+var bool  in_trade   = false
+var float trade_sl   = na
+var float trade_tp   = na
+var bool  trade_long = false
+
 if not na(ltf_ph)
     float new_sh    = high[N_LTF]
     string lbl_text = na(prev_ltf_sh) ? "SH" : (new_sh > prev_ltf_sh ? "HH" : "LH")
@@ -98,10 +100,21 @@ if not na(ltf_pl)
     short_fired := false
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  IN-TRADE TRACKING  (mirrors strategy.position_size == 0)
+// ═══════════════════════════════════════════════════════════════════════════
+if in_trade and not na(trade_sl) and not na(trade_tp)
+    if trade_long
+        if low <= trade_sl or high >= trade_tp
+            in_trade := false
+    else
+        if high >= trade_sl or low <= trade_tp
+            in_trade := false
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  ENTRY TRIGGERS + SL % RANGE FILTER
 // ═══════════════════════════════════════════════════════════════════════════
-bool can_long  = is_15m and htf_bull and not long_fired  and not na(last_ltf_sh) and not na(last_ltf_sl)
-bool can_short = is_15m and htf_bear and not short_fired and not na(last_ltf_sh) and not na(last_ltf_sl)
+bool can_long  = is_15m and htf_bull and not long_fired  and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
+bool can_short = is_15m and htf_bear and not short_fired and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
 
 float long_stop_pct  = not na(last_ltf_sl) ? math.abs(close - last_ltf_sl) / close * 100 : na
 float short_stop_pct = not na(last_ltf_sh) ? math.abs(last_ltf_sh - close) / close * 100 : na
@@ -117,13 +130,8 @@ bool long_skipped_wide_sl   = can_long  and close > last_ltf_sh and not na(long_
 bool short_skipped_tight_sl = can_short and close < last_ltf_sl and not na(short_stop_pct) and short_stop_pct < minStopPct
 bool short_skipped_wide_sl  = can_short and close < last_ltf_sl and not na(short_stop_pct) and short_stop_pct > maxStopPct
 
-if long_sig
-    long_fired  := true
-if short_sig
-    short_fired := true
-
 // ═══════════════════════════════════════════════════════════════════════════
-//  PRICE COORDINATES
+//  PRICE COORDINATES  (must be before signal handlers so l_sl/l_tp are defined)
 // ═══════════════════════════════════════════════════════════════════════════
 float l_entry   = close
 float l_sl      = last_ltf_sl
@@ -136,6 +144,20 @@ float s_sl      = last_ltf_sh
 float s_risk    = s_sl - s_entry
 float s_tp      = s_entry - s_risk * RR
 float s_sl_pips = s_risk / pip_size
+
+if long_sig
+    long_fired  := true
+    in_trade    := true
+    trade_long  := true
+    trade_sl    := l_sl
+    trade_tp    := l_tp
+
+if short_sig
+    short_fired := true
+    in_trade    := true
+    trade_long  := false
+    trade_sl    := s_sl
+    trade_tp    := s_tp
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  WEBHOOK JSON PAYLOADS
