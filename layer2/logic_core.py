@@ -2542,6 +2542,20 @@ class SignalPayload(BaseModel):
         return v
 
 
+async def _query_positions_with_retry(zmq_url: str, max_attempts: int = 3) -> tuple[list[dict], str]:
+    """Query positions with up to max_attempts retries (3 s apart) to handle transient REP socket timeouts."""
+    for attempt in range(max_attempts):
+        try:
+            positions = await asyncio.to_thread(_query_positions, zmq_url)
+            return positions, ""
+        except Exception as exc:
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(3)
+            else:
+                return [], str(exc)
+    return [], "unknown error"
+
+
 async def _verify_and_notify(
     *,
     ticker: str,
@@ -2560,9 +2574,10 @@ async def _verify_and_notify(
     price_digits: int,
     entry: float,
 ) -> None:
-    """Wait 5 s for orders to fill, query both workers, then send a single Telegram
-    notification reporting actual confirmed status instead of assumed status."""
-    await asyncio.sleep(5)
+    """Wait 8 s for orders to fill, then query both workers with retry logic before sending
+    Telegram confirmation. Retries up to 3× (3 s apart) to avoid false failures from
+    transient REP socket timeouts when the equity monitor cycle overlaps."""
+    await asyncio.sleep(8)
 
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
     prop_dir = 0 if prop_signal == "LONG" else 1   # MT5 position type: 0=BUY 1=SELL
@@ -2573,21 +2588,17 @@ async def _verify_and_notify(
     prop_err = ""
     pers_err = ""
 
-    try:
-        prop_positions = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
+    prop_positions, prop_err = await _query_positions_with_retry(ZMQ_REQ_PROP)
+    if not prop_err:
         prop_ok = any(p["symbol"] == broker_symbol and p["type"] == prop_dir for p in prop_positions)
         if not prop_ok:
             prop_err = "no matching position found on prop account"
-    except Exception as exc:
-        prop_err = str(exc)
 
-    try:
-        pers_positions = await asyncio.to_thread(_query_positions, ZMQ_REQ_PERS)
+    pers_positions, pers_err = await _query_positions_with_retry(ZMQ_REQ_PERS)
+    if not pers_err:
         pers_ok = any(p["symbol"] == broker_symbol and p["type"] == pers_dir for p in pers_positions)
         if not pers_ok:
             pers_err = "no matching position found on personal account"
-    except Exception as exc:
-        pers_err = str(exc)
 
     pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
     prop_arrow = "↑ LONG" if prop_signal == "LONG" else "↓ SHORT"
