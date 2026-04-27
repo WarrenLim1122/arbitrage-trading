@@ -72,6 +72,7 @@ PHASE_CONFIG_PATH      = ROOT / "config" / "phase_config.json"
 RISK_PARAMS_PATH       = ROOT / "config" / "risk_params.json"
 PROPFIRM_CONFIG_PATH   = ROOT / "config" / "propfirm_config.json"
 CONSISTENCY_LOG_PATH   = ROOT / "config" / "consistency_log.json"
+SYMBOL_MAP_PATH        = ROOT / "config" / "symbol_map.json"
 
 # ── Timezone ──────────────────────────────────────────────────────────────
 SGT = ZoneInfo("Asia/Singapore")
@@ -83,6 +84,13 @@ CHAT_ID   = int(os.environ["TELEGRAM_CHAT_ID"])
 # ── Risk params ───────────────────────────────────────────────────────────
 with RISK_PARAMS_PATH.open() as _f:
     _risk = json.load(_f)
+
+# ── Symbol map (canonical ticker → broker MT5 symbol) ─────────────────────
+try:
+    with SYMBOL_MAP_PATH.open() as _f:
+        _SYMBOL_MAP: dict[str, str] = json.load(_f)
+except Exception:
+    _SYMBOL_MAP = {}
 
 PROP_RISK_PCT  = float(_risk["prop_risk_pct"])
 PHASE_MULT     = {int(k): float(v) for k, v in _risk["phase_multipliers"].items()}
@@ -853,17 +861,19 @@ def _run_equity_check() -> None:
     # Kill 1 — daily loss (all phases) — measured from day_start_equity
     daily_loss_pct = (day_start - prop_equity) / day_start * 100
     if daily_loss_pct >= pf["max_drawdown_daily_pct"] > 0:
+        pos_str = _snapshot_positions_str()
+        _dispatch_force_close("daily_loss_limit", halt=True)
         msg = (
             f"<b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
             f"Daily loss: <b>{daily_loss_pct:.2f}%</b> ≥ {pf['max_drawdown_daily_pct']}%\n"
-            f"Equity: <b>{prop_equity:.2f}</b>\n"
-            f"All positions closed. System halted.\n\n"
+            f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+            f"<b>Positions closed:</b>\n{pos_str}\n\n"
+            f"All positions force-closed. System halted.\n\n"
             f"<b>Next steps:</b>\n"
             f"/resume — resume trading tomorrow\n"
             f"/changepropfirm — switch to a new prop firm account"
         )
         logger.warning(msg)
-        _dispatch_force_close("daily_loss_limit", halt=True)
         _alert_sync(msg)
         return
 
@@ -875,16 +885,18 @@ def _run_equity_check() -> None:
             overall_loss_pct = (baseline - prop_equity) / baseline * 100
             if overall_loss_pct >= overall_dd_limit:
                 floor = round(baseline * (1.0 - overall_dd_limit / 100.0), 2)
+                pos_str = _snapshot_positions_str()
+                _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
                 msg = (
                     f"<b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
                     f"Overall loss: <b>{overall_loss_pct:.2f}%</b> ≥ {overall_dd_limit}%\n"
-                    f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  Equity: <b>{prop_equity:.2f}</b>\n"
-                    f"Prop firm account blown. All positions closed. <b>Permanent halt.</b>\n\n"
+                    f"Baseline: {baseline:.2f}  |  Floor: {floor:.2f}  |  Equity: <b>{prop_equity:.2f}</b>\n\n"
+                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                    f"All positions force-closed. Prop firm account blown. <b>Permanent halt.</b>\n\n"
                     f"<b>Next steps:</b>\n"
                     f"Buy a new prop firm challenge, then run /changepropfirm → /phase1 → /resume"
                 )
                 logger.warning(msg)
-                _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
                 _alert_sync(msg)
                 return
 
@@ -892,16 +904,18 @@ def _run_equity_check() -> None:
     daily_profit_pct = (prop_equity - day_start) / day_start * 100
     cap = pf.get("daily_profit_cap_pct", 0.0)
     if cap > 0 and daily_profit_pct >= cap:
+        pos_str = _snapshot_positions_str()
+        _dispatch_force_close("daily_profit_cap", halt=True)
         msg = (
             f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
             f"Daily profit: <b>{daily_profit_pct:.2f}%</b> ≥ {cap}%\n"
-            f"Equity: <b>{prop_equity:.2f}</b>\n"
-            f"All positions closed for today. Prop firm consistency rule enforced.\n\n"
+            f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+            f"<b>Positions closed:</b>\n{pos_str}\n\n"
+            f"All positions force-closed. Daily cap enforced.\n\n"
             f"<b>Next steps:</b>\n"
             f"/resume — resume trading tomorrow"
         )
         logger.warning(msg)
-        _dispatch_force_close("daily_profit_cap", halt=True)
         _alert_sync(msg)
         return
 
@@ -910,12 +924,15 @@ def _run_equity_check() -> None:
         overall_pct = (prop_equity - baseline) / baseline * 100
         target      = pf.get("profit_target_pct", 0.0)
         if target > 0 and overall_pct >= target:
+            pos_str = _snapshot_positions_str()
+            _dispatch_force_close("profit_target", halt=True, permanent=True)
             if phase == 1:
                 msg = (
                     f"<b>KILL 4 — Evaluation PASSED! Phase 1 Complete.</b>\n\n"
                     f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
-                    f"Equity: <b>{prop_equity:.2f}</b>\n"
-                    f"All positions closed. System halted.\n\n"
+                    f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                    f"All positions force-closed. System halted.\n\n"
                     f"<b>Ready to move to funded phase?</b>\n"
                     f"/phase2 — configure and start Phase 2\n"
                     f"/changepropfirm — start a new challenge instead"
@@ -924,14 +941,14 @@ def _run_equity_check() -> None:
                 msg = (
                     f"<b>KILL 4 — Phase {phase} Target Reached!</b>\n\n"
                     f"Overall profit: <b>{overall_pct:.2f}%</b> ≥ {target}%\n"
-                    f"Equity: <b>{prop_equity:.2f}</b>\n"
-                    f"All positions closed. System halted.\n\n"
+                    f"Equity: <b>{prop_equity:.2f}</b>\n\n"
+                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                    f"All positions force-closed. System halted.\n\n"
                     f"<b>Options:</b>\n"
                     f"/phase2 — start a new challenge (wizard will ask for settings)\n"
                     f"/stop — end trading on this account"
                 )
             logger.warning(msg)
-            _dispatch_force_close("profit_target", halt=True, permanent=True)
             _alert_sync(msg)
             return
 
@@ -954,18 +971,20 @@ def _run_equity_check() -> None:
             if rule_met:
                 firm = pf.get("propfirm_name", "prop firm")
                 overall_pct = total / baseline * 100 if baseline > 0 else 0.0
+                pos_str = _snapshot_positions_str()
+                _dispatch_force_close("consistency_rule", halt=True, permanent=True)
                 msg = (
                     f"<b>KILL 5 — Consistency Rule Met</b>\n\n"
-                    f"All positions closed. Trading halted.\n\n"
                     f"<pre>{table_str}</pre>\n\n"
                     f"<b>Overall profit: {overall_pct:.2f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
+                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                    f"All positions force-closed. Trading halted.\n\n"
                     f"<b>Action required:</b>\n"
                     f"Log in to <b>{firm}</b> and submit your\n"
                     f"profit share withdrawal claim now.\n\n"
                     f"Send /phase2 + /resume to start a new cycle."
                 )
                 logger.warning("KILL 5 — consistency rule met: %.1f%% < %.1f%%", ratio_pct, cons_threshold)
-                _dispatch_force_close("consistency_rule", halt=True, permanent=True)
                 _alert_sync(msg)
 
 
@@ -976,6 +995,9 @@ def _run_equity_check() -> None:
  PF_CONSISTENCY, PF_CONFIRM) = range(10)
 
 (P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_CONFIRM) = range(10, 14)
+
+EMERGENCY_CONFIRM  = 14
+CLOSEPAIR_CONFIRM  = 15
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
@@ -1297,7 +1319,10 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
         return ConversationHandler.END
     _wizard_data.clear()
-    await update.message.reply_text("<b>Wizard Cancelled</b>\n\nNo changes saved.", parse_mode="HTML")
+    await update.message.reply_text(
+        "<b>Cancelled: /changepropfirm</b>\n\nNo changes saved.\nType /changepropfirm to start again.",
+        parse_mode="HTML",
+    )
     return ConversationHandler.END
 
 
@@ -1610,7 +1635,10 @@ async def _p2_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
         return ConversationHandler.END
     _p2_wizard_data.clear()
-    await update.message.reply_text("<b>Phase 2 Setup Cancelled.</b>", parse_mode="HTML")
+    await update.message.reply_text(
+        "<b>Cancelled: /phase2</b>\n\nNo changes saved.\nType /phase2 to start again.",
+        parse_mode="HTML",
+    )
     return ConversationHandler.END
 
 
@@ -1668,6 +1696,14 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     floor  = round(baseline * (1.0 - dd_overall / 100.0), 2) if baseline > 0 and dd_overall > 0 else 0.0
     mult   = PHASE_MULT.get(phase, "?")
     curfew = _is_sgt_curfew()
+    if last_ts and last_ts != "never":
+        try:
+            _sgt_off = timedelta(hours=8)
+            last_ts_display = (datetime.fromisoformat(last_ts) + _sgt_off).strftime("%Y-%m-%d %H:%M SGT")
+        except Exception:
+            last_ts_display = last_ts
+    else:
+        last_ts_display = "never"
     await update.message.reply_text(
         f"<b>System Status</b>\n\n"
         f"<b>Phase:</b> {phase}  (×{mult})\n"
@@ -1682,7 +1718,7 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Day-start:        {day_start:.2f}\n"
         f"Daily DD limit:   {dd_daily}%\n"
         f"Daily profit cap: {cap}%\n\n"
-        f"<b>Last signal:</b> {last_ts}",
+        f"<b>Last signal:</b> {last_ts_display}",
         parse_mode="HTML",
     )
 
@@ -1730,9 +1766,66 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
-        return
+        return ConversationHandler.END
+
+    await update.message.reply_text("Fetching open positions…")
+
+    try:
+        prop_pos = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
+        prop_err = None
+    except Exception as exc:
+        prop_pos = None
+        prop_err = str(exc)
+    try:
+        pers_pos = await asyncio.to_thread(_query_positions, ZMQ_REQ_PERS)
+        pers_err = None
+    except Exception as exc:
+        pers_pos = None
+        pers_err = str(exc)
+
+    lines = ["<b>EMERGENCY HALT — Position Summary</b>\n"]
+
+    total_open = 0
+    for label, positions, err in [
+        ("Personal (VPS #3)", pers_pos, pers_err),
+        ("Prop (VPS #2)", prop_pos, prop_err),
+    ]:
+        lines.append(f"<b>{label}:</b>")
+        if err:
+            lines.append(f"  OFFLINE — {err}")
+        elif not positions:
+            lines.append("  No open positions")
+        else:
+            for p in positions:
+                direction = "LONG" if p["type"] == 0 else "SHORT"
+                lines.append(
+                    f"  {p['symbol']}  {direction}  {p['volume']:.2f} lots"
+                    f"  |  P&amp;L: ${p['profit']:.2f}"
+                )
+                total_open += 1
+        lines.append("")
+
+    if total_open == 0:
+        lines.append("No positions are currently open on either account.")
+
+    lines.append("Reply <code>CONFIRM</code> to force-close all positions and halt signal processing.")
+    lines.append("Send /cancel to abort.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    return EMERGENCY_CONFIRM
+
+
+async def _emergency_execute(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    if (update.message.text or "").strip() != "CONFIRM":
+        await update.message.reply_text(
+            "Type <code>CONFIRM</code> to proceed, or /cancel to abort.",
+            parse_mode="HTML",
+        )
+        return EMERGENCY_CONFIRM
     await asyncio.to_thread(_dispatch_force_close, "emergency_halt", halt=True)
     await update.message.reply_text(
         "<b>EMERGENCY HALT EXECUTED</b>\n\n"
@@ -1742,6 +1835,17 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode="HTML",
     )
     logger.warning("Telegram: emergency halt executed by user")
+    return ConversationHandler.END
+
+
+async def _emergency_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "<b>Cancelled: /emergency</b>\n\nNo positions closed.\nType /emergency to try again.",
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
 
 
 def _query_positions(zmq_url: str) -> list[dict]:
@@ -1756,6 +1860,31 @@ def _query_positions(zmq_url: str) -> list[dict]:
         return reply.get("positions", [])
     finally:
         sock.close()
+
+
+def _snapshot_positions_str() -> str:
+    """Query both accounts and return a formatted positions summary (sync, for kill alerts)."""
+    lines = []
+    for label, url in [("Personal", ZMQ_REQ_PERS), ("Prop", ZMQ_REQ_PROP)]:
+        try:
+            positions = _query_positions(url)
+            if positions:
+                for p in positions:
+                    arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
+                    lines.append(
+                        f"  {label}: {p['symbol']} {arrow} {p['volume']:.2f} lots"
+                        f"  P&amp;L: ${p['profit']:+.2f}"
+                    )
+            else:
+                lines.append(f"  {label}: No open positions")
+        except Exception:
+            lines.append(f"  {label}: OFFLINE — could not query")
+    return "\n".join(lines)
+
+
+def _pnl_bar(pct: float, width: int = 10) -> str:
+    filled = max(0, min(int(round(pct / 100 * width)), width))
+    return "[" + "█" * filled + "░" * (width - filled) + f"] {pct:.1f}%"
 
 
 async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1824,19 +1953,23 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     target_lim  = baseline * target_pct  / 100
 
     def _pct(val, lim):
-        return f"{abs(val)/lim*100:.1f}%" if lim > 0 else "n/a"
+        return abs(val) / lim * 100 if lim > 0 else 0.0
 
     await update.message.reply_text(
         f"<b>P&amp;L Dashboard (Prop Account)</b>\n\n"
-        f"Baseline:     ${baseline:,.2f}\n"
-        f"Day started:  ${day_start:,.2f}\n"
-        f"Now:          ${equity:,.2f}\n\n"
+        f"Baseline:    ${baseline:,.2f}\n"
+        f"Day started: ${day_start:,.2f}\n"
+        f"Now:         ${equity:,.2f}\n\n"
         f"<b>Daily P&amp;L:</b>  ${daily_pnl:+,.2f}\n"
-        f"  Profit cap  ${cap_lim:,.2f}  ({_pct(daily_pnl, cap_lim)} used)\n"
-        f"  DD limit   -${dd_day_lim:,.2f}  ({_pct(-daily_pnl, dd_day_lim)} used)\n\n"
+        f"  Profit cap  ${cap_lim:,.2f}\n"
+        f"  <code>{_pnl_bar(_pct(daily_pnl, cap_lim))}</code>\n"
+        f"  DD limit   -${dd_day_lim:,.2f}\n"
+        f"  <code>{_pnl_bar(_pct(-daily_pnl, dd_day_lim))}</code>\n\n"
         f"<b>Overall P&amp;L:</b> ${overall_pnl:+,.2f}\n"
-        f"  Target      ${target_lim:,.2f}  ({_pct(overall_pnl, target_lim)} used)\n"
-        f"  DD limit   -${dd_all_lim:,.2f}  ({_pct(-overall_pnl, dd_all_lim)} used)",
+        f"  Target      ${target_lim:,.2f}\n"
+        f"  <code>{_pnl_bar(_pct(overall_pnl, target_lim))}</code>\n"
+        f"  DD limit   -${dd_all_lim:,.2f}\n"
+        f"  <code>{_pnl_bar(_pct(-overall_pnl, dd_all_lim))}</code>",
         parse_mode="HTML",
     )
 
@@ -1933,43 +2066,101 @@ async def _cmd_suppressed(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     for ticker in sorted(all_pairs):
-        reasons = []
+        lines.append(f"<b>{ticker}</b>")
+        if ticker in manual_active:
+            lines.append(f"  Manually blocked via /closepair")
+            lines.append(f"  Unblock: /resumepair {ticker}")
         if ticker in news_active:
             ends_sgt = (news_active[ticker] + sgt_off).strftime("%H:%M SGT")
-            reasons.append(f"news (until {ends_sgt})")
-        if ticker in manual_active:
-            reasons.append("manual /closepair")
-        lines.append(f"{ticker}: {', '.join(reasons)}")
+            lines.append(f"  News suppression — signals blocked until {ends_sgt}")
+            lines.append(f"  Unblocks automatically after news window")
+        lines.append("")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
-async def _cmd_closepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def _cmd_closepair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
-        return
+        return ConversationHandler.END
     text = (update.message.text or "").strip().split()
     if len(text) < 2:
         await update.message.reply_text("Usage: /closepair EURUSD")
-        return
+        return ConversationHandler.END
     ticker = text[1].upper()
     if ticker not in ALLOWED_PAIRS:
         await update.message.reply_text(
             f"Unknown pair: {ticker}\nAllowed: {', '.join(sorted(ALLOWED_PAIRS))}"
         )
-        return
+        return ConversationHandler.END
 
+    ctx.chat_data["closepair_ticker"] = ticker
+    await update.message.reply_text(f"Fetching {ticker} positions…")
+
+    broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
+    lines = [f"<b>Close Pair — {ticker}</b>\n"]
+    total_open = 0
+    for label, url in [("Personal (VPS #3)", ZMQ_REQ_PERS), ("Prop (VPS #2)", ZMQ_REQ_PROP)]:
+        try:
+            positions = await asyncio.to_thread(_query_positions, url)
+            pair_pos = [p for p in positions if p["symbol"] in (ticker, broker_symbol)]
+            lines.append(f"<b>{label}:</b>")
+            if pair_pos:
+                for p in pair_pos:
+                    arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
+                    lines.append(
+                        f"  {p['symbol']} {arrow} {p['volume']:.2f} lots"
+                        f"  |  P&amp;L: ${p['profit']:+.2f}"
+                    )
+                    total_open += 1
+            else:
+                lines.append("  No open positions")
+        except Exception as exc:
+            lines.append(f"<b>{label}:</b>\n  OFFLINE — {exc}")
+        lines.append("")
+
+    if total_open == 0:
+        lines.append(f"No {ticker} positions are currently open on either account.")
+    lines.append(f"Reply <code>CONFIRM</code> to close all {ticker} positions and block new signals.")
+    lines.append("Send /cancel to abort.")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    return CLOSEPAIR_CONFIRM
+
+
+async def _closepair_execute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    if (update.message.text or "").strip() != "CONFIRM":
+        await update.message.reply_text(
+            "Type <code>CONFIRM</code> to proceed, or /cancel to abort.",
+            parse_mode="HTML",
+        )
+        return CLOSEPAIR_CONFIRM
+    ticker = ctx.chat_data.get("closepair_ticker", "")
     await asyncio.to_thread(_dispatch_close_ticker, ticker, "manual_closepair")
     with _manual_suppress_lock:
         _manual_suppressed_pairs.add(ticker)
     _dispatch_news_suppress(ticker, datetime(9999, 12, 31, tzinfo=timezone.utc))
-
     await update.message.reply_text(
         f"<b>{ticker} closed and blocked.</b>\n\n"
         f"All {ticker} positions closed on both accounts.\n"
         f"New {ticker} signals suppressed until /resumepair {ticker}.",
         parse_mode="HTML",
     )
-    logger.warning("Manual closepair: %s", ticker)
+    logger.warning("Manual closepair executed: %s", ticker)
+    return ConversationHandler.END
+
+
+async def _closepair_abort(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    ticker = ctx.chat_data.get("closepair_ticker", "")
+    await update.message.reply_text(
+        f"<b>Cancelled: /closepair {ticker}</b>\n\nNo positions closed.\n"
+        f"Type /closepair {ticker} to try again.",
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
 
 
 async def _cmd_resumepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2117,38 +2308,66 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         "<b>TEE Bot — Commands</b>\n\n"
+
         "<b>Emergency</b>\n"
-        "/emergency — Force-close ALL positions on both accounts + halt\n\n"
+        "/emergency\n"
+        "Force-close ALL positions on both accounts + halt\n\n"
+
         "<b>Phase &amp; Trading Control</b>\n"
-        "/phase1 — Phase 1 (×0.20 lots, evaluation) — runs 8-step config wizard\n"
-        "/phase2 — Next phase (×0.70 lots) — wizard: same as Phase 1 or update settings\n"
-        "/resume — Resume signal processing\n"
-        "/stop — Halt signal processing (open trades continue to SL/TP)\n\n"
+        "/phase1\n"
+        "Enter Phase 1 (×0.20 lots) — runs prop firm config wizard\n"
+        "/phase2\n"
+        "Enter Phase 2 (×0.70 lots) — same config or update settings\n"
+        "/resume\n"
+        "Resume signal processing after halt\n"
+        "/stop\n"
+        "Halt new signals (open trades continue to SL/TP)\n\n"
+
         "<b>Position Limits</b>\n"
-        "/setmaxpos 2 — Set max simultaneous open trades (1–10)\n"
-        "/maxpos — Show current limit and open count\n\n"
+        "/setmaxpos 2\n"
+        "Set max simultaneous open trades (1–10)\n"
+        "/maxpos\n"
+        "Show current limit and open count\n\n"
+
         "<b>Pair Control</b>\n"
-        "/closepair EURUSD — Close all positions for pair + block new signals\n"
-        "/resumepair EURUSD — Unblock pair and allow new signals\n\n"
+        "/closepair EURUSD\n"
+        "Close all positions for a pair + block new signals\n"
+        "/resumepair EURUSD\n"
+        "Unblock a pair and allow new signals\n\n"
+
         "<b>Status &amp; Monitoring</b>\n"
-        "/positions — Open positions on both accounts\n"
-        "/equity — Live balance + equity on both accounts\n"
-        "/pnl — Today's P&amp;L vs daily cap and DD limits\n"
-        "/consistency — Consistency rule tracker (Phase 2 only)\n"
-        "/health — Ping all 4 layers\n"
-        "/news — Upcoming high-impact events (next 4h)\n"
-        "/suppressed — Active suppression blackboard\n"
-        "/status — Live system status\n"
-        "/propfirm — Current prop firm config\n"
-        "/changepropfirm — Set up new prop firm (9-step wizard)\n"
-        "/cancel — Cancel wizard mid-flow\n\n"
+        "/positions\n"
+        "Open positions on both accounts\n"
+        "/equity\n"
+        "Live balance + equity on both accounts\n"
+        "/pnl\n"
+        "Today's P&amp;L vs daily cap and DD limits\n"
+        "/consistency\n"
+        "Consistency rule tracker (Phase 2 only)\n"
+        "/health\n"
+        "Ping all 4 layers and report live/dead\n"
+        "/news\n"
+        "Upcoming high-impact events (next 4h)\n"
+        "/suppressed\n"
+        "Active suppression blackboard (manual + news)\n"
+        "/status\n"
+        "Live system status and last signal time\n"
+        "/propfirm\n"
+        "Current prop firm config\n"
+        "/changepropfirm\n"
+        "Set up or update prop firm (9-step wizard)\n"
+        "/cancel\n"
+        "Cancel any wizard mid-flow\n\n"
+
         "<b>Kill Conditions</b> (automatic)\n"
         "Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
         "Kill 2 — overall loss ≥ DD overall limit → close all + permanent halt\n"
         "Kill 3 — daily profit ≥ cap → close all + halt\n"
         "Kill 4 — overall profit ≥ target → close all + permanent halt → /phase2\n"
-        "Kill 5 — consistency rule met (largest day &lt; threshold%) → close all + permanent halt → claim payout\n\n"
+        "Kill 5 — consistency rule met → close all + permanent halt → claim payout\n\n"
+
         "<b>Trading window:</b> 12:00–00:00 SGT, weekdays only\n\n"
+
         "<b>Startup Sequence</b>\n"
         "/changepropfirm → /phase1 → /resume",
         parse_mode="HTML",
@@ -2188,23 +2407,41 @@ def _run_bot() -> None:
         per_chat=True,
     )
 
+    emergency_wizard = ConversationHandler(
+        entry_points=[CommandHandler("emergency", _cmd_emergency)],
+        states={
+            EMERGENCY_CONFIRM: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _emergency_execute)],
+        },
+        fallbacks=[CommandHandler("cancel", _emergency_abort)],
+        per_chat=True,
+    )
+
+    closepair_wizard = ConversationHandler(
+        entry_points=[CommandHandler("closepair", _cmd_closepair)],
+        states={
+            CLOSEPAIR_CONFIRM: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _closepair_execute)],
+        },
+        fallbacks=[CommandHandler("cancel", _closepair_abort)],
+        per_chat=True,
+    )
+
     tg_app = Application.builder().token(BOT_TOKEN).build()
     tg_app.add_handler(wizard)
     tg_app.add_handler(p2_wizard)
+    tg_app.add_handler(emergency_wizard)
+    tg_app.add_handler(closepair_wizard)
     tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("equity",        _cmd_equity))
-    tg_app.add_handler(CommandHandler("emergency",     _cmd_emergency))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
     tg_app.add_handler(CommandHandler("health",        _cmd_health))
     tg_app.add_handler(CommandHandler("news",          _cmd_news))
     tg_app.add_handler(CommandHandler("suppressed",    _cmd_suppressed))
-    tg_app.add_handler(CommandHandler("closepair",     _cmd_closepair))
     tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))
     tg_app.add_handler(CommandHandler("setmaxpos",     _cmd_setmaxpos))
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
@@ -2449,14 +2686,16 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
 
+    pers_arrow = "↑ LONG" if pers_ticket["signal"] == "LONG" else "↓ SHORT"
+    prop_arrow = "↑ LONG" if prop_ticket["signal"] == "LONG" else "↓ SHORT"
     await _telegram_alert(
         f"<b>Trade Fired — {payload.ticker}</b>\n\n"
-        f"<b>Personal (signal):</b> {pers_ticket['signal']}  {pers_lots:.2f} lots\n"
+        f"<b>Personal (signal):</b> {pers_arrow}  {pers_lots:.2f} lots\n"
         f"Entry: {payload.entry:.{price_digits}f}  "
         f"SL: {payload.sl:.{price_digits}f}  "
         f"TP: {pers_tp:.{price_digits}f}\n"
         f"Risk: ${pers_dollar_risk:.2f}\n\n"
-        f"<b>Prop (inverse):</b> {prop_ticket['signal']}  {prop_lots:.2f} lots\n"
+        f"<b>Prop (inverse):</b> {prop_arrow}  {prop_lots:.2f} lots\n"
         f"Entry: {payload.entry:.{price_digits}f}  "
         f"SL: {prop_sl:.{price_digits}f}  "
         f"TP: {prop_tp:.{price_digits}f}\n"
