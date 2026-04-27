@@ -679,6 +679,8 @@ _pers_fail_count:      int  = 0
 _prop_down:            bool = False
 _pers_down:            bool = False
 _WORKER_DOWN_THRESHOLD: int = 3   # consecutive 30 s misses before alert (~90 s)
+_prop_algo_disabled:   bool = False   # True while prop MT5 reports trade_allowed=False
+_pers_algo_disabled:   bool = False   # True while personal MT5 reports trade_allowed=False
 
 
 def _update_day_start(equity: float) -> None:
@@ -749,6 +751,7 @@ def _equity_monitor_loop() -> None:
 def _run_equity_check() -> None:
     global _last_curfew_close_date
     global _prop_fail_count, _pers_fail_count, _prop_down, _pers_down
+    global _prop_algo_disabled, _pers_algo_disabled
 
     with _state_lock:
         p_halt = _phase_state.get("permanently_halted", False)
@@ -780,6 +783,24 @@ def _run_equity_check() -> None:
             )
         else:
             _prop_fail_count = 0
+
+        # Algo-trading guard: alert once when MT5 disables autotrading, clear when restored
+        prop_trade_ok = _eq_result.get("trade_allowed", True)
+        if not prop_trade_ok and not _prop_algo_disabled:
+            _prop_algo_disabled = True
+            _alert_sync(
+                "<b>⚠️ Prop MT5 — Algo Trading DISABLED</b>\n\n"
+                "MT5 on VPS #2 has disabled automated trading.\n"
+                "Orders will be silently rejected until you fix this.\n\n"
+                "<b>Fix (VPS #2 noVNC):</b>\n"
+                "1. Click the <b>Algo Trading</b> button in the MT5 toolbar (make it green)\n"
+                "2. Tools → Options → Expert Advisors → uncheck "
+                "<i>'Disable algorithmic trading when the account has been changed'</i>"
+            )
+        elif prop_trade_ok and _prop_algo_disabled:
+            _prop_algo_disabled = False
+            _alert_sync("<b>✅ Prop MT5 — Algo Trading Restored</b>\n\nVPS #2 algorithmic trading is enabled again.")
+
     except Exception as exc:
         _prop_fail_count += 1
         logger.warning("Monitor: prop equity query failed (%d/%d): %s",
@@ -797,7 +818,7 @@ def _run_equity_check() -> None:
         return
 
     try:
-        _query_equity(ZMQ_REQ_PERS, "")
+        _pers_result = _query_equity(ZMQ_REQ_PERS, "")
         if _pers_down:
             _pers_down = False
             _pers_fail_count = 0
@@ -807,6 +828,23 @@ def _run_equity_check() -> None:
             )
         else:
             _pers_fail_count = 0
+
+        pers_trade_ok = _pers_result.get("trade_allowed", True)
+        if not pers_trade_ok and not _pers_algo_disabled:
+            _pers_algo_disabled = True
+            _alert_sync(
+                "<b>⚠️ Personal MT5 — Algo Trading DISABLED</b>\n\n"
+                "MT5 on VPS #3 has disabled automated trading.\n"
+                "Orders will be silently rejected until you fix this.\n\n"
+                "<b>Fix (VPS #3 noVNC):</b>\n"
+                "1. Click the <b>Algo Trading</b> button in the MT5 toolbar (make it green)\n"
+                "2. Tools → Options → Expert Advisors → uncheck "
+                "<i>'Disable algorithmic trading when the account has been changed'</i>"
+            )
+        elif pers_trade_ok and _pers_algo_disabled:
+            _pers_algo_disabled = False
+            _alert_sync("<b>✅ Personal MT5 — Algo Trading Restored</b>\n\nVPS #3 algorithmic trading is enabled again.")
+
     except Exception as exc:
         _pers_fail_count += 1
         logger.warning("Monitor: personal equity query failed (%d/%d): %s",

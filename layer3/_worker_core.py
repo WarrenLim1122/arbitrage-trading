@@ -517,8 +517,10 @@ def _build_equity_reply(ticker: str) -> dict:
     try:
         with _mt5_lock:
             acct = mt5.account_info()
-        balance = acct.balance if acct else 0.0
-        equity  = acct.equity  if acct else 0.0
+            term = mt5.terminal_info()
+        balance       = acct.balance if acct else 0.0
+        equity        = acct.equity  if acct else 0.0
+        trade_allowed = bool(term.trade_allowed) if term else True
 
         point = contract_size = tick_size = tick_value = 0.0
         digits = 5
@@ -531,6 +533,7 @@ def _build_equity_reply(ticker: str) -> dict:
         return {
             "balance":            balance,
             "equity":             equity,
+            "trade_allowed":      trade_allowed,
             "point":              point,
             "contract_size":      contract_size,
             "trade_tick_size":    tick_size,
@@ -542,6 +545,7 @@ def _build_equity_reply(ticker: str) -> dict:
         return {
             "error": str(exc),
             "balance": 0.0, "equity": 0.0,
+            "trade_allowed": True,
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,
         }
