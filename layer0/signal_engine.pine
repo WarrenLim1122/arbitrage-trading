@@ -56,8 +56,11 @@ if is_2hh and is_2hl
 else if is_2lh and is_2ll
     htf_trend := -1
 
-bool htf_bull = htf_trend == 1
-bool htf_bear = htf_trend == -1
+bool htf_bull  = htf_trend == 1
+bool htf_bear  = htf_trend == -1
+bool htf_mixed = not (is_2hh and is_2hl) and not (is_2lh and is_2ll)  // structure in transition → allow both directions
+
+string trend_label = htf_bull ? "BULLISH" : htf_bear ? "BEARISH" : "MIXED"
 
 bgcolor(htf_bull ? color.new(color.green, 90) : htf_bear ? color.new(color.red, 90) : na,
     title="1D Trend Background")
@@ -123,8 +126,8 @@ if in_trade and not na(trade_sl) and not na(trade_tp)
 // ═══════════════════════════════════════════════════════════════════════════
 //  ENTRY TRIGGERS + SL % RANGE FILTER
 // ═══════════════════════════════════════════════════════════════════════════
-bool can_long  = is_15m and htf_bull and not long_fired  and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
-bool can_short = is_15m and htf_bear and not short_fired and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
+bool can_long  = is_15m and (htf_bull or htf_mixed) and not long_fired  and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
+bool can_short = is_15m and (htf_bear or htf_mixed) and not short_fired and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
 
 float long_stop_pct  = not na(last_ltf_sl) ? math.abs(close - last_ltf_sl) / close * 100 : na
 float short_stop_pct = not na(last_ltf_sh) ? math.abs(last_ltf_sh - close) / close * 100 : na
@@ -164,7 +167,7 @@ if long_sig
         box.new(bar_index, tp_px,    bar_index + 10, entry_px, border_color=na, bgcolor=color.new(color.green, 85))
         box.new(bar_index, entry_px, bar_index + 10, sl_px,    border_color=na, bgcolor=color.new(color.red,   85))
 
-    string payloadLong = '{"signal":"LONG","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(timenow) + ',"timeframe":"15m","entry":' + str.tostring(entry_px, "#.#####") + ',"sl":' + str.tostring(sl_px, "#.#####") + ',"tp":' + str.tostring(tp_px, "#.#####") + ',"sl_pips":' + str.tostring(sl_pips, "#.##") + ',"sl_percent":' + str.tostring(long_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"BULLISH","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
+    string payloadLong = '{"signal":"LONG","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(timenow) + ',"timeframe":"15m","entry":' + str.tostring(entry_px, "#.#####") + ',"sl":' + str.tostring(sl_px, "#.#####") + ',"tp":' + str.tostring(tp_px, "#.#####") + ',"sl_pips":' + str.tostring(sl_pips, "#.##") + ',"sl_percent":' + str.tostring(long_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"' + trend_label + '","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
     alert(payloadLong, alert.freq_once_per_bar_close)
 
 if short_sig
@@ -188,7 +191,7 @@ if short_sig
         box.new(bar_index, entry_px, bar_index + 10, tp_px,    border_color=na, bgcolor=color.new(color.green, 85))
         box.new(bar_index, sl_px,    bar_index + 10, entry_px, border_color=na, bgcolor=color.new(color.red,   85))
 
-    string payloadShort = '{"signal":"SHORT","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(timenow) + ',"timeframe":"15m","entry":' + str.tostring(entry_px, "#.#####") + ',"sl":' + str.tostring(sl_px, "#.#####") + ',"tp":' + str.tostring(tp_px, "#.#####") + ',"sl_pips":' + str.tostring(sl_pips, "#.##") + ',"sl_percent":' + str.tostring(short_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"BEARISH","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
+    string payloadShort = '{"signal":"SHORT","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(timenow) + ',"timeframe":"15m","entry":' + str.tostring(entry_px, "#.#####") + ',"sl":' + str.tostring(sl_px, "#.#####") + ',"tp":' + str.tostring(tp_px, "#.#####") + ',"sl_pips":' + str.tostring(sl_pips, "#.##") + ',"sl_percent":' + str.tostring(short_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"' + trend_label + '","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
     alert(payloadShort, alert.freq_once_per_bar_close)
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -213,12 +216,13 @@ plotshape(showSkipMarkers and short_skipped_wide_sl,  title="Short Skipped - Wid
 var table diag = table.new(position.top_right, 2, 8, border_width=1, border_color=color.gray)
 
 if barstate.islast and showTable
-    table.cell(diag, 0, 0, "Locked 1D Trend",
+    table.cell(diag, 0, 0, "1D Trend Gate",
         bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.small)
     table.cell(diag, 1, 0,
-        htf_trend == 1 ? "BULLISH" : htf_trend == -1 ? "BEARISH" : "WAITING",
-        bgcolor=htf_trend == 1 ? color.new(color.green, 40) :
-                htf_trend == -1 ? color.new(color.red, 40) : color.new(color.gray, 40),
+        htf_mixed ? "BOTH (MIXED)" : htf_bull ? "BULLISH" : htf_bear ? "BEARISH" : "WAITING",
+        bgcolor=htf_mixed  ? color.new(color.orange, 20) :
+                htf_bull   ? color.new(color.green,  40) :
+                htf_bear   ? color.new(color.red,    40) : color.new(color.gray, 40),
         text_color=color.white, text_size=size.small)
 
     table.cell(diag, 0, 1, "1D Structure",
