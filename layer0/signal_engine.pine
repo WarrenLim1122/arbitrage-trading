@@ -120,10 +120,10 @@ var bool  trade_long = false
 
 if in_trade and not na(trade_sl) and not na(trade_tp)
     if trade_long
-        if low <= trade_sl or high >= trade_tp
+        if close <= trade_sl or close >= trade_tp
             in_trade := false
     else
-        if high >= trade_sl or low <= trade_tp
+        if close >= trade_sl or close <= trade_tp
             in_trade := false
 
 // ═══════════════════════════════════════════════════════════════════════════
