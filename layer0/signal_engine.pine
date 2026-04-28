@@ -1,111 +1,117 @@
 //@version=6
-indicator("TEE · Layer 0 — 1D/15m Mechanical Engine v8", overlay=true, max_bars_back=500)
+indicator("TEE · Layer 0 — 1D/15m Mechanical Engine v9", overlay=true, max_bars_back=500)
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  PARAMETERS
+// PARAMETERS
 // ═══════════════════════════════════════════════════════════════════════════
 int   N_HTF      = input.int(2, "HTF Fractal Length", minval=1)
 int   N_LTF      = input.int(6, "LTF Fractal Length", minval=1)
 float RR         = input.float(0.27, "RR", minval=0.01, step=0.01)
 
-float minStopPct = input.float(0.50, "Minimum Stop Loss %", minval=0.0, step=0.01,
-     tooltip="Skip trades if SL distance is less than this % of entry price.")
-float maxStopPct = input.float(10.00, "Maximum Stop Loss %", minval=0.0, step=0.01,
-     tooltip="Skip trades if SL distance is greater than this % of entry price.")
+float minStopPct = input.float(0.50, "Minimum Stop Loss %", minval=0.0, step=0.01, tooltip="Skip trades if SL distance is less than this % of entry price.")
+float maxStopPct = input.float(10.00, "Maximum Stop Loss %", minval=0.0, step=0.01, tooltip="Skip trades if SL distance is greater than this % of entry price.")
 
 bool showLabels      = input.bool(true, "Show LTF Labels")
 bool showLevels      = input.bool(true, "Show Entry / SL / TP Levels")
 bool showTable       = input.bool(true, "Show Diagnostic Table")
 bool showSkipMarkers = input.bool(true, "Show Skipped Trade Markers")
 
-float pip_size  = syminfo.ticker == "USDJPY"                               ? 0.01   :
-                  syminfo.ticker == "XAUUSD" or syminfo.ticker == "XAGUSD" ? 0.01   :
-                  0.0001
+float pip_size  = syminfo.ticker == "USDJPY" ? 0.01 : 0.0001
 string pip_type = syminfo.ticker == "USDJPY" ? "jpy" : "standard"
 
 bool is_15m = timeframe.period == "15"
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  1-DAY HTF EXTRACTION  (lookahead_off — no future data leakage)
+// BULLETPROOF 1-DAY (HTF) EXTRACTION
 // ═══════════════════════════════════════════════════════════════════════════
 f_htf_state() =>
     ph = ta.pivothigh(high, N_HTF, N_HTF)
-    pl = ta.pivotlow(low,  N_HTF, N_HTF)
+    pl = ta.pivotlow(low, N_HTF, N_HTF)
+
     ph1 = ta.valuewhen(not na(ph), ph, 0)
     ph2 = ta.valuewhen(not na(ph), ph, 1)
     ph3 = ta.valuewhen(not na(ph), ph, 2)
+
     pl1 = ta.valuewhen(not na(pl), pl, 0)
     pl2 = ta.valuewhen(not na(pl), pl, 1)
     pl3 = ta.valuewhen(not na(pl), pl, 2)
+
     [ph1, ph2, ph3, pl1, pl2, pl3]
 
-[h_ph1, h_ph2, h_ph3, h_pl1, h_pl2, h_pl3] = request.security(
-    syminfo.tickerid, "D", f_htf_state(), lookahead=barmerge.lookahead_off)
+// Daily HTF data
+[h_ph1, h_ph2, h_ph3, h_pl1, h_pl2, h_pl3] = request.security(syminfo.tickerid, "D", f_htf_state(), lookahead=barmerge.lookahead_off)
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  STICKY TREND (1D)
+// FINE-TUNED TREND LOGIC (Sticky State)
 // ═══════════════════════════════════════════════════════════════════════════
 bool is_2hh = not na(h_ph3) and (h_ph1 > h_ph2) and (h_ph2 > h_ph3)
 bool is_2hl = not na(h_pl3) and (h_pl1 > h_pl2) and (h_pl2 > h_pl3)
+
 bool is_2lh = not na(h_ph3) and (h_ph1 < h_ph2) and (h_ph2 < h_ph3)
 bool is_2ll = not na(h_pl3) and (h_pl1 < h_pl2) and (h_pl2 < h_pl3)
 
 var int htf_trend = 0
+
 if is_2hh and is_2hl
     htf_trend := 1
 else if is_2lh and is_2ll
     htf_trend := -1
+// If mixed, keep previous trend
 
 bool htf_bull = htf_trend == 1
 bool htf_bear = htf_trend == -1
 
-bgcolor(htf_bull ? color.new(color.green, 90) : htf_bear ? color.new(color.red, 90) : na,
-    title="1D Trend Background")
+bgcolor(htf_bull ? color.new(color.green, 90) : htf_bear ? color.new(color.red, 90) : na, title="HTF Trend Background")
 bgcolor(not is_15m ? color.new(color.orange, 75) : na, title="Wrong Timeframe Warning")
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DIAGNOSTIC DASHBOARD TEXT
+// ═══════════════════════════════════════════════════════════════════════════
 string raw_struct = (is_2hh and is_2hl) ? "FULL BULL" : (is_2lh and is_2ll) ? "FULL BEAR" : "MIXED (Holding Trend)"
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  15-MINUTE SWING DETECTION + LABELS
+// 15-MINUTE (LTF) SWING DETECTION & LABELS
 // ═══════════════════════════════════════════════════════════════════════════
 float ltf_ph = ta.pivothigh(high, N_LTF, N_LTF)
-float ltf_pl = ta.pivotlow(low,  N_LTF, N_LTF)
+float ltf_pl = ta.pivotlow(low, N_LTF, N_LTF)
 
 var float prev_ltf_sh = na
 var float prev_ltf_sl = na
 var float last_ltf_sh = na
 var float last_ltf_sl = na
-var int   last_sh_idx = na
-var int   last_sl_idx = na
-var bool  long_fired  = false
-var bool  short_fired = false
+
+var int last_sh_idx = na
+var int last_sl_idx = na
+
+var bool long_fired  = false
+var bool short_fired = false
 
 if not na(ltf_ph)
-    float new_sh    = high[N_LTF]
-    string lbl_text = na(prev_ltf_sh) ? "SH" : (new_sh > prev_ltf_sh ? "HH" : "LH")
+    float new_sh = high[N_LTF]
+    string high_lbl = na(prev_ltf_sh) ? "SH" : (new_sh > prev_ltf_sh ? "HH" : "LH")
+
     if showLabels
-        label.new(bar_index[N_LTF], new_sh, lbl_text,
-            color=color.new(color.orange, 40), style=label.style_label_down,
-            textcolor=color.white, size=size.small)
+        label.new(bar_index[N_LTF], new_sh, high_lbl, color=color.new(color.orange, 40), style=label.style_label_down, textcolor=color.white, size=size.small)
+
     prev_ltf_sh := last_ltf_sh
     last_ltf_sh := new_sh
     last_sh_idx := bar_index[N_LTF]
     long_fired  := false
 
 if not na(ltf_pl)
-    float new_sl    = low[N_LTF]
-    string lbl_text = na(prev_ltf_sl) ? "SL" : (new_sl > prev_ltf_sl ? "HL" : "LL")
+    float new_sl = low[N_LTF]
+    string low_lbl = na(prev_ltf_sl) ? "SL" : (new_sl > prev_ltf_sl ? "HL" : "LL")
+
     if showLabels
-        label.new(bar_index[N_LTF], new_sl, lbl_text,
-            color=color.new(color.aqua, 40), style=label.style_label_up,
-            textcolor=color.white, size=size.small)
+        label.new(bar_index[N_LTF], new_sl, low_lbl, color=color.new(color.aqua, 40), style=label.style_label_up, textcolor=color.white, size=size.small)
+
     prev_ltf_sl := last_ltf_sl
     last_ltf_sl := new_sl
     last_sl_idx := bar_index[N_LTF]
     short_fired := false
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  IN-TRADE TRACKING  (indicator equivalent of strategy.position_size == 0)
+// IN-TRADE TRACKING (indicator equivalent of strategy.position_size == 0)
 // ═══════════════════════════════════════════════════════════════════════════
 var bool  in_trade   = false
 var float trade_sl   = na
@@ -121,7 +127,7 @@ if in_trade and not na(trade_sl) and not na(trade_tp)
             in_trade := false
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  ENTRY TRIGGERS + SL % RANGE FILTER
+// ENTRY TRIGGERS + SL % RANGE FILTER
 // ═══════════════════════════════════════════════════════════════════════════
 bool can_long  = is_15m and htf_bull and not long_fired  and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
 bool can_short = is_15m and htf_bear and not short_fired and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
@@ -129,19 +135,20 @@ bool can_short = is_15m and htf_bear and not short_fired and not na(last_ltf_sh)
 float long_stop_pct  = not na(last_ltf_sl) ? math.abs(close - last_ltf_sl) / close * 100 : na
 float short_stop_pct = not na(last_ltf_sh) ? math.abs(last_ltf_sh - close) / close * 100 : na
 
-bool long_stop_ok  = not na(long_stop_pct)  and long_stop_pct  >= minStopPct and long_stop_pct  <= maxStopPct
+bool long_stop_ok  = not na(long_stop_pct) and long_stop_pct >= minStopPct and long_stop_pct <= maxStopPct
 bool short_stop_ok = not na(short_stop_pct) and short_stop_pct >= minStopPct and short_stop_pct <= maxStopPct
 
-bool long_sig  = can_long  and close > last_ltf_sh and long_stop_ok
+bool long_sig  = can_long and close > last_ltf_sh and long_stop_ok
 bool short_sig = can_short and close < last_ltf_sl and short_stop_ok
 
-bool long_skipped_tight_sl  = can_long  and close > last_ltf_sh and not na(long_stop_pct)  and long_stop_pct  < minStopPct
-bool long_skipped_wide_sl   = can_long  and close > last_ltf_sh and not na(long_stop_pct)  and long_stop_pct  > maxStopPct
+bool long_skipped_tight_sl = can_long and close > last_ltf_sh and not na(long_stop_pct) and long_stop_pct < minStopPct
+bool long_skipped_wide_sl  = can_long and close > last_ltf_sh and not na(long_stop_pct) and long_stop_pct > maxStopPct
+
 bool short_skipped_tight_sl = can_short and close < last_ltf_sl and not na(short_stop_pct) and short_stop_pct < minStopPct
 bool short_skipped_wide_sl  = can_short and close < last_ltf_sl and not na(short_stop_pct) and short_stop_pct > maxStopPct
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  SIGNAL HANDLING + WEBHOOK ALERTS
+// ENTRIES / ALERTS
 // ═══════════════════════════════════════════════════════════════════════════
 if long_sig
     long_fired  := true
@@ -150,21 +157,20 @@ if long_sig
     float entry_px = close
     float sl_px    = last_ltf_sl
     float risk     = entry_px - sl_px
-    float tp_px    = entry_px + risk * RR
+    float tp_px    = entry_px + (risk * RR)
     float sl_pips  = math.abs(entry_px - sl_px) / pip_size
     trade_sl       := sl_px
     trade_tp       := tp_px
 
     if showLevels
-        line.new(last_sh_idx, last_ltf_sh, bar_index + 2, last_ltf_sh,
-            color=color.orange, style=line.style_dotted, width=2)
+        line.new(last_sh_idx, last_ltf_sh, bar_index + 2, last_ltf_sh, color=color.orange, style=line.style_dotted, width=2)
         line.new(bar_index, tp_px,    bar_index + 10, tp_px,    color=color.green, style=line.style_dashed)
         line.new(bar_index, entry_px, bar_index + 10, entry_px, color=color.white, style=line.style_solid)
         line.new(bar_index, sl_px,    bar_index + 10, sl_px,    color=color.red,   style=line.style_dashed)
-        box.new(bar_index, tp_px,    bar_index + 10, entry_px, border_color=na, bgcolor=color.new(color.green, 85))
-        box.new(bar_index, entry_px, bar_index + 10, sl_px,    border_color=na, bgcolor=color.new(color.red,   85))
+        box.new(bar_index, tp_px, bar_index + 10, entry_px, border_color=na, bgcolor=color.new(color.green, 85))
+        box.new(bar_index, entry_px, bar_index + 10, sl_px, border_color=na, bgcolor=color.new(color.red, 85))
 
-    string payloadLong = '{"signal":"LONG","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(timenow) + ',"timeframe":"15m","entry":' + str.tostring(entry_px, "#.#####") + ',"sl":' + str.tostring(sl_px, "#.#####") + ',"tp":' + str.tostring(tp_px, "#.#####") + ',"sl_pips":' + str.tostring(sl_pips, "#.##") + ',"sl_percent":' + str.tostring(long_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"BULLISH","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
+    string payloadLong = '{"signal":"LONG","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(time) + ',"timeframe":"15m","entry":' + str.tostring(entry_px) + ',"sl":' + str.tostring(sl_px) + ',"tp":' + str.tostring(tp_px) + ',"sl_pips":' + str.tostring(sl_pips) + ',"sl_percent":' + str.tostring(long_stop_pct) + ',"rr_ratio":' + str.tostring(RR) + ',"order_type":"MARKET","daily_trend":"BULLISH","m15_swing_high":' + str.tostring(last_ltf_sh) + ',"m15_swing_low":' + str.tostring(last_ltf_sl) + ',"pip_type":"' + pip_type + '"}'
     alert(payloadLong, alert.freq_once_per_bar_close)
 
 if short_sig
@@ -174,30 +180,27 @@ if short_sig
     float entry_px = close
     float sl_px    = last_ltf_sh
     float risk     = sl_px - entry_px
-    float tp_px    = entry_px - risk * RR
+    float tp_px    = entry_px - (risk * RR)
     float sl_pips  = math.abs(entry_px - sl_px) / pip_size
     trade_sl       := sl_px
     trade_tp       := tp_px
 
     if showLevels
-        line.new(last_sl_idx, last_ltf_sl, bar_index + 2, last_ltf_sl,
-            color=color.aqua, style=line.style_dotted, width=2)
+        line.new(last_sl_idx, last_ltf_sl, bar_index + 2, last_ltf_sl, color=color.aqua, style=line.style_dotted, width=2)
         line.new(bar_index, tp_px,    bar_index + 10, tp_px,    color=color.green, style=line.style_dashed)
         line.new(bar_index, entry_px, bar_index + 10, entry_px, color=color.white, style=line.style_solid)
         line.new(bar_index, sl_px,    bar_index + 10, sl_px,    color=color.red,   style=line.style_dashed)
-        box.new(bar_index, entry_px, bar_index + 10, tp_px,    border_color=na, bgcolor=color.new(color.green, 85))
-        box.new(bar_index, sl_px,    bar_index + 10, entry_px, border_color=na, bgcolor=color.new(color.red,   85))
+        box.new(bar_index, entry_px, bar_index + 10, tp_px, border_color=na, bgcolor=color.new(color.green, 85))
+        box.new(bar_index, sl_px, bar_index + 10, entry_px, border_color=na, bgcolor=color.new(color.red, 85))
 
-    string payloadShort = '{"signal":"SHORT","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(timenow) + ',"timeframe":"15m","entry":' + str.tostring(entry_px, "#.#####") + ',"sl":' + str.tostring(sl_px, "#.#####") + ',"tp":' + str.tostring(tp_px, "#.#####") + ',"sl_pips":' + str.tostring(sl_pips, "#.##") + ',"sl_percent":' + str.tostring(short_stop_pct, "#.####") + ',"rr_ratio":' + str.tostring(RR, "#.##") + ',"order_type":"MARKET","daily_trend":"BEARISH","m15_swing_high":' + str.tostring(last_ltf_sh, "#.#####") + ',"m15_swing_low":' + str.tostring(last_ltf_sl, "#.#####") + ',"pip_type":"' + pip_type + '"}'
+    string payloadShort = '{"signal":"SHORT","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(time) + ',"timeframe":"15m","entry":' + str.tostring(entry_px) + ',"sl":' + str.tostring(sl_px) + ',"tp":' + str.tostring(tp_px) + ',"sl_pips":' + str.tostring(sl_pips) + ',"sl_percent":' + str.tostring(short_stop_pct) + ',"rr_ratio":' + str.tostring(RR) + ',"order_type":"MARKET","daily_trend":"BEARISH","m15_swing_high":' + str.tostring(last_ltf_sh) + ',"m15_swing_low":' + str.tostring(last_ltf_sl) + ',"pip_type":"' + pip_type + '"}'
     alert(payloadShort, alert.freq_once_per_bar_close)
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  VISUALS
+// VISUALS
 // ═══════════════════════════════════════════════════════════════════════════
-plotshape(not na(ltf_ph), "15m Swing HIGH", shape.triangledown,
-    location.abovebar, color=color.new(#FF6F00, 40), size=size.tiny)
-plotshape(not na(ltf_pl), "15m Swing LOW",  shape.triangleup,
-    location.belowbar, color=color.new(#00BCD4, 40), size=size.tiny)
+plotshape(not na(ltf_ph), "15m Swing HIGH", shape.triangledown, location.abovebar, color=color.new(#FF6F00, 40), size=size.tiny)
+plotshape(not na(ltf_pl), "15m Swing LOW",  shape.triangleup,   location.belowbar, color=color.new(#00BCD4, 40), size=size.tiny)
 
 plotshape(long_sig,  "LONG  Entry", shape.triangleup,   location.belowbar, color=#00E676, size=size.normal)
 plotshape(short_sig, "SHORT Entry", shape.triangledown, location.abovebar, color=#FF1744, size=size.normal)
@@ -208,55 +211,31 @@ plotshape(showSkipMarkers and short_skipped_tight_sl, title="Short Skipped - Tig
 plotshape(showSkipMarkers and short_skipped_wide_sl,  title="Short Skipped - Wide SL",  style=shape.xcross, location=location.abovebar, color=color.orange, size=size.tiny, text="MAX")
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  DIAGNOSTIC TABLE
+// DIAGNOSTIC TABLE
 // ═══════════════════════════════════════════════════════════════════════════
-var table diag = table.new(position.top_right, 2, 8, border_width=1, border_color=color.gray)
+var table diag_panel = table.new(position.top_right, 2, 8, border_width=1, border_color=color.gray)
 
 if barstate.islast and showTable
-    table.cell(diag, 0, 0, "Locked 1D Trend",
-        bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.small)
-    table.cell(diag, 1, 0,
-        htf_trend == 1 ? "BULLISH" : htf_trend == -1 ? "BEARISH" : "WAITING",
-        bgcolor=htf_trend == 1  ? color.new(color.green, 40) :
-                htf_trend == -1 ? color.new(color.red,   40) : color.new(color.gray, 40),
-        text_color=color.white, text_size=size.small)
+    table.cell(diag_panel, 0, 0, "Locked 1D Trend", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.small)
+    table.cell(diag_panel, 1, 0, htf_trend == 1 ? "BULLISH" : htf_trend == -1 ? "BEARISH" : "WAITING", bgcolor=htf_trend == 1 ? color.new(color.green, 40) : htf_trend == -1 ? color.new(color.red, 40) : color.new(color.gray, 40), text_color=color.white, text_size=size.small)
 
-    table.cell(diag, 0, 1, "1D Structure",
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag, 1, 1, raw_struct,
-        bgcolor=raw_struct == "MIXED (Holding Trend)" ? color.new(color.orange, 40) : color.new(color.black, 20),
-        text_color=color.white, text_size=size.tiny)
+    table.cell(diag_panel, 0, 1, "Current 1D Struct", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 1, raw_struct, bgcolor=raw_struct == "MIXED (Holding Trend)" ? color.new(color.orange, 40) : color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
 
-    table.cell(diag, 0, 2, "Last 1D Highs",
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag, 1, 2,
-        str.tostring(h_ph1, format.mintick) + " | " + str.tostring(h_ph2, format.mintick),
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 0, 2, "Last 1D Highs", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 2, str.tostring(h_ph1, format.mintick) + " | " + str.tostring(h_ph2, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
 
-    table.cell(diag, 0, 3, "Last 1D Lows",
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag, 1, 3,
-        str.tostring(h_pl1, format.mintick) + " | " + str.tostring(h_pl2, format.mintick),
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 0, 3, "Last 1D Lows", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 3, str.tostring(h_pl1, format.mintick) + " | " + str.tostring(h_pl2, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
 
-    table.cell(diag, 0, 4, "Long SL %",
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag, 1, 4, str.tostring(long_stop_pct, format.mintick),
-        bgcolor=color.new(color.black, 20),
-        text_color=long_stop_ok ? color.white : color.orange, text_size=size.tiny)
+    table.cell(diag_panel, 0, 4, "Long SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 4, str.tostring(long_stop_pct, format.mintick), bgcolor=color.new(color.black, 20), text_color=long_stop_ok ? color.white : color.orange, text_size=size.tiny)
 
-    table.cell(diag, 0, 5, "Short SL %",
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag, 1, 5, str.tostring(short_stop_pct, format.mintick),
-        bgcolor=color.new(color.black, 20),
-        text_color=short_stop_ok ? color.white : color.orange, text_size=size.tiny)
+    table.cell(diag_panel, 0, 5, "Short SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 5, str.tostring(short_stop_pct, format.mintick), bgcolor=color.new(color.black, 20), text_color=short_stop_ok ? color.white : color.orange, text_size=size.tiny)
 
-    table.cell(diag, 0, 6, "Min SL %",
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag, 1, 6, str.tostring(minStopPct, format.mintick),
-        bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(diag_panel, 0, 6, "Min SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 6, str.tostring(minStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
 
-    table.cell(diag, 0, 7, "Max SL %",
-        bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag, 1, 7, str.tostring(maxStopPct, format.mintick),
-        bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(diag_panel, 0, 7, "Max SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 7, str.tostring(maxStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
