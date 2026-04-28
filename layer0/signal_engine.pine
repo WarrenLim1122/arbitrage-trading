@@ -213,29 +213,29 @@ plotshape(showSkipMarkers and short_skipped_wide_sl,  title="Short Skipped - Wid
 // ═══════════════════════════════════════════════════════════════════════════
 // DIAGNOSTIC TABLE
 // ═══════════════════════════════════════════════════════════════════════════
-var table diag_panel = table.new(position.top_right, 2, 8, border_width=1, border_color=color.gray)
+var table diag = table.new(position.top_right, 2, 8, border_width=1, border_color=color.gray)
 
 if barstate.islast and showTable
-    table.cell(diag_panel, 0, 0, "Locked 1D Trend", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.small)
-    table.cell(diag_panel, 1, 0, htf_trend == 1 ? "BULLISH" : htf_trend == -1 ? "BEARISH" : "WAITING", bgcolor=htf_trend == 1 ? color.new(color.green, 40) : htf_trend == -1 ? color.new(color.red, 40) : color.new(color.gray, 40), text_color=color.white, text_size=size.small)
+    table.cell(diag, 0, 0, "Locked 1D Trend", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.small)
+    table.cell(diag, 1, 0, htf_trend == 1 ? "BULLISH" : htf_trend == -1 ? "BEARISH" : "WAITING", bgcolor=htf_trend == 1 ? color.new(color.green, 40) : htf_trend == -1 ? color.new(color.red, 40) : color.new(color.gray, 40), text_color=color.white, text_size=size.small)
 
-    table.cell(diag_panel, 0, 1, "Current 1D Struct", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag_panel, 1, 1, raw_struct, bgcolor=raw_struct == "MIXED (Holding Trend)" ? color.new(color.orange, 40) : color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(diag, 0, 1, "Current 1D Struct", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 1, 1, raw_struct, bgcolor=raw_struct == "MIXED (Holding Trend)" ? color.new(color.orange, 40) : color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
 
-    table.cell(diag_panel, 0, 2, "Last 1D Highs", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag_panel, 1, 2, str.tostring(h_ph1, format.mintick) + " | " + str.tostring(h_ph2, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 0, 2, "Last 1D Highs", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 1, 2, str.tostring(h_ph1, format.mintick) + " | " + str.tostring(h_ph2, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
 
-    table.cell(diag_panel, 0, 3, "Last 1D Lows", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag_panel, 1, 3, str.tostring(h_pl1, format.mintick) + " | " + str.tostring(h_pl2, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 0, 3, "Last 1D Lows", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 1, 3, str.tostring(h_pl1, format.mintick) + " | " + str.tostring(h_pl2, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
 
-    table.cell(diag_panel, 0, 4, "Long SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag_panel, 1, 4, str.tostring(long_stop_pct, format.mintick), bgcolor=color.new(color.black, 20), text_color=long_stop_ok ? color.white : color.orange, text_size=size.tiny)
+    table.cell(diag, 0, 4, "Long SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 1, 4, str.tostring(long_stop_pct, format.mintick), bgcolor=color.new(color.black, 20), text_color=long_stop_ok ? color.white : color.orange, text_size=size.tiny)
 
-    table.cell(diag_panel, 0, 5, "Short SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag_panel, 1, 5, str.tostring(short_stop_pct, format.mintick), bgcolor=color.new(color.black, 20), text_color=short_stop_ok ? color.white : color.orange, text_size=size.tiny)
+    table.cell(diag, 0, 5, "Short SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 1, 5, str.tostring(short_stop_pct, format.mintick), bgcolor=color.new(color.black, 20), text_color=short_stop_ok ? color.white : color.orange, text_size=size.tiny)
 
-    table.cell(diag_panel, 0, 6, "Min SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag_panel, 1, 6, str.tostring(minStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(diag, 0, 6, "Min SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 1, 6, str.tostring(minStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
 
-    table.cell(diag_panel, 0, 7, "Max SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(diag_panel, 1, 7, str.tostring(maxStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(diag, 0, 7, "Max SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag, 1, 7, str.tostring(maxStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
