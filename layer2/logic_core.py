@@ -275,7 +275,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     except Exception:
         curr_pers = []
 
-    lines: list[str] = [f"<b>Position Closed — {symbol}</b>\n"]
+    parts: list[str] = [f"<b>Position Closed — {symbol}</b>"]
     pers_pnl: float | None = None
 
     if pers_pos_data:
@@ -284,73 +284,71 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         pnl = pos["profit"]
         pers_pnl = pnl
         outcome = "TP ✅" if pnl >= 0 else "SL ❌"
-        lines.append(
-            f"<b>Personal (signal, VPS #3):</b>\n"
+        parts.append(
+            f"\n<b>Personal (signal, VPS #3):</b>\n"
             f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
             f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
-            f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
+            f"  P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
-        lines.append("<b>Personal (VPS #3):</b> still open (unexpected)")
+        parts.append("\n<b>Personal (VPS #3):</b> still open (unexpected)")
 
     if prop_pos_data:
         pos = prop_pos_data
         dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
         pnl = pos["profit"]
         outcome = "TP ✅" if pnl >= 0 else "SL ❌"
-        lines.append(
+        parts.append(
             f"\n<b>Prop (inverse, VPS #2):</b>\n"
             f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
             f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
-            f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
+            f"  P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
-        lines.append("\n<b>Prop (VPS #2):</b> still open (unexpected)")
+        parts.append("\n<b>Prop (VPS #2):</b> still open (unexpected)")
 
     if pers_pnl is not None:
         signal_result = "TP HIT ✅" if pers_pnl >= 0 else "SL HIT ❌"
-        lines.append(f"\nSignal outcome: <b>{signal_result}</b>")
-    lines.append("")
+        parts.append(f"\nOutcome: <b>{signal_result}</b>")
 
-    lines.append("── Open Positions After Close ──")
+    parts.append("\n<b>Open Positions After Close</b>")
     for label, pos_list in [
         ("Personal (VPS #3)", curr_pers),
         ("Prop (VPS #2)",     curr_prop),
     ]:
         if pos_list:
-            lines.append(f"<b>{label}:</b>")
+            parts.append(f"<b>{label}:</b>")
             for p in pos_list:
                 d = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
-                lines.append(
+                parts.append(
                     f"  {p['symbol']} {d} {p['volume']:.2f} lots"
                     f"  |  P&amp;L: ${p['profit']:+,.2f}"
                 )
         else:
-            lines.append(f"<b>{label}:</b> No open positions")
+            parts.append(f"<b>{label}:</b> No open positions")
 
-    lines.append("")
-    lines.append("── Live Equity ──")
+    parts.append("\n<b>Live Equity</b>")
     try:
         eq = _query_equity(ZMQ_REQ_PROP, "")
-        lines.append(
-            f"Prop (VPS #2):     Balance: ${eq['balance']:,.2f}  |  Equity: ${eq['equity']:,.2f}"
+        parts.append(
+            f"Prop (VPS #2): Balance: ${eq['balance']:,.2f}  |  Equity: ${eq['equity']:,.2f}"
         )
     except Exception:
-        lines.append("Prop (VPS #2): OFFLINE")
+        parts.append("Prop (VPS #2): OFFLINE")
     try:
         eq = _query_equity(ZMQ_REQ_PERS, "")
-        lines.append(
+        parts.append(
             f"Personal (VPS #3): Balance: ${eq['balance']:,.2f}  |  Equity: ${eq['equity']:,.2f}"
         )
     except Exception:
-        lines.append("Personal (VPS #3): OFFLINE")
+        parts.append("Personal (VPS #3): OFFLINE")
 
     # Clear from known-open-positions tracker.
     with _known_pos_lock:
         _known_open_positions.pop(symbol, None)
 
     logger.info("Close detection: alert sent for %s", symbol)
-    _alert_sync("\n".join(lines))
+    _alert_sync("\n".join(parts))
 
 
 def _run_news_preclose_check() -> None:

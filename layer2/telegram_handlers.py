@@ -1076,20 +1076,20 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return abs(val) / lim * 100 if lim > 0 else 0.0
 
     await update.message.reply_text(
-        f"<b>P&amp;L Dashboard (Prop Account)</b>\n\n"
-        f"Baseline:    ${baseline:,.2f}\n"
+        f"<b>P&amp;L Dashboard — Prop Account</b>\n\n"
+        f"Baseline: ${baseline:,.2f}\n"
         f"Day started: ${day_start:,.2f}\n"
-        f"Now:         ${equity:,.2f}\n\n"
-        f"<b>Daily P&amp;L:</b>  ${daily_pnl:+,.2f}\n"
-        f"  Profit cap  ${cap_lim:,.2f}\n"
-        f"  <code>{_pnl_bar(_pct(daily_pnl, cap_lim))}</code>\n"
-        f"  DD limit   -${dd_day_lim:,.2f}\n"
-        f"  <code>{_pnl_bar(_pct(-daily_pnl, dd_day_lim))}</code>\n\n"
-        f"<b>Overall P&amp;L:</b> ${overall_pnl:+,.2f}\n"
-        f"  Target      ${target_lim:,.2f}\n"
-        f"  <code>{_pnl_bar(_pct(overall_pnl, target_lim))}</code>\n"
-        f"  DD limit   -${dd_all_lim:,.2f}\n"
-        f"  <code>{_pnl_bar(_pct(-overall_pnl, dd_all_lim))}</code>",
+        f"Now: ${equity:,.2f}\n\n"
+        f"<b>Daily P&amp;L: ${daily_pnl:+,.2f}</b>\n"
+        f"Profit cap: ${cap_lim:,.2f}\n"
+        f"<code>{_pnl_bar(_pct(daily_pnl, cap_lim))}</code>\n"
+        f"DD limit: -${dd_day_lim:,.2f}\n"
+        f"<code>{_pnl_bar(_pct(-daily_pnl, dd_day_lim))}</code>\n\n"
+        f"<b>Overall P&amp;L: ${overall_pnl:+,.2f}</b>\n"
+        f"Target: ${target_lim:,.2f}\n"
+        f"<code>{_pnl_bar(_pct(overall_pnl, target_lim))}</code>\n"
+        f"DD limit: -${dd_all_lim:,.2f}\n"
+        f"<code>{_pnl_bar(_pct(-overall_pnl, dd_all_lim))}</code>",
         parse_mode="HTML",
     )
 
@@ -1114,16 +1114,12 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         pers_h = f"❌ OFFLINE — {exc}"
 
-    col = 20
-    rows = [
-        (f"VPS #1 (Layer 1):", l1),
-        (f"VPS #1 (Layer 2):", "✅ alive"),
-        (f"VPS #2 (prop):",    prop_h),
-        (f"VPS #3 (personal):", pers_h),
-    ]
-    status_lines = "\n".join(f"{label:<{col}} {status}" for label, status in rows)
     await update.message.reply_text(
-        f"<b>System Health</b>\n\n<pre>{status_lines}</pre>",
+        f"<b>System Health</b>\n\n"
+        f"VPS #1 (Layer 1) — {l1}\n"
+        f"VPS #1 (Layer 2) — ✅ alive\n"
+        f"VPS #2 (prop) — {prop_h}\n"
+        f"VPS #3 (personal) — {pers_h}",
         parse_mode="HTML",
     )
 
