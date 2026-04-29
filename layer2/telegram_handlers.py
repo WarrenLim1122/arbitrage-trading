@@ -1116,9 +1116,9 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(
         f"<b>System Health</b>\n\n"
-        f"Layer 1 (Gatekeeper):     {l1}\n"
-        f"Layer 2 (Logic Core):     ✅ alive\n"
-        f"Worker Prop (VPS #2):     {prop_h}\n"
+        f"Layer 1 (Gatekeeper): {l1}\n"
+        f"Layer 2 (Logic Core): ✅ alive\n"
+        f"Worker Prop (VPS #2): {prop_h}\n"
         f"Worker Personal (VPS #3): {pers_h}",
         parse_mode="HTML",
     )
