@@ -91,6 +91,11 @@ _pers_algo_disabled:   bool = False
 # Tracks (ticker, event_time_iso) pairs already acted on — prevents repeat closes.
 _news_closed_events: set[tuple[str, str]] = set()
 
+# ── Position close tracking (detects TP/SL exits between equity monitor polls) ─
+_prev_prop_pos: dict[tuple[str, int], dict] = {}
+_prev_pers_pos: dict[tuple[str, int], dict] = {}
+_pos_tracking_initialized: bool = False
+
 
 def _handle_mismatch(ticker: str, mismatch_type: str,
                      prop_dir: int | None, pers_dir: int | None) -> None:
@@ -172,6 +177,112 @@ def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) 
         if ticker not in current_mismatches:
             logger.info("Mismatch self-resolved for %s (within %ds grace)", ticker, grace)
             del _mismatch_first_seen[ticker]
+
+
+def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
+    """Detect positions closed since the last poll and send a Telegram alert.
+
+    Uses last-known P&L sign to classify TP vs SL (positive = TP, negative = SL).
+    P&L values are from the poll just before close — up to 30s before actual exit.
+    """
+    global _prev_prop_pos, _prev_pers_pos, _pos_tracking_initialized
+
+    prop_map: dict[tuple[str, int], dict] = {(p["symbol"], p["type"]): p for p in prop_pos}
+    pers_map: dict[tuple[str, int], dict] = {(p["symbol"], p["type"]): p for p in pers_pos}
+
+    if not _pos_tracking_initialized:
+        _prev_prop_pos = prop_map
+        _prev_pers_pos = pers_map
+        _pos_tracking_initialized = True
+        return
+
+    prop_closed = {k: v for k, v in _prev_prop_pos.items() if k not in prop_map}
+    pers_closed = {k: v for k, v in _prev_pers_pos.items() if k not in pers_map}
+    _prev_prop_pos = prop_map
+    _prev_pers_pos = pers_map
+
+    if not prop_closed and not pers_closed:
+        return
+
+    all_symbols = sorted(set(k[0] for k in prop_closed) | set(k[0] for k in pers_closed))
+    lines: list[str] = []
+
+    for symbol in all_symbols:
+        prop_key = next((k for k in prop_closed if k[0] == symbol), None)
+        pers_key = next((k for k in pers_closed if k[0] == symbol), None)
+        lines.append(f"<b>Position Closed — {symbol}</b>\n")
+
+        pers_pnl: float | None = None
+
+        if pers_key:
+            pos = pers_closed[pers_key]
+            dir_str = "↑ LONG" if pers_key[1] == 0 else "↓ SHORT"
+            pnl = pos["profit"]
+            pers_pnl = pnl
+            outcome = "TP ✅" if pnl >= 0 else "SL ❌"
+            lines.append(
+                f"<b>Personal (signal, VPS #3):</b>\n"
+                f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
+                f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
+                f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
+            )
+        else:
+            lines.append("<b>Personal (VPS #3):</b> still open (unexpected)")
+
+        if prop_key:
+            pos = prop_closed[prop_key]
+            dir_str = "↑ LONG" if prop_key[1] == 0 else "↓ SHORT"
+            pnl = pos["profit"]
+            outcome = "TP ✅" if pnl >= 0 else "SL ❌"
+            lines.append(
+                f"\n<b>Prop (inverse, VPS #2):</b>\n"
+                f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
+                f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
+                f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
+            )
+        else:
+            lines.append("\n<b>Prop (VPS #2):</b> still open (unexpected)")
+
+        if pers_pnl is not None:
+            signal_result = "TP HIT ✅" if pers_pnl >= 0 else "SL HIT ❌"
+            lines.append(f"\nSignal outcome: <b>{signal_result}</b>")
+        lines.append("")
+
+    lines.append("── Open Positions After Close ──")
+    for label, pos_list in [
+        ("Personal (VPS #3)", list(pers_map.values())),
+        ("Prop (VPS #2)",     list(prop_map.values())),
+    ]:
+        if pos_list:
+            lines.append(f"<b>{label}:</b>")
+            for p in pos_list:
+                d = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
+                lines.append(
+                    f"  {p['symbol']} {d} {p['volume']:.2f} lots"
+                    f"  |  P&amp;L: ${p['profit']:+,.2f}"
+                )
+        else:
+            lines.append(f"<b>{label}:</b> No open positions")
+
+    lines.append("")
+    lines.append("── Live Equity ──")
+    try:
+        eq = _query_equity(ZMQ_REQ_PROP, "")
+        lines.append(
+            f"Prop (VPS #2):     Balance: ${eq['balance']:,.2f}  |  Equity: ${eq['equity']:,.2f}"
+        )
+    except Exception:
+        lines.append("Prop (VPS #2): OFFLINE")
+    try:
+        eq = _query_equity(ZMQ_REQ_PERS, "")
+        lines.append(
+            f"Personal (VPS #3): Balance: ${eq['balance']:,.2f}  |  Equity: ${eq['equity']:,.2f}"
+        )
+    except Exception:
+        lines.append("Personal (VPS #3): OFFLINE")
+
+    logger.info("Close detection: alert sent for %s", ", ".join(all_symbols))
+    _alert_sync("\n".join(lines))
 
 
 def _run_news_preclose_check() -> None:
@@ -302,6 +413,7 @@ def _run_equity_check() -> None:
     global _last_curfew_close_date
     global _prop_fail_count, _pers_fail_count, _prop_down, _pers_down
     global _prop_algo_disabled, _pers_algo_disabled
+    global _pos_tracking_initialized
 
     with _state_lock:
         p_halt = _phase_state.get("permanently_halted", False)
@@ -318,6 +430,7 @@ def _run_equity_check() -> None:
             _dispatch_force_close("sgt_curfew", halt=False)
             _alert_sync("<b>SGT Curfew</b> — All positions closed.\nResumes 12:00 SGT on next weekday.")
             _last_curfew_close_date = today
+        _pos_tracking_initialized = False  # Prevent false close alerts when curfew ends
         return
 
     # ── Worker health checks (run every cycle, independent of active state) ──
@@ -327,6 +440,7 @@ def _run_equity_check() -> None:
         if _prop_down:
             _prop_down = False
             _prop_fail_count = 0
+            _pos_tracking_initialized = False  # Re-init tracking to avoid false close alerts
             _alert_sync(
                 "<b>Worker Prop — Back Online</b>\n\n"
                 "VPS #2 (worker-prop) is responding again."
@@ -372,6 +486,7 @@ def _run_equity_check() -> None:
         if _pers_down:
             _pers_down = False
             _pers_fail_count = 0
+            _pos_tracking_initialized = False  # Re-init tracking to avoid false close alerts
             _alert_sync(
                 "<b>Worker Personal — Back Online</b>\n\n"
                 "VPS #3 (worker-personal) is responding again."
@@ -411,12 +526,13 @@ def _run_equity_check() -> None:
             )
         # personal failure doesn't block kill-condition checks — prop equity already fetched
 
-    # Position mismatch check — runs every cycle when both workers are online
+    # Position mismatch + close detection — runs every cycle when both workers are online
     if not _prop_down and not _pers_down:
         try:
             prop_pos = _query_positions(ZMQ_REQ_PROP)
             pers_pos = _query_positions(ZMQ_REQ_PERS)
             _run_mismatch_check(prop_pos, pers_pos)
+            _detect_closes(prop_pos, pers_pos)
         except Exception as exc:
             logger.warning("Mismatch check error: %s", exc)
 
