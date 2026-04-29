@@ -1114,12 +1114,16 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         pers_h = f"❌ OFFLINE — {exc}"
 
+    col = 20
+    rows = [
+        (f"VPS #1 (Layer 1):", l1),
+        (f"VPS #1 (Layer 2):", "✅ alive"),
+        (f"VPS #2 (prop):",    prop_h),
+        (f"VPS #3 (personal):", pers_h),
+    ]
+    status_lines = "\n".join(f"{label:<{col}} {status}" for label, status in rows)
     await update.message.reply_text(
-        f"<b>System Health</b>\n\n"
-        f"Layer 1 (Gatekeeper): {l1}\n"
-        f"Layer 2 (Logic Core): ✅ alive\n"
-        f"Worker Prop (VPS #2): {prop_h}\n"
-        f"Worker Personal (VPS #3): {pers_h}",
+        f"<b>System Health</b>\n\n<pre>{status_lines}</pre>",
         parse_mode="HTML",
     )
 
