@@ -66,7 +66,7 @@ def _alert_sync(message: str) -> None:
         with httpx.Client(timeout=5.0) as client:
             client.post(url, json={
                 "chat_id": CHAT_ID,
-                "text": f"🚨 <b>TEE Alert</b>\n\n{message}\n\n🚨",
+                "text": f"🚨 <b>TEE Alert</b> 🚨\n\n{message}",
                 "parse_mode": "HTML",
             })
     except Exception as exc:
@@ -79,7 +79,7 @@ async def _telegram_alert(message: str) -> None:
         async with bot:
             await bot.send_message(
                 chat_id=CHAT_ID,
-                text=f"🚨 <b>TEE Alert</b>\n\n{message}\n\n🚨",
+                text=f"🚨 <b>TEE Alert</b> 🚨\n\n{message}",
                 parse_mode="HTML",
             )
     except Exception as exc:
