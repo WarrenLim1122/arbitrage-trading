@@ -95,6 +95,16 @@ _news_closed_events: set[tuple[str, str]] = set()
 _prev_prop_pos: dict[tuple[str, int], dict] = {}
 _prev_pers_pos: dict[tuple[str, int], dict] = {}
 _pos_tracking_initialized: bool = False
+# Buffer: when one side closes before the other, wait up to 30s before alerting.
+# Prevents duplicate split alerts and false orphan force-closes.
+_pending_closes: dict[str, dict] = {}  # symbol → {pers_data, prop_data, first_seen}
+_CLOSE_WAIT_SECONDS = 30
+
+# ── Known open positions (registered on confirmed signal dispatch) ─────────
+# Source of truth for what the bot opened — used to suppress false mismatch alerts
+# when one leg of a hedge closes before the other within the grace window.
+_known_open_positions: dict[str, dict] = {}  # symbol → {prop_dir, pers_dir}
+_known_pos_lock = threading.Lock()
 
 
 def _handle_mismatch(ticker: str, mismatch_type: str,
@@ -162,6 +172,13 @@ def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) 
             continue  # correct hedge (opposite directions present) — nothing to do
 
         current_mismatches.add(ticker)
+        # If a close is pending for this ticker, the mismatch is expected (one leg
+        # closed before the other). Skip — the pending buffer will handle it.
+        if ticker in _pending_closes:
+            logger.debug("Mismatch check: skipping %s (close pending)", ticker)
+            _mismatch_first_seen.pop(ticker, None)
+            continue
+
         if ticker not in _mismatch_first_seen:
             _mismatch_first_seen[ticker] = (now, mismatch_type)
             logger.warning("Mismatch first seen: %s  type=%s", ticker, mismatch_type)
@@ -180,12 +197,16 @@ def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) 
 
 
 def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
-    """Detect positions closed since the last poll and send a Telegram alert.
+    """Detect positions closed since the last poll.
 
-    Uses last-known P&L sign to classify TP vs SL (positive = TP, negative = SL).
-    P&L values are from the poll just before close — up to 30s before actual exit.
+    When one side closes before the other (e.g. personal SL hits one poll cycle
+    before prop TP), the close is held in _pending_closes for up to
+    _CLOSE_WAIT_SECONDS.  A single combined alert fires only after both legs
+    confirm closed, or after the wait window expires.  This prevents the
+    duplicate split-messages and false orphan force-closes seen when both legs
+    of a hedge close within seconds of each other across a poll boundary.
     """
-    global _prev_prop_pos, _prev_pers_pos, _pos_tracking_initialized
+    global _prev_prop_pos, _prev_pers_pos, _pos_tracking_initialized, _pending_closes
 
     prop_map: dict[tuple[str, int], dict] = {(p["symbol"], p["type"]): p for p in prop_pos}
     pers_map: dict[tuple[str, int], dict] = {(p["symbol"], p["type"]): p for p in pers_pos}
@@ -201,57 +222,100 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
     _prev_prop_pos = prop_map
     _prev_pers_pos = pers_map
 
-    if not prop_closed and not pers_closed:
-        return
+    now = datetime.now(timezone.utc)
 
-    all_symbols = sorted(set(k[0] for k in prop_closed) | set(k[0] for k in pers_closed))
-    lines: list[str] = []
-
-    for symbol in all_symbols:
+    # Merge newly-closed positions into the pending buffer.
+    newly_detected = sorted(set(k[0] for k in prop_closed) | set(k[0] for k in pers_closed))
+    for symbol in newly_detected:
         prop_key = next((k for k in prop_closed if k[0] == symbol), None)
         pers_key = next((k for k in pers_closed if k[0] == symbol), None)
-        lines.append(f"<b>Position Closed — {symbol}</b>\n")
+        prop_data = prop_closed[prop_key] if prop_key else None
+        pers_data = pers_closed[pers_key] if pers_key else None
 
-        pers_pnl: float | None = None
-
-        if pers_key:
-            pos = pers_closed[pers_key]
-            dir_str = "↑ LONG" if pers_key[1] == 0 else "↓ SHORT"
-            pnl = pos["profit"]
-            pers_pnl = pnl
-            outcome = "TP ✅" if pnl >= 0 else "SL ❌"
-            lines.append(
-                f"<b>Personal (signal, VPS #3):</b>\n"
-                f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
-                f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
-                f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
-            )
+        if symbol in _pending_closes:
+            # Fill in whichever side just closed.
+            if pers_data and _pending_closes[symbol]["pers_data"] is None:
+                _pending_closes[symbol]["pers_data"] = pers_data
+            if prop_data and _pending_closes[symbol]["prop_data"] is None:
+                _pending_closes[symbol]["prop_data"] = prop_data
         else:
-            lines.append("<b>Personal (VPS #3):</b> still open (unexpected)")
+            _pending_closes[symbol] = {
+                "pers_data":  pers_data,
+                "prop_data":  prop_data,
+                "first_seen": now,
+            }
+            logger.info("Close pending: %s  pers=%s prop=%s",
+                        symbol, "yes" if pers_data else "no", "yes" if prop_data else "no")
 
-        if prop_key:
-            pos = prop_closed[prop_key]
-            dir_str = "↑ LONG" if prop_key[1] == 0 else "↓ SHORT"
-            pnl = pos["profit"]
-            outcome = "TP ✅" if pnl >= 0 else "SL ❌"
-            lines.append(
-                f"\n<b>Prop (inverse, VPS #2):</b>\n"
-                f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
-                f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
-                f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
-            )
-        else:
-            lines.append("\n<b>Prop (VPS #2):</b> still open (unexpected)")
+    # Flush entries where both sides confirmed or the wait window has elapsed.
+    for symbol in list(_pending_closes.keys()):
+        entry   = _pending_closes[symbol]
+        elapsed = (now - entry["first_seen"]).total_seconds()
+        both_confirmed = entry["pers_data"] is not None and entry["prop_data"] is not None
 
-        if pers_pnl is not None:
-            signal_result = "TP HIT ✅" if pers_pnl >= 0 else "SL HIT ❌"
-            lines.append(f"\nSignal outcome: <b>{signal_result}</b>")
-        lines.append("")
+        if both_confirmed or elapsed >= _CLOSE_WAIT_SECONDS:
+            del _pending_closes[symbol]
+            _send_close_alert(symbol, entry["pers_data"], entry["prop_data"])
+
+
+def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: dict | None) -> None:
+    """Build and send the Position Closed Telegram alert for one symbol.
+
+    Always does a fresh live re-query of both workers so that the
+    'Open Positions After Close' and 'Live Equity' sections reflect the
+    actual current state rather than the stale snapshot from the last poll.
+    """
+    # Fresh re-query — gives accurate after-close snapshot.
+    try:
+        curr_prop = _query_positions(ZMQ_REQ_PROP)
+    except Exception:
+        curr_prop = []
+    try:
+        curr_pers = _query_positions(ZMQ_REQ_PERS)
+    except Exception:
+        curr_pers = []
+
+    lines: list[str] = [f"<b>Position Closed — {symbol}</b>\n"]
+    pers_pnl: float | None = None
+
+    if pers_pos_data:
+        pos = pers_pos_data
+        dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
+        pnl = pos["profit"]
+        pers_pnl = pnl
+        outcome = "TP ✅" if pnl >= 0 else "SL ❌"
+        lines.append(
+            f"<b>Personal (signal, VPS #3):</b>\n"
+            f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
+            f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
+            f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
+        )
+    else:
+        lines.append("<b>Personal (VPS #3):</b> still open (unexpected)")
+
+    if prop_pos_data:
+        pos = prop_pos_data
+        dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
+        pnl = pos["profit"]
+        outcome = "TP ✅" if pnl >= 0 else "SL ❌"
+        lines.append(
+            f"\n<b>Prop (inverse, VPS #2):</b>\n"
+            f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
+            f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
+            f"  Last P&amp;L: <b>${pnl:+,.2f}</b>"
+        )
+    else:
+        lines.append("\n<b>Prop (VPS #2):</b> still open (unexpected)")
+
+    if pers_pnl is not None:
+        signal_result = "TP HIT ✅" if pers_pnl >= 0 else "SL HIT ❌"
+        lines.append(f"\nSignal outcome: <b>{signal_result}</b>")
+    lines.append("")
 
     lines.append("── Open Positions After Close ──")
     for label, pos_list in [
-        ("Personal (VPS #3)", list(pers_map.values())),
-        ("Prop (VPS #2)",     list(prop_map.values())),
+        ("Personal (VPS #3)", curr_pers),
+        ("Prop (VPS #2)",     curr_prop),
     ]:
         if pos_list:
             lines.append(f"<b>{label}:</b>")
@@ -281,7 +345,11 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
     except Exception:
         lines.append("Personal (VPS #3): OFFLINE")
 
-    logger.info("Close detection: alert sent for %s", ", ".join(all_symbols))
+    # Clear from known-open-positions tracker.
+    with _known_pos_lock:
+        _known_open_positions.pop(symbol, None)
+
+    logger.info("Close detection: alert sent for %s", symbol)
     _alert_sync("\n".join(lines))
 
 
@@ -437,7 +505,8 @@ def _run_equity_check() -> None:
                 f"Resumes 12:00 SGT on next weekday."
             )
             _last_curfew_close_date = today
-        _pos_tracking_initialized = False  # Prevent false close alerts when curfew ends
+        _pos_tracking_initialized = False
+        _pending_closes.clear()  # Discard any stale pending closes across the curfew boundary
         return
 
     # ── Worker health checks (run every cycle, independent of active state) ──
@@ -447,7 +516,8 @@ def _run_equity_check() -> None:
         if _prop_down:
             _prop_down = False
             _prop_fail_count = 0
-            _pos_tracking_initialized = False  # Re-init tracking to avoid false close alerts
+            _pos_tracking_initialized = False
+            _pending_closes.clear()
             _alert_sync(
                 "<b>Worker Prop — Back Online</b>\n\n"
                 "VPS #2 (worker-prop) is responding again."
@@ -493,7 +563,8 @@ def _run_equity_check() -> None:
         if _pers_down:
             _pers_down = False
             _pers_fail_count = 0
-            _pos_tracking_initialized = False  # Re-init tracking to avoid false close alerts
+            _pos_tracking_initialized = False
+            _pending_closes.clear()
             _alert_sync(
                 "<b>Worker Personal — Back Online</b>\n\n"
                 "VPS #3 (worker-personal) is responding again."
@@ -831,6 +902,14 @@ async def _verify_and_notify(
 
     if not prop_ok or not pers_ok:
         msg += "\n\n<b>ACTION REQUIRED:</b> Check the failed account immediately.\nCheck VPS logs — MT5 algo trading may be disabled."
+    else:
+        # Both legs confirmed open — register as a known position so the close
+        # detector and mismatch checker have a source of truth.
+        with _known_pos_lock:
+            _known_open_positions[broker_symbol] = {
+                "prop_dir": prop_dir,
+                "pers_dir": pers_dir,
+            }
 
     await _telegram_alert(msg)
 
