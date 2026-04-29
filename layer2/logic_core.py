@@ -375,11 +375,13 @@ def _run_news_preclose_check() -> None:
                 f"@ {event_utc.strftime('%Y-%m-%d %H:%M')} UTC ({direction})"
             )
             logger.warning("NEWS BAN %s — %s", ticker, event_desc)
+            pos_str = _snapshot_positions_str()
             _dispatch_close_ticker(ticker, f"pre_news_{ticker}")
             _alert_sync(
                 f"<b>News Pre-Close — {ticker}</b>\n\n"
                 f"{event_desc}\n\n"
-                f"Positions closed. New signals blocked until "
+                f"<b>Positions at close:</b>\n{pos_str}\n\n"
+                f"New signals blocked until "
                 f"{suppression_end.strftime('%H:%M')} UTC "
                 f"(event +{_NEWS_TRADING_BAN_WINDOW} min)."
             )
@@ -427,8 +429,13 @@ def _run_equity_check() -> None:
     if curfew:
         if _last_curfew_close_date != today:
             logger.info("Monitor: SGT curfew transition — dispatching force-close (positions only)")
+            pos_str = _snapshot_positions_str()
             _dispatch_force_close("sgt_curfew", halt=False)
-            _alert_sync("<b>SGT Curfew</b> — All positions closed.\nResumes 12:00 SGT on next weekday.")
+            _alert_sync(
+                f"<b>SGT Curfew — All positions closed</b>\n\n"
+                f"<b>Positions at close:</b>\n{pos_str}\n\n"
+                f"Resumes 12:00 SGT on next weekday."
+            )
             _last_curfew_close_date = today
         _pos_tracking_initialized = False  # Prevent false close alerts when curfew ends
         return
