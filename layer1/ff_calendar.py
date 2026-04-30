@@ -2,22 +2,21 @@
 ForexFactory economic calendar client — no API key required.
 
 Fetches from the public ForexFactory JSON endpoints (nfs.faireconomy.media).
-Times are published in Eastern Time (New York) and converted to UTC here.
+The "date" field is an ISO 8601 string with timezone offset (e.g. "2026-04-30T19:00:00-04:00")
+and is parsed directly to UTC.
 
 Shared by Layer 1 (via asyncio.to_thread) and Layer 2 (directly in background thread).
 """
 
 import logging
 import threading
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-_ET        = ZoneInfo("America/New_York")   # ForexFactory publishes in ET
-_CACHE_TTL = 900                            # seconds — refresh every 15 minutes
+_CACHE_TTL = 900  # seconds — refresh every 15 minutes
 
 # Both weeks fetched so events near the Mon/Sun boundary are never missed.
 _FF_URLS = [
@@ -29,23 +28,19 @@ _cache_lock = threading.Lock()
 _cache: dict = {"events": None, "fetched_at": None}
 
 
-def _parse_event_utc(date_str: str, time_str: str) -> datetime | None:
-    """Parse a ForexFactory date + time into a UTC datetime.
+def _parse_event_utc(date_str: str) -> datetime | None:
+    """Parse a ForexFactory ISO 8601 date string into a UTC datetime.
 
-    FF times are Eastern Time strings like "8:30am" or "12:30pm".
-    Returns None for events with no fixed time (Tentative, All Day, empty).
+    FF publishes dates as e.g. "2026-04-30T19:00:00-04:00".
+    Returns None if the string is empty or unparseable.
     """
-    t = time_str.strip().upper() if time_str else ""
-    if not t or t in ("TENTATIVE", "ALL DAY"):
+    if not date_str:
         return None
-    for fmt in ("%Y-%m-%d %I:%M%p", "%Y-%m-%d %I%p"):
-        try:
-            naive = datetime.strptime(f"{date_str} {t}", fmt)
-            return naive.replace(tzinfo=_ET).astimezone(timezone.utc)
-        except ValueError:
-            continue
-    logger.debug("Unparseable FF time: date=%s time=%s", date_str, time_str)
-    return None
+    try:
+        return datetime.fromisoformat(date_str).astimezone(timezone.utc)
+    except ValueError:
+        logger.debug("Unparseable FF date: %s", date_str)
+        return None
 
 
 def fetch_events_sync() -> list[dict]:
@@ -59,7 +54,7 @@ def fetch_events_sync() -> list[dict]:
         impact   (str)      — "High" | "Medium" | "Low" | "Holiday"
         time_utc (datetime) — event time in UTC, timezone-aware
 
-    Events with no parseable fixed time (Tentative, All Day) are excluded.
+    Events with no parseable fixed time are excluded.
     """
     now = datetime.now(timezone.utc)
     with _cache_lock:
@@ -77,7 +72,7 @@ def fetch_events_sync() -> list[dict]:
                 resp = client.get(url)
                 resp.raise_for_status()
                 for item in resp.json():
-                    utc = _parse_event_utc(item.get("date", ""), item.get("time", ""))
+                    utc = _parse_event_utc(item.get("date", ""))
                     if utc is None:
                         continue
                     events.append({
