@@ -154,7 +154,7 @@ Mirrors `strategy.position_size == 0` logic.
 | Command | Description |
 |---|---|
 | `/emergency` | Force-close ALL positions on both accounts immediately + halt |
-| `/changepropfirm` | 9-step wizard — collects raw limits, applies buffers, saves config |
+| `/changepropfirm` | 10-step wizard — collects raw limits, applies buffers, saves config. Step 10 asks for initial account balance (baseline). |
 | `/consistency` | Phase 2 daily profit breakdown and consistency rule status |
 | `/propfirm` | Display current prop firm config |
 | `/equity` | Live balance + equity from both MT5 accounts |
@@ -167,7 +167,7 @@ Mirrors `strategy.position_size == 0` logic.
 | `/resumepair EURUSD` | Unblock a pair |
 | `/setmaxpos 2` | Set max simultaneous open trades (1–10, default 2) |
 | `/maxpos` | Current position limit and open count |
-| `/phase1` | Set phase ratio ×0.20, runs /changepropfirm, locks baseline from live MT5 |
+| `/phase1` | Set phase ratio ×0.20. Only sets baseline if currently 0 (from live MT5 balance). Idempotent — will not overwrite an existing baseline. |
 | `/phase2` | Next phase wizard — locks new baseline |
 | `/stop` | Halt new signals (open trades continue to SL/TP) |
 | `/resume` | Resume signal processing |
@@ -249,7 +249,7 @@ Uses ForexFactory data (no API key needed).
 | Awareness | 31–60 min before | Log only |
 | Ban | 0–30 min before + 0–30 min after | Close positions + suppress new entries |
 
-Deduped by `(ticker, event_utc.isoformat())`. `CLOSE_TICKER` + `NEWS_SUPPRESS` dispatched to both workers. `NEWS_CLEAR` sent when suppression expires.
+Deduped by `(ticker, event_utc.isoformat())`. `CLOSE_TICKER` + `NEWS_SUPPRESS` dispatched to both workers. When suppression expires: grouped 🔴→🟢 Telegram alert fires first, then `NEWS_CLEAR` sent to workers and pairs removed from blackboard.
 
 Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
@@ -321,7 +321,8 @@ Env vars: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `ZMQ_PULL_ADDR`, `ZMQ_REP_A
   "day_start_date_utc":        "2026-04-25"
 }
 ```
-`baseline_equity` and `day_start_equity` are populated live by the wizard. Never edit manually.
+`baseline_equity` = user-entered initial account balance from wizard Step 10/10. **Never fetched from live MT5.** Immutable for the life of the evaluation — only `/changepropfirm`, `/setbaseline <amount>`, or `/phase1` (when 0) can change it.
+`day_start_equity` = live prop MT5 balance at wizard completion; resets daily at 11:00 SGT rollover via `_update_day_start()`. `_update_day_start()` never touches `baseline_equity`.
 
 ---
 
@@ -437,7 +438,7 @@ Gate D — demo run (started 2026-04-25, target ≥7 days):
 
 1. Log into MT5 on VPS #2 — switch to real **FundingPips** credentials
 2. Log into MT5 on VPS #3 — switch to real **Fusion Markets** credentials
-3. Send `/changepropfirm` — re-run wizard with real FundingPips limits, baseline locks to live balance
+3. Send `/changepropfirm` — re-run wizard with real FundingPips limits. At Step 10/10 enter the prop firm's stated initial account balance (e.g. `100000`) — this becomes the static `baseline_equity` for all kill calculations
 4. Send `/phase1` then `/resume`
 5. Verify first live signal dispatches correctly and appears in both MT5 accounts
 
