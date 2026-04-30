@@ -1793,6 +1793,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Configuration</b>\n"
         "/propfirm — Current prop firm settings\n"
         "/changepropfirm — Update prop firm (9-step wizard)\n"
+        "/setbaseline &lt;amount&gt; — Correct baseline equity (e.g. /setbaseline 100000)\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel any active wizard\n\n"
 
