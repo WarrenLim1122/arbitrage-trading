@@ -48,7 +48,7 @@ logger = logging.getLogger("layer2")
 
 (PF_NAME, PF_PROFIT_TARGET, PF_MAX_DD_OVERALL, PF_MAX_DD_DAILY,
  PF_DD_TYPE, PF_RAW_SPREAD, PF_PROFIT_SHARE, PF_MIN_DAYS,
- PF_CONSISTENCY, PF_CONFIRM) = range(10)
+ PF_CONSISTENCY, PF_INITIAL_BALANCE, PF_CONFIRM) = range(11)
 
 (P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_CONFIRM) = range(10, 14)
 
@@ -71,7 +71,7 @@ async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
     _wizard_data.clear()
     await update.message.reply_text(
         "🏦 <b>Prop Firm Setup</b>\n\n"
-        "<b>Step 1/9 — Firm Name</b>\n"
+        "<b>Step 1/10 — Firm Name</b>\n"
         "Enter the prop firm name:",
         parse_mode="HTML",
     )
@@ -81,7 +81,7 @@ async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
 async def _wiz_name(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _wizard_data["propfirm_name"] = update.message.text.strip()
     await update.message.reply_text(
-        "<b>Step 2/9 — Profit Target</b>\n\n"
+        "<b>Step 2/10 — Profit Target</b>\n\n"
         "Enter the firm’s profit target percentage.\n"
         "Example: <code>10</code>",
         parse_mode="HTML",
@@ -98,7 +98,7 @@ async def _wiz_profit_target(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
         return PF_PROFIT_TARGET
     _wizard_data["profit_target_pct"] = v
     await update.message.reply_text(
-        "<b>Step 3/9 — Overall Drawdown</b>\n\n"
+        "<b>Step 3/10 — Overall Drawdown</b>\n\n"
         "Enter the firm’s raw overall drawdown limit.\n"
         "Example: <code>10</code>",
         parse_mode="HTML",
@@ -115,7 +115,7 @@ async def _wiz_max_dd_overall(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
         return PF_MAX_DD_OVERALL
     _wizard_data["max_drawdown_overall_pct"] = v
     await update.message.reply_text(
-        "<b>Step 4/9 — Daily Drawdown</b>\n\n"
+        "<b>Step 4/10 — Daily Drawdown</b>\n\n"
         "Enter the firm’s raw daily drawdown limit.\n"
         "Example: <code>3</code>",
         parse_mode="HTML",
@@ -132,7 +132,7 @@ async def _wiz_max_dd_daily(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
         return PF_MAX_DD_DAILY
     _wizard_data["max_drawdown_daily_pct"] = v
     await update.message.reply_text(
-        "<b>Step 5/9 — Drawdown Type</b>\n\n"
+        "<b>Step 5/10 — Drawdown Type</b>\n\n"
         "Type one option:\n"
         "<code>static</code> or <code>dynamic</code>",
         parse_mode="HTML",
@@ -151,7 +151,7 @@ async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             await update.message.reply_text(
                 "⚠️ <b>Dynamic Drawdown Accepted</b>\n\n"
                 "This account is now flagged as dynamic drawdown.\n\n"
-                "<b>Step 6/9 — Raw Spread Account</b>\n"
+                "<b>Step 6/10 — Raw Spread Account</b>\n"
                 "Type <code>yes</code> or <code>no</code>:",
                 parse_mode="HTML",
             )
@@ -170,7 +170,7 @@ async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if v_lower == "static":
         _wizard_data["drawdown_is_static"] = True
         await update.message.reply_text(
-            "<b>Step 6/9 — Raw Spread Account</b>\n\n"
+            "<b>Step 6/10 — Raw Spread Account</b>\n\n"
             "Type one option:\n"
             "<code>yes</code> or <code>no</code>",
             parse_mode="HTML",
@@ -204,7 +204,7 @@ async def _wiz_raw_spread(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> in
             await update.message.reply_text(
                 "⚠️ <b>Non-Raw Spread Accepted</b>\n\n"
                 "This account is now flagged as non-raw spread.\n\n"
-                "<b>Step 7/9 — Profit Sharing</b>\n"
+                "<b>Step 7/10 — Profit Sharing</b>\n"
                 "Enter the profit sharing percentage. Example: <code>80</code>",
                 parse_mode="HTML",
             )
@@ -223,7 +223,7 @@ async def _wiz_raw_spread(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> in
     if v_lower == "yes":
         _wizard_data["raw_spread_account"] = True
         await update.message.reply_text(
-            "<b>Step 7/9 — Profit Sharing</b>\n\n"
+            "<b>Step 7/10 — Profit Sharing</b>\n\n"
             "Enter the profit sharing percentage.\n"
             "Example: <code>80</code>",
             parse_mode="HTML",
@@ -255,7 +255,7 @@ async def _wiz_profit_share(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
         return PF_PROFIT_SHARE
     _wizard_data["profit_sharing_pct"] = v
     await update.message.reply_text(
-        "<b>Step 8/9 — Minimum Profit Days</b>\n\n"
+        "<b>Step 8/10 — Minimum Profit Days</b>\n\n"
         "Enter the minimum trading days required.\n"
         "Example: <code>5</code>",
         parse_mode="HTML",
@@ -272,7 +272,7 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return PF_MIN_DAYS
     _wizard_data["min_profit_days"] = v
     await update.message.reply_text(
-        "<b>Step 9/9 — Consistency Rule</b>\n\n"
+        "<b>Step 9/10 — Consistency Rule</b>\n\n"
         "When the largest profitable day falls below this percentage of total profit, "
         "the system will halt and prompt payout submission.\n\n"
         "Common target: largest day &lt; 30% of total profit.\n"
@@ -296,13 +296,40 @@ async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
         )
         return PF_CONSISTENCY
     _wizard_data["consistency_threshold_pct"] = v
+    await update.message.reply_text(
+        "<b>Step 10/10 — Initial Account Balance</b>\n\n"
+        "Enter the prop firm's initial account balance (the starting balance the firm set for this evaluation).\n"
+        "This is used as the static baseline for all kill condition calculations.\n\n"
+        "Example: <code>100000</code>",
+        parse_mode="HTML",
+    )
+    return PF_INITIAL_BALANCE
+
+
+async def _wiz_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        v = float(update.message.text.strip().replace(",", ""))
+        assert v > 0
+    except Exception:
+        await update.message.reply_text(
+            "⚠️ <b>Invalid Input</b>\n\nEnter a positive number. Example: <code>100000</code>",
+            parse_mode="HTML",
+        )
+        return PF_INITIAL_BALANCE
+    _wizard_data["initial_balance"] = v
 
     eff = _apply_buffers(_wizard_data)
     dd_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["drawdown_is_static"] else ""
     rs_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["raw_spread_account"] else ""
+    daily_dd_amt = round(v * eff["max_drawdown_daily_pct"] / 100.0, 2)
+    floor_amt    = round(v * (1.0 - eff["max_drawdown_overall_pct"] / 100.0), 2)
+    cap_amt      = round(v * eff["daily_profit_cap_pct"] / 100.0, 2)
+    target_lvl   = round(v * (1.0 + _wizard_data["profit_target_pct"] / 100.0), 2)
+    cons_v       = _wizard_data["consistency_threshold_pct"]
     summary = (
         f"📊 <b>Review Prop Firm Setup</b>\n\n"
         f"<b>Firm:</b> {_wizard_data['propfirm_name']}\n"
+        f"<b>Initial Balance:</b> ${v:,.2f}\n"
         f"<b>Profit Target:</b> {_wizard_data['profit_target_pct']:.1f}%\n"
         f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']:.1f}% → enforced at <b>{eff['max_drawdown_overall_pct']:.1f}%</b> (no buffer — exact)\n"
         f"<b>Max DD Daily:</b> {_wizard_data['max_drawdown_daily_pct']:.1f}% → enforced at <b>{eff['max_drawdown_daily_pct']:.1f}%</b> (−1pp buffer)\n"
@@ -310,14 +337,13 @@ async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
         f"<b>Raw Spread Acct:</b> {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
         f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']:.1f}%\n"
         f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n"
-        f"<b>Consistency Threshold:</b> {v:.1f}%\n\n"
-        f"<b>Risk Controls</b>\n"
-        f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']:.1f}% → close all + halt\n"
-        f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']:.1f}% from baseline → close all + <b>permanent halt</b>\n"
-        f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']:.1f}% → close all + halt\n"
-        f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']:.1f}% → permanent halt\n"
-        f"Kill 5 — consistency: largest day &lt; {v:.1f}% of total → permanent halt <i>(Phase 2 only)</i>\n\n"
-        f"<i>Baseline equity will be fetched live from MT5 after confirmation.</i>\n\n"
+        f"<b>Consistency Threshold:</b> {cons_v:.1f}%\n\n"
+        f"<b>Kill Levels (static, based on ${v:,.0f} baseline)</b>\n"
+        f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
+        f"K2 Overall DD: equity ≤ ${floor_amt:,.2f}\n"
+        f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
+        f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n"
+        f"K5 Consistency: largest day &lt; {cons_v:.1f}% of total <i>(Phase 2 only)</i>\n\n"
         f"Reply <b>YES</b> to save, or <b>NO</b> to cancel."
     )
     await update.message.reply_text(summary, parse_mode="HTML")
@@ -344,16 +370,14 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         old_name     = _propfirm.get("propfirm_name", "—")
         old_baseline = _propfirm.get("baseline_equity", 0.0)
 
-    baseline = 0.0
+    # Baseline is the user-provided initial account balance — always static for the evaluation life.
+    # day_start_equity is fetched live from MT5 (resets daily).
+    baseline = _wizard_data.get("initial_balance", 0.0)
+    day_start = baseline
     try:
-        baseline = _query_equity(ZMQ_REQ_PROP, "")["balance"]
-    except Exception as exc:
-        await update.message.reply_text(
-            f"⚠️ <b>Live Balance Unavailable</b>\n\n"
-            f"Could not fetch prop account balance:\n<code>{exc}</code>\n\n"
-            f"Baseline has been set to 0.0. Run /changepropfirm again once MT5 is connected.",
-            parse_mode="HTML",
-        )
+        day_start = _query_equity(ZMQ_REQ_PROP, "")["balance"]
+    except Exception:
+        pass  # fall back to baseline if MT5 unavailable
 
     cons_threshold = _wizard_data.get("consistency_threshold_pct", 29.0)
     with _pf_lock:
@@ -369,7 +393,7 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "daily_profit_cap_pct":       eff["daily_profit_cap_pct"],
             "consistency_threshold_pct":  cons_threshold,
             "baseline_equity":            baseline,
-            "day_start_equity":           baseline,
+            "day_start_equity":           day_start,
             "day_start_date_utc":         _propfirm_day(_sgt_now()),
         })
         # Store raw Phase 1 values for /phase2 wizard (raw = before buffers, what the firm states)
@@ -1676,8 +1700,9 @@ def _run_bot() -> None:
             PF_RAW_SPREAD:     [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_raw_spread)],
             PF_PROFIT_SHARE:   [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_share)],
             PF_MIN_DAYS:       [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_min_days)],
-            PF_CONSISTENCY:    [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_consistency)],
-            PF_CONFIRM:        [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_confirm)],
+            PF_CONSISTENCY:      [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_consistency)],
+            PF_INITIAL_BALANCE:  [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_initial_balance)],
+            PF_CONFIRM:          [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_confirm)],
         },
         fallbacks=[CommandHandler("cancel", _wiz_cancel)],
         per_chat=True,
