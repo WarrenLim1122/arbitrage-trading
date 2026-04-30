@@ -299,11 +299,15 @@ def _apply_next_window() -> dict | None:
     return None
 
 
-def _window_minutes(t_str: str) -> int:
-    """Convert 'HH:MM' to minutes since midnight. '00:00' is treated as 1440 (end of day)."""
+def _window_minutes(t_str: str, is_end: bool = False) -> int:
+    """Convert 'HH:MM' to minutes since midnight.
+
+    '00:00' as an end time means end-of-day (1440). '00:00' as a start time
+    means midnight (0), enabling 24-hour weekday trading when start=end='00:00'.
+    """
     h, m = map(int, t_str.split(":"))
     mins = h * 60 + m
-    return 1440 if mins == 0 else mins
+    return 1440 if (mins == 0 and is_end) else mins
 
 
 _load_trading_window()
@@ -332,8 +336,8 @@ def _is_sgt_curfew(now_sgt: datetime | None = None) -> bool:
         return True
     with _window_lock:
         window = dict(_trading_window["current_window"])
-    start = _window_minutes(window.get("start", "12:00"))
-    end   = _window_minutes(window.get("end",   "00:00"))
+    start = _window_minutes(window.get("start", "12:00"), is_end=False)
+    end   = _window_minutes(window.get("end",   "00:00"), is_end=True)
     curr  = now_sgt.hour * 60 + now_sgt.minute
     return curr < start or curr >= end
 
