@@ -20,6 +20,7 @@ RISK_PARAMS_PATH       = ROOT / "config" / "risk_params.json"
 PROPFIRM_CONFIG_PATH   = ROOT / "config" / "propfirm_config.json"
 CONSISTENCY_LOG_PATH   = ROOT / "config" / "consistency_log.json"
 SYMBOL_MAP_PATH        = ROOT / "config" / "symbol_map.json"
+TRADING_WINDOW_PATH    = ROOT / "config" / "trading_window.json"
 
 # ── Env vars ──────────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -260,6 +261,51 @@ def _apply_buffers(raw: dict) -> dict:
     return effective
 
 
+# ── Trading window config ─────────────────────────────────────────────────
+
+_trading_window: dict = {
+    "current_window": {"start": "12:00", "end": "00:00"},
+    "next_window": None,
+}
+_window_lock = threading.Lock()
+
+
+def _load_trading_window() -> None:
+    if TRADING_WINDOW_PATH.exists():
+        with TRADING_WINDOW_PATH.open() as f:
+            data = json.load(f)
+        with _window_lock:
+            _trading_window.update(data)
+    else:
+        _save_trading_window()
+
+
+def _save_trading_window() -> None:
+    TRADING_WINDOW_PATH.parent.mkdir(exist_ok=True)
+    with TRADING_WINDOW_PATH.open("w") as f:
+        json.dump(_trading_window, f, indent=2)
+
+
+def _apply_next_window() -> dict | None:
+    """Swap next_window → current_window if one is scheduled. Returns the new window or None."""
+    with _window_lock:
+        if _trading_window.get("next_window"):
+            _trading_window["current_window"] = _trading_window["next_window"]
+            _trading_window["next_window"] = None
+            _save_trading_window()
+            return dict(_trading_window["current_window"])
+    return None
+
+
+def _window_minutes(t_str: str) -> int:
+    """Convert 'HH:MM' to minutes since midnight. '00:00' is treated as 1440 (end of day)."""
+    h, m = map(int, t_str.split(":"))
+    mins = h * 60 + m
+    return 1440 if mins == 0 else mins
+
+
+_load_trading_window()
+
 # ── SGT helpers ───────────────────────────────────────────────────────────
 
 def _sgt_now() -> datetime:
@@ -277,9 +323,17 @@ def _propfirm_day(now_sgt: datetime) -> str:
     return now_sgt.date().isoformat()
 
 
-def _is_sgt_curfew() -> bool:
-    now = _sgt_now()
-    return now.hour < 12 or now.weekday() >= 5
+def _is_sgt_curfew(now_sgt: datetime | None = None) -> bool:
+    if now_sgt is None:
+        now_sgt = _sgt_now()
+    if now_sgt.weekday() >= 5:
+        return True
+    with _window_lock:
+        window = dict(_trading_window["current_window"])
+    start = _window_minutes(window.get("start", "12:00"))
+    end   = _window_minutes(window.get("end",   "00:00"))
+    curr  = now_sgt.hour * 60 + now_sgt.minute
+    return curr < start or curr >= end
 
 
 def _pnl_bar(pct: float, width: int = 10) -> str:

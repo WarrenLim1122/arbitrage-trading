@@ -31,6 +31,7 @@ from layer2.state import (
     _P2_FIELD_DEFS, _P2_FIELD_BY_IDX,
     _is_sgt_curfew, _sgt_now, _propfirm_day,
     _apply_buffers, _pnl_bar,
+    _trading_window, _window_lock, _save_trading_window, _window_minutes,
 )
 from layer2.zmq_helpers import (
     _query_equity, _query_positions, _snapshot_positions_str,
@@ -53,9 +54,11 @@ logger = logging.getLogger("layer2")
 
 EMERGENCY_CONFIRM  = 14
 CLOSEPAIR_CONFIRM  = 15
+SETWINDOW_CONFIRM  = 16
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
+_setwindow_data: dict = {}
 
 
 def _auth(update: Update) -> bool:
@@ -850,6 +853,9 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     floor  = round(baseline * (1.0 - dd_overall / 100.0), 2) if baseline > 0 and dd_overall > 0 else 0.0
     mult   = PHASE_MULT.get(phase, "?")
     curfew = _is_sgt_curfew()
+    with _window_lock:
+        win_curr = dict(_trading_window["current_window"])
+        win_next = _trading_window.get("next_window")
     if last_ts and last_ts != "never":
         try:
             _sgt_off = timedelta(hours=8)
@@ -864,6 +870,8 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"<b>Active:</b> {'YES' if active else 'NO — halted'}\n"
         f"<b>Perm Halt:</b> {'YES — /phase2 required' if p_halt else 'No'}\n"
         f"<b>SGT Curfew:</b> {'YES (dormant)' if curfew else 'No'}\n"
+        f"<b>Trading Window:</b> {win_curr['start']}–{win_curr['end']} SGT"
+        + (f" (next: {win_next['start']}–{win_next['end']})" if win_next else "") + "\n"
         f"<b>Max open positions:</b> {max_pos}\n"
         f"<b>Firm:</b> {pf_name}\n\n"
         f"<b>Equity</b>\n"
@@ -1463,6 +1471,87 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def _cmd_setwindow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    args = (update.message.text or "").split()[1:]
+    if len(args) != 2:
+        await update.message.reply_text(
+            "Usage: <code>/setwindow HH:MM HH:MM</code>\n"
+            "Example: <code>/setwindow 09:00 00:00</code>  (00:00 = midnight)",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+    start_str, end_str = args[0], args[1]
+    try:
+        for t in (start_str, end_str):
+            h, m = map(int, t.split(":"))
+            assert 0 <= h <= 23 and 0 <= m <= 59
+    except Exception:
+        await update.message.reply_text(
+            "Invalid time format — use HH:MM (e.g. <code>09:00</code>, <code>00:00</code>).",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+    with _window_lock:
+        curr = dict(_trading_window["current_window"])
+    _setwindow_data.clear()
+    _setwindow_data["start"] = start_str
+    _setwindow_data["end"]   = end_str
+    await update.message.reply_text(
+        f"<b>Trading Window Update</b>\n\n"
+        f"New window: <b>{start_str} – {end_str} SGT</b>\n"
+        f"Current:    {curr['start']} – {curr['end']} SGT\n\n"
+        "Apply when?\n"
+        "<b>1</b> — Today (immediate)\n"
+        "<b>2</b> — Tomorrow (next session rollover at 11:00 SGT)",
+        parse_mode="HTML",
+    )
+    return SETWINDOW_CONFIRM
+
+
+async def _setwindow_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    choice = update.message.text.strip().lower()
+    start  = _setwindow_data.get("start", "12:00")
+    end    = _setwindow_data.get("end",   "00:00")
+    new_window = {"start": start, "end": end}
+    if choice in ("1", "today"):
+        with _window_lock:
+            _trading_window["current_window"] = new_window
+            _trading_window["next_window"]    = None
+            _save_trading_window()
+        await update.message.reply_text(
+            f"Trading window updated — now <b>{start} – {end} SGT</b> (effective immediately).",
+            parse_mode="HTML",
+        )
+    elif choice in ("2", "tomorrow"):
+        with _window_lock:
+            _trading_window["next_window"] = new_window
+            _save_trading_window()
+        await update.message.reply_text(
+            f"Trading window scheduled — <b>{start} – {end} SGT</b> will apply from the next session (11:00 SGT rollover).",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            "Reply <b>1</b> for today or <b>2</b> for tomorrow. Or /cancel to abort.",
+            parse_mode="HTML",
+        )
+        return SETWINDOW_CONFIRM
+    _setwindow_data.clear()
+    return ConversationHandler.END
+
+
+async def _setwindow_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    _setwindow_data.clear()
+    await update.message.reply_text("Window update cancelled.")
+    return ConversationHandler.END
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -1499,6 +1588,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Configuration</b>\n"
         "/propfirm — Current prop firm settings\n"
         "/changepropfirm — Update prop firm (9-step wizard)\n"
+        "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel any active wizard\n\n"
 
         "<b>Kill Conditions</b> (automatic)\n"
@@ -1507,9 +1597,6 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "K3 — Daily profit ≥ cap → close all + halt\n"
         "K4 — Overall profit ≥ target → permanent halt → /phase2\n"
         "K5 — Consistency rule met → permanent halt → claim payout\n\n"
-
-        "<b>Trading Window</b>\n"
-        "12:00–00:00 SGT, weekdays only\n\n"
 
         "<b>First-Time Setup</b>\n"
         "/changepropfirm → /phase1 → /resume",
@@ -1568,11 +1655,21 @@ def _run_bot() -> None:
         per_chat=True,
     )
 
+    setwindow_wizard = ConversationHandler(
+        entry_points=[CommandHandler("setwindow", _cmd_setwindow)],
+        states={
+            SETWINDOW_CONFIRM: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _setwindow_confirm)],
+        },
+        fallbacks=[CommandHandler("cancel", _setwindow_abort)],
+        per_chat=True,
+    )
+
     tg_app = Application.builder().token(BOT_TOKEN).build()
     tg_app.add_handler(wizard)
     tg_app.add_handler(p2_wizard)
     tg_app.add_handler(emergency_wizard)
     tg_app.add_handler(closepair_wizard)
+    tg_app.add_handler(setwindow_wizard)
     tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
@@ -1590,6 +1687,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
     tg_app.add_handler(CommandHandler("consistency",   _cmd_consistency))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
+    tg_app.add_handler(CommandHandler("setwindow",     _cmd_setwindow))
 
     async def _poll():
         await tg_app.initialize()

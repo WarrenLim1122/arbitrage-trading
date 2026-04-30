@@ -53,6 +53,7 @@ from layer2.state import (
     _is_sgt_curfew, _sgt_now, _propfirm_day,
     _record_day_profit, _build_consistency_table,
     _invert, _load_consistency_log,
+    _trading_window, _window_lock, _apply_next_window,
 )
 from layer2.zmq_helpers import (
     _query_equity, _query_positions, _snapshot_positions_str,
@@ -489,7 +490,7 @@ def _run_equity_check() -> None:
         return
 
     now_sgt  = _sgt_now()
-    curfew   = now_sgt.hour < 12 or now_sgt.weekday() >= 5
+    curfew   = _is_sgt_curfew(now_sgt)
     today    = now_sgt.date()
 
     if curfew:
@@ -497,10 +498,12 @@ def _run_equity_check() -> None:
             logger.info("Monitor: SGT curfew transition — dispatching force-close (positions only)")
             pos_str = _snapshot_positions_str()
             _dispatch_force_close("sgt_curfew", halt=False)
+            with _window_lock:
+                _win_start = _trading_window["current_window"].get("start", "12:00")
             _alert_sync(
                 f"<b>SGT Curfew — All positions closed</b>\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"Resumes 12:00 SGT on next weekday."
+                f"Resumes {_win_start} SGT on next weekday."
             )
             _last_curfew_close_date = today
         _pos_tracking_initialized = False
@@ -625,6 +628,10 @@ def _run_equity_check() -> None:
     # Reset day-start equity when the prop firm's 11:00 SGT window rolls over
     stored_date = pf.get("day_start_date_utc", "")
     if stored_date != _propfirm_day(now_sgt):
+        # Apply scheduled next_window at session rollover
+        applied = _apply_next_window()
+        if applied:
+            logger.info("Trading window applied at session rollover: %s", applied)
         # Lock completed day's profit into consistency log (Phase 2 only)
         if phase == 2 and stored_date:
             day_profit = prop_equity - pf.get("day_start_equity", prop_equity)
