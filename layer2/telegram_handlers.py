@@ -464,6 +464,87 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+# ── /changepropfirm wizard — /back handlers (one per step) ───────────────
+
+async def _wiz_back_step1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("Already at Step 1 — enter the prop firm name:", parse_mode="HTML")
+    return PF_NAME
+
+async def _wiz_back_step2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 1/10 — Firm Name</b>\n\nEnter the prop firm name:", parse_mode="HTML")
+    return PF_NAME
+
+async def _wiz_back_step3(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 2/10 — Profit Target</b>\n\nEnter the firm's profit target percentage.\nExample: <code>10</code>",
+        parse_mode="HTML")
+    return PF_PROFIT_TARGET
+
+async def _wiz_back_step4(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 3/10 — Overall Drawdown</b>\n\nEnter the firm's raw overall drawdown limit.\nExample: <code>10</code>\n\n"
+        "⚠️ No automatic buffer is applied — the value you enter is enforced exactly.\nEnter the firm's stated limit as-is.",
+        parse_mode="HTML")
+    return PF_MAX_DD_OVERALL
+
+async def _wiz_back_step5(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 4/10 — Daily Drawdown</b>\n\nEnter the firm's raw daily drawdown limit.\nExample: <code>3</code>\n\n"
+        "⚠️ Enter the firm's stated limit WITHOUT buffer.\nThe system will subtract 1pp automatically.\n"
+        "(e.g. firm says 3% → enter <code>3</code> → bot triggers at 2%)",
+        parse_mode="HTML")
+    return PF_MAX_DD_DAILY
+
+async def _wiz_back_step6(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    _wizard_data.pop("_dd_type_confirming", None)
+    await update.message.reply_text(
+        "<b>Step 5/10 — Drawdown Type</b>\n\nType one option:\n<code>static</code> or <code>dynamic</code>",
+        parse_mode="HTML")
+    return PF_DD_TYPE
+
+async def _wiz_back_step7(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    _wizard_data.pop("_raw_spread_confirming", None)
+    await update.message.reply_text(
+        "<b>Step 6/10 — Raw Spread Account</b>\n\nType one option:\n<code>yes</code> or <code>no</code>",
+        parse_mode="HTML")
+    return PF_RAW_SPREAD
+
+async def _wiz_back_step8(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 7/10 — Profit Sharing</b>\n\nEnter the profit sharing percentage.\nExample: <code>80</code>",
+        parse_mode="HTML")
+    return PF_PROFIT_SHARE
+
+async def _wiz_back_step9(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 8/10 — Minimum Profit Days</b>\n\nEnter the minimum trading days required.\nExample: <code>5</code>",
+        parse_mode="HTML")
+    return PF_MIN_DAYS
+
+async def _wiz_back_step10(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 9/10 — Consistency Rule</b>\n\n"
+        "When the largest profitable day falls below this percentage of total profit, "
+        "the system will halt and prompt payout submission.\n\n"
+        "Common target: largest day &lt; 30% of total profit.\n\n"
+        "⚠️ Enter the firm's stated limit WITHOUT buffer.\n"
+        "The system will subtract 1pp automatically.\n"
+        "(e.g. firm says 30% → enter <code>30</code> → bot triggers at 29%)\n\n"
+        "Enter a value between 2 and 50. Example: <code>30</code>",
+        parse_mode="HTML")
+    return PF_CONSISTENCY
+
+async def _wiz_back_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "<b>Step 10/10 — Initial Account Balance</b>\n\n"
+        "Enter the prop firm's initial account balance (the starting balance the firm set for this evaluation).\n"
+        "This is used as the static baseline for all kill condition calculations.\n\n"
+        "Example: <code>100000</code>",
+        parse_mode="HTML")
+    return PF_INITIAL_BALANCE
+
+
 # ── Telegram commands ─────────────────────────────────────────────────────
 
 
@@ -1749,8 +1830,9 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
         "<b>Configuration</b>\n"
         "/propfirm — Current prop firm settings\n"
-        "/changepropfirm — Update prop firm (9-step wizard)\n"
+        "/changepropfirm — Update prop firm (10-step wizard)\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
+        "/back — Go back one step in /changepropfirm wizard\n"
         "/cancel — Cancel any active wizard\n\n"
 
         "<b>Kill Conditions</b> (automatic)\n"
@@ -1772,17 +1854,17 @@ def _run_bot() -> None:
     wizard = ConversationHandler(
         entry_points=[CommandHandler("changepropfirm", _cmd_changepropfirm)],
         states={
-            PF_NAME:           [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_name)],
-            PF_PROFIT_TARGET:  [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_target)],
-            PF_MAX_DD_OVERALL: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_max_dd_overall)],
-            PF_MAX_DD_DAILY:   [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_max_dd_daily)],
-            PF_DD_TYPE:        [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_dd_type)],
-            PF_RAW_SPREAD:     [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_raw_spread)],
-            PF_PROFIT_SHARE:   [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_share)],
-            PF_MIN_DAYS:       [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_min_days)],
-            PF_CONSISTENCY:      [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_consistency)],
-            PF_INITIAL_BALANCE:  [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_initial_balance)],
-            PF_CONFIRM:          [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_confirm)],
+            PF_NAME:           [CommandHandler("back", _wiz_back_step1),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_name)],
+            PF_PROFIT_TARGET:  [CommandHandler("back", _wiz_back_step2),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_target)],
+            PF_MAX_DD_OVERALL: [CommandHandler("back", _wiz_back_step3),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_max_dd_overall)],
+            PF_MAX_DD_DAILY:   [CommandHandler("back", _wiz_back_step4),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_max_dd_daily)],
+            PF_DD_TYPE:        [CommandHandler("back", _wiz_back_step5),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_dd_type)],
+            PF_RAW_SPREAD:     [CommandHandler("back", _wiz_back_step6),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_raw_spread)],
+            PF_PROFIT_SHARE:   [CommandHandler("back", _wiz_back_step7),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_share)],
+            PF_MIN_DAYS:       [CommandHandler("back", _wiz_back_step8),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_min_days)],
+            PF_CONSISTENCY:    [CommandHandler("back", _wiz_back_step9),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_consistency)],
+            PF_INITIAL_BALANCE:[CommandHandler("back", _wiz_back_step10), MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_initial_balance)],
+            PF_CONFIRM:        [CommandHandler("back", _wiz_back_confirm), MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_confirm)],
         },
         fallbacks=[CommandHandler("cancel", _wiz_cancel)],
         per_chat=True,
