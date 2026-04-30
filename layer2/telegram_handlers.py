@@ -466,55 +466,6 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ── Telegram commands ─────────────────────────────────────────────────────
 
-async def _cmd_setbaseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Directly overwrite baseline_equity without re-running /changepropfirm."""
-    if not _auth(update):
-        return
-    text = (update.message.text or "").strip().split()
-    if len(text) < 2:
-        with _pf_lock:
-            cur = _propfirm.get("baseline_equity", 0.0)
-        await update.message.reply_text(
-            f"Usage: <code>/setbaseline 100000</code>\n\nCurrent baseline: <b>${cur:,.2f}</b>",
-            parse_mode="HTML",
-        )
-        return
-    try:
-        new_baseline = float(text[1].replace(",", ""))
-        assert new_baseline > 0
-    except Exception:
-        await update.message.reply_text("⚠️ <b>Invalid Amount</b>\n\nExample: <code>/setbaseline 100000</code>", parse_mode="HTML")
-        return
-
-    with _pf_lock:
-        old = _propfirm.get("baseline_equity", 0.0)
-        _propfirm["baseline_equity"] = new_baseline
-        _propfirm["k1_layer"] = 0  # reset staircase layers when baseline changes
-        _propfirm["k3_layer"] = 0
-        _save_propfirm(_propfirm)
-        dd_daily   = _propfirm.get("max_drawdown_daily_pct",  0.0)
-        dd_overall = _propfirm.get("max_drawdown_overall_pct", 0.0)
-        cap        = _propfirm.get("daily_profit_cap_pct",     0.0)
-        target     = _propfirm.get("profit_target_pct",        0.0)
-
-    k1 = round(new_baseline * dd_daily   / 100.0, 2) if dd_daily   > 0 else 0.0
-    k2 = round(new_baseline * (1 - dd_overall / 100.0), 2) if dd_overall > 0 else 0.0
-    k3 = round(new_baseline * cap        / 100.0, 2) if cap        > 0 else 0.0
-    k4 = round(new_baseline * (1 + target / 100.0), 2) if target   > 0 else 0.0
-
-    await update.message.reply_text(
-        f"✅ <b>Baseline Updated</b>\n\n"
-        f"Before: ${old:,.2f}\n"
-        f"After:  <b>${new_baseline:,.2f}</b>\n\n"
-        f"<b>New Kill Levels</b>\n"
-        f"K1 Daily DD: −${k1:,.2f} from day-start\n"
-        f"K2 Overall DD: equity ≤ ${k2:,.2f}\n"
-        f"K3 Daily Cap: +${k3:,.2f} from day-start\n"
-        f"K4 Profit Target: equity ≥ ${k4:,.2f}",
-        parse_mode="HTML",
-    )
-    logger.info("Baseline manually updated: %.2f → %.2f", old, new_baseline)
-
 
 async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
@@ -1799,7 +1750,6 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Configuration</b>\n"
         "/propfirm — Current prop firm settings\n"
         "/changepropfirm — Update prop firm (9-step wizard)\n"
-        "/setbaseline &lt;amount&gt; — Correct baseline equity (e.g. /setbaseline 100000)\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel any active wizard\n\n"
 
@@ -1885,7 +1835,6 @@ def _run_bot() -> None:
     tg_app.add_handler(closepair_wizard)
     tg_app.add_handler(setwindow_wizard)
     tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
-    tg_app.add_handler(CommandHandler("setbaseline",   _cmd_setbaseline))
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
