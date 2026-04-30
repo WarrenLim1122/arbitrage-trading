@@ -654,7 +654,6 @@ def _run_equity_check() -> None:
     dd_overall_pct = pf.get("max_drawdown_overall_pct",  0.0)
     cap_pct        = pf.get("daily_profit_cap_pct",      0.0)
     k1_layer       = int(pf.get("k1_layer", 0))
-    k3_layer       = int(pf.get("k3_layer", 0))
 
     layer_loss_amt  = round(baseline * dd_daily_pct  / 100.0, 2) if dd_daily_pct  > 0 else 0.0
     layer_cap_amt   = round(baseline * cap_pct        / 100.0, 2) if cap_pct        > 0 else 0.0
@@ -709,30 +708,26 @@ def _run_equity_check() -> None:
             _alert_sync(msg)
             return
 
-    # Kill 3 — layered profit ceilings (all phases)
-    # Ceilings are fixed from baseline. Day-start equity is NOT used.
-    if layer_cap_amt > 0:
-        active_ceiling = baseline + (k3_layer + 1) * layer_cap_amt
-        if prop_equity >= active_ceiling:
-            new_k3_layer = k3_layer + 1
-            with _pf_lock:
-                _propfirm["k3_layer"] = new_k3_layer
-                _save_propfirm(_propfirm)
+    # Kill 3 — daily profit cap (all phases)
+    # Purpose: protect the consistency rule (no single day > X% of total profit).
+    # Level = day_start_equity + (baseline × daily_profit_cap_pct).
+    # Resets every session — NOT cumulative across days.
+    if layer_cap_amt > 0 and day_start > 0:
+        daily_cap_level = day_start + layer_cap_amt
+        if prop_equity >= daily_cap_level:
             pos_str = _snapshot_positions_str()
-            next_ceiling = baseline + (new_k3_layer + 1) * layer_cap_amt
             _dispatch_force_close("daily_profit_cap", halt=True)
             msg = (
-                f"<b>KILL 3 — Profit Layer {new_k3_layer} Cap Hit</b>\n\n"
-                f"Active cap ${active_ceiling:,.2f} reached.\n"
+                f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
+                f"Daily cap level: ${daily_cap_level:,.2f}  (day-start ${day_start:,.2f} + ${layer_cap_amt:,.2f})\n"
                 f"Equity: <b>${prop_equity:,.2f}</b>  |  Baseline: ${baseline:,.2f}\n\n"
-                f"<b>Next cap: ${next_ceiling:,.2f}</b> (Layer {new_k3_layer + 1})\n\n"
                 f"<b>Positions closed:</b>\n{pos_str}\n\n"
-                f"All positions force-closed. Profit cap enforced.\n\n"
+                f"All positions force-closed. Daily profit cap enforced.\n\n"
                 f"<b>Next steps:</b>\n"
-                f"/resume — resume trading (next cap layer is now active)"
+                f"/resume — resume trading next session"
             )
-            logger.warning("KILL3: equity=%.2f cap=%.2f layer=%d",
-                           prop_equity, active_ceiling, new_k3_layer)
+            logger.warning("KILL3: equity=%.2f cap_level=%.2f day_start=%.2f",
+                           prop_equity, daily_cap_level, day_start)
             _alert_sync(msg)
             return
 

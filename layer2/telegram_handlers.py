@@ -551,23 +551,21 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     cap        = pf.get("daily_profit_cap_pct",      0.0)
     target     = pf.get("profit_target_pct",         0.0)
     k1_layer   = int(pf.get("k1_layer", 0))
-    k3_layer   = int(pf.get("k3_layer", 0))
     layer_loss = round(baseline * dd_daily   / 100.0, 2) if dd_daily   > 0 and baseline > 0 else 0.0
     layer_cap  = round(baseline * cap        / 100.0, 2) if cap        > 0 and baseline > 0 else 0.0
     overall_fl = round(baseline * (1 - dd_overall / 100.0), 2) if dd_overall > 0 and baseline > 0 else 0.0
     target_lvl = round(baseline * (1.0 + target / 100.0), 2)   if target    > 0 and baseline > 0 else 0.0
     max_layers = round(dd_overall / dd_daily) if dd_daily > 0 else 0
     active_fl  = baseline - (k1_layer + 1) * layer_loss if layer_loss > 0 else 0.0
-    active_cap = baseline + (k3_layer + 1) * layer_cap  if layer_cap  > 0 else 0.0
 
     await update.message.reply_text(
         f"🟢 <b>Phase 1 Active</b>\n\n"
         f"<b>Risk Mode</b>\nPersonal multiplier: ×{PHASE_MULT[1]:.2f}\n"
         f"Baseline: <b>${baseline:,.2f}</b> ({baseline_note})\n\n"
         f"<b>Risk Levels — Prop Account</b>\n"
-        f"K1 Layer {k1_layer + 1}/{max_layers} — floor: <b>${active_fl:,.2f}</b>  (layer size: ${layer_loss:,.2f})\n"
+        f"K1 Layer {k1_layer + 1}/{max_layers} — floor: <b>${active_fl:,.2f}</b>  (layer ${layer_loss:,.2f})\n"
         f"K2 Overall floor: ${overall_fl:,.2f}\n"
-        f"K3 Layer {k3_layer + 1} — cap: <b>${active_cap:,.2f}</b>  (layer size: ${layer_cap:,.2f})\n"
+        f"K3 Daily cap: ${layer_cap:,.2f} above day-start  ({cap:.1f}% of baseline)\n"
         f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n\n"
         f"<b>Next Step</b>\nSend /resume to allow new signals.",
         parse_mode="HTML",
@@ -1236,38 +1234,37 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     overall_dd  = pf.get("max_drawdown_overall_pct", 0.0)
     target_pct  = pf.get("profit_target_pct",        0.0)
     k1_layer    = int(pf.get("k1_layer", 0))
-    k3_layer    = int(pf.get("k3_layer", 0))
     equity      = prop["equity"]
 
     overall_pnl    = equity - baseline
     daily_pnl      = equity - day_start
     layer_loss_amt = round(baseline * daily_dd   / 100.0, 2) if daily_dd   > 0 else 0.0
-    layer_cap_amt  = round(baseline * daily_cap  / 100.0, 2) if daily_cap  > 0 else 0.0
+    daily_cap_amt  = round(baseline * daily_cap  / 100.0, 2) if daily_cap  > 0 else 0.0
     overall_dd_amt = round(baseline * overall_dd / 100.0, 2) if overall_dd > 0 else 0.0
     target_amt     = round(baseline * target_pct / 100.0, 2) if target_pct > 0 else 0.0
     max_loss_layers = round(overall_dd / daily_dd) if daily_dd > 0 else 0
 
-    overall_floor   = baseline - overall_dd_amt
-    active_floor    = baseline - (k1_layer + 1) * layer_loss_amt if layer_loss_amt > 0 else 0.0
-    active_ceiling  = baseline + (k3_layer + 1) * layer_cap_amt  if layer_cap_amt  > 0 else 0.0
-    k4_target       = baseline + target_amt
+    overall_floor  = baseline - overall_dd_amt
+    active_floor   = baseline - (k1_layer + 1) * layer_loss_amt if layer_loss_amt > 0 else 0.0
+    daily_cap_level = day_start + daily_cap_amt
+    k4_target      = baseline + target_amt
+    daily_remaining = max(0.0, daily_cap_level - equity)
 
-    # Layer consumption bars: % consumed within the current active layer band
-    # K1: band from (baseline - k1_layer*layer_amt) down to active_floor
+    # K1 bar: % consumed within the current active loss layer
     k1_prev_floor = baseline - k1_layer * layer_loss_amt
     k1_consumed   = max(0.0, k1_prev_floor - equity)
     k1_bar_pct    = k1_consumed / layer_loss_amt * 100 if layer_loss_amt > 0 else 0.0
+    k1_status     = "🔴 BREACHED" if equity <= active_floor else "🟢 Active"
 
-    k3_prev_ceil  = baseline + k3_layer * layer_cap_amt
-    k3_consumed   = max(0.0, equity - k3_prev_ceil)
-    k3_bar_pct    = k3_consumed / layer_cap_amt * 100 if layer_cap_amt > 0 else 0.0
-
-    k1_status = "🔴 BREACHED" if equity <= active_floor else "🟢 Active"
-    k3_status = "🔴 BREACHED" if equity >= active_ceiling else "🟢 Active"
-
+    # K2 bar: % of overall DD consumed from baseline
     k2_consumed = max(0.0, baseline - equity)
     k2_bar_pct  = k2_consumed / overall_dd_amt * 100 if overall_dd_amt > 0 else 0.0
 
+    # K3 bar: % of daily cap consumed today
+    k3_consumed = max(0.0, equity - day_start)
+    k3_bar_pct  = k3_consumed / daily_cap_amt * 100 if daily_cap_amt > 0 else 0.0
+
+    # K4 bar: % progress toward overall profit target
     k4_bar_pct  = max(0.0, overall_pnl) / target_amt * 100 if target_amt > 0 else 0.0
 
     lines = [
@@ -1276,34 +1273,36 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Day started: ${day_start:,.2f}",
         f"Now: ${equity:,.2f}",
         f"Daily P&amp;L: <b>${daily_pnl:+,.2f}</b>",
-        f"Overall P&amp;L: <b>${overall_pnl:+,.2f}</b>\n",
+        f"Overall P&amp;L: <b>${overall_pnl:+,.2f}</b>",
     ]
     if layer_loss_amt > 0 and max_loss_layers > 0:
         lines += [
-            f"<b>K1 — Loss Layers</b>",
+            f"\n<b>K1/K2 — Loss Protection</b>",
             f"Layer size: ${layer_loss_amt:,.2f} ({daily_dd:.1f}% of baseline)",
             f"Active layer: {k1_layer + 1}/{max_loss_layers}  |  {k1_status}",
             f"Active floor: <b>${active_floor:,.2f}</b>",
             f"Overall DD floor: ${overall_floor:,.2f}",
-            f"<code>{_pnl_bar(k1_bar_pct)}</code>  {k1_bar_pct:.1f}% toward floor\n",
+            f"<code>{_pnl_bar(k1_bar_pct)}</code>  {k1_bar_pct:.1f}% toward floor",
+            f"<code>{_pnl_bar(k2_bar_pct)}</code>  {k2_bar_pct:.1f}% of overall DD consumed",
         ]
-    if layer_cap_amt > 0:
+    if daily_cap_amt > 0:
+        k3_status = "🔴 CAP HIT" if equity >= daily_cap_level else "🟢 Active"
         lines += [
-            f"<b>K3 — Profit Cap Layers</b>",
-            f"Layer size: ${layer_cap_amt:,.2f} ({daily_cap:.1f}% of baseline)",
-            f"Active layer: {k3_layer + 1}  |  {k3_status}",
-            f"Active cap: <b>${active_ceiling:,.2f}</b>",
-            f"<code>{_pnl_bar(k3_bar_pct)}</code>  {k3_bar_pct:.1f}% toward cap\n",
+            f"\n<b>K3 — Profit Control</b>",
+            f"Daily cap: {daily_cap:.1f}% of baseline  =  ${daily_cap_amt:,.2f}",
+            f"Day-start equity: ${day_start:,.2f}",
+            f"Daily cap level: <b>${daily_cap_level:,.2f}</b>  |  {k3_status}",
+            f"Current equity: ${equity:,.2f}",
+            f"Remaining today: <b>${daily_remaining:,.2f}</b>",
+            f"<code>{_pnl_bar(k3_bar_pct)}</code>  {k3_bar_pct:.1f}% of daily cap used",
         ]
     if target_amt > 0:
         lines += [
-            f"<b>K4 — Profit Target: ${k4_target:,.2f}</b>",
-            f"<code>{_pnl_bar(k4_bar_pct)}</code>  {k4_bar_pct:.1f}%\n",
-        ]
-    if overall_dd_amt > 0:
-        lines += [
-            f"<b>K2 — Overall DD floor: ${overall_floor:,.2f}</b>",
-            f"<code>{_pnl_bar(k2_bar_pct)}</code>  {k2_bar_pct:.1f}% consumed",
+            f"\n<b>K4 — Overall Target</b>",
+            f"Target: {target_pct:.1f}% of baseline  =  ${target_amt:,.2f}",
+            f"Target level: <b>${k4_target:,.2f}</b>",
+            f"Progress: ${max(0.0, overall_pnl):,.2f} / ${target_amt:,.2f}",
+            f"<code>{_pnl_bar(k4_bar_pct)}</code>  {k4_bar_pct:.1f}%",
         ]
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
