@@ -100,7 +100,9 @@ async def _wiz_profit_target(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
     await update.message.reply_text(
         "<b>Step 3/10 — Overall Drawdown</b>\n\n"
         "Enter the firm’s raw overall drawdown limit.\n"
-        "Example: <code>10</code>",
+        "Example: <code>10</code>\n\n"
+        "⚠️ No automatic buffer is applied — the value you enter is enforced exactly.\n"
+        "Enter the firm’s stated limit as-is.",
         parse_mode="HTML",
     )
     return PF_MAX_DD_OVERALL
@@ -117,7 +119,10 @@ async def _wiz_max_dd_overall(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
     await update.message.reply_text(
         "<b>Step 4/10 — Daily Drawdown</b>\n\n"
         "Enter the firm’s raw daily drawdown limit.\n"
-        "Example: <code>3</code>",
+        "Example: <code>3</code>\n\n"
+        "⚠️ Enter the firm’s stated limit WITHOUT buffer.\n"
+        "The system will subtract 1pp automatically.\n"
+        "(e.g. firm says 3% → enter <code>3</code> → bot triggers at 2%)",
         parse_mode="HTML",
     )
     return PF_MAX_DD_DAILY
@@ -275,8 +280,10 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         "<b>Step 9/10 — Consistency Rule</b>\n\n"
         "When the largest profitable day falls below this percentage of total profit, "
         "the system will halt and prompt payout submission.\n\n"
-        "Common target: largest day &lt; 30% of total profit.\n"
-        "Recommended buffer: <b>29%</b>.\n\n"
+        "Common target: largest day &lt; 30% of total profit.\n\n"
+        "⚠️ No automatic buffer is applied here — the value you enter is used exactly as your trigger threshold.\n"
+        "Enter WITH your own buffer already included.\n"
+        "(e.g. firm requires &lt; 30% → enter <code>29</code> to fire 1% before the limit)\n\n"
         "Enter a value between 1 and 50. Example: <code>29</code>",
         parse_mode="HTML",
     )
