@@ -1757,6 +1757,12 @@ async def _setwindow_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     return ConversationHandler.END
 
 
+async def _cmd_cancel_noop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    await update.message.reply_text("No active wizard to cancel.", parse_mode="HTML")
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -1897,6 +1903,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("consistency",   _cmd_consistency))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
     tg_app.add_handler(CommandHandler("setwindow",     _cmd_setwindow))
+    tg_app.add_handler(CommandHandler("cancel",        _cmd_cancel_noop))  # fallback when no wizard active
 
     async def _poll():
         await tg_app.initialize()
