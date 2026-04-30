@@ -387,7 +387,6 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     except Exception:
         pass  # fall back to baseline if MT5 unavailable
 
-    cons_threshold = eff.get("consistency_threshold_pct", 29.0)
     with _pf_lock:
         _propfirm.update({
             "propfirm_name":              _wizard_data["propfirm_name"],
@@ -399,7 +398,7 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "profit_sharing_pct":         _wizard_data["profit_sharing_pct"],
             "min_profit_days":            _wizard_data["min_profit_days"],
             "daily_profit_cap_pct":       eff["daily_profit_cap_pct"],
-            "consistency_threshold_pct":  cons_threshold,
+            "consistency_threshold_pct":  eff["consistency_threshold_pct"],
             "baseline_equity":            baseline,
             "day_start_equity":           day_start,
             "day_start_date_utc":         _propfirm_day(_sgt_now()),
@@ -416,7 +415,7 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "raw_spread_account":         _wizard_data["raw_spread_account"],
             "profit_sharing_pct":         _wizard_data["profit_sharing_pct"],
             "min_profit_days":            _wizard_data["min_profit_days"],
-            "consistency_threshold_pct":  cons_threshold,
+            "consistency_threshold_pct":  _wizard_data["consistency_threshold_pct"],
         }
         _save_propfirm(_propfirm)
 
@@ -601,7 +600,6 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _p2_wizard_data.clear()
     _p2_wizard_data["phase1_config"] = dict(phase1_cfg)
     new_cfg = dict(phase1_cfg)
-    new_cfg.setdefault("consistency_threshold_pct", 29.0)
     _p2_wizard_data["new_config"] = new_cfg
 
     block = _p2_settings_block(phase1_cfg)
@@ -736,7 +734,7 @@ async def _p2_show_review(update) -> int:
         f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']:.1f}%\n"
         f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']:.1f}%\n"
         f"Kill 4 — overall profit ≥ {new['profit_target_pct']:.1f}%\n"
-        f"Kill 5 — consistency: largest day &lt; {new.get('consistency_threshold_pct', 29.0):.1f}% of total → permanent halt\n"
+        f"Kill 5 — consistency: largest day &lt; {eff['consistency_threshold_pct']:.1f}% of total → permanent halt\n"
         f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
         f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
         f"Reply <b>YES</b> to proceed, or <b>NO</b> to cancel.",
@@ -791,7 +789,7 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         pass
 
     today = _propfirm_day(_sgt_now())
-    cons_threshold = eff.get("consistency_threshold_pct", 29.0)
+    cons_threshold = eff["consistency_threshold_pct"]
     with _pf_lock:
         _propfirm.update({
             "propfirm_name":              new["propfirm_name"],
@@ -1639,7 +1637,7 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
 
     day_start = pf.get("day_start_equity",          0.0)
     baseline  = pf.get("baseline_equity",            0.0)
-    threshold = pf.get("consistency_threshold_pct",  0.0) or 29.0
+    threshold = pf.get("consistency_threshold_pct",  0.0)
     firm      = pf.get("propfirm_name",              "—")
 
     with _cons_lock:
