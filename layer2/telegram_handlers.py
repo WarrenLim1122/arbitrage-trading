@@ -70,8 +70,9 @@ async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
         return ConversationHandler.END
     _wizard_data.clear()
     await update.message.reply_text(
-        "<b>Change Prop Firm Config</b>\n\n"
-        "<b>Step 1 of 8</b> — Enter the prop firm name:",
+        "🏦 <b>Prop Firm Setup</b>\n\n"
+        "<b>Step 1/9 — Firm Name</b>\n"
+        "Enter the prop firm name:",
         parse_mode="HTML",
     )
     return PF_NAME
@@ -80,7 +81,9 @@ async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
 async def _wiz_name(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     _wizard_data["propfirm_name"] = update.message.text.strip()
     await update.message.reply_text(
-        "<b>Step 2 of 8</b> — Profit Target %\n\nEnter the firm's profit target (e.g. <code>10</code>):",
+        "<b>Step 2/9 — Profit Target</b>\n\n"
+        "Enter the firm’s profit target percentage.\n"
+        "Example: <code>10</code>",
         parse_mode="HTML",
     )
     return PF_PROFIT_TARGET
@@ -91,11 +94,13 @@ async def _wiz_profit_target(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
         v = float(update.message.text.strip())
         assert v > 0
     except Exception:
-        await update.message.reply_text("Invalid — enter a positive number (e.g. <code>10</code>):", parse_mode="HTML")
+        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a positive number.\nExample: <code>10</code>", parse_mode="HTML")
         return PF_PROFIT_TARGET
     _wizard_data["profit_target_pct"] = v
     await update.message.reply_text(
-        "<b>Step 3 of 8</b> — Max Drawdown Overall %\n\nEnter the firm's raw overall DD limit (e.g. <code>10</code>):",
+        "<b>Step 3/9 — Overall Drawdown</b>\n\n"
+        "Enter the firm’s raw overall drawdown limit.\n"
+        "Example: <code>10</code>",
         parse_mode="HTML",
     )
     return PF_MAX_DD_OVERALL
@@ -106,11 +111,13 @@ async def _wiz_max_dd_overall(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
         v = float(update.message.text.strip())
         assert v > 0
     except Exception:
-        await update.message.reply_text("Invalid — enter a positive number (e.g. <code>10</code>):", parse_mode="HTML")
+        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a positive number.\nExample: <code>10</code>", parse_mode="HTML")
         return PF_MAX_DD_OVERALL
     _wizard_data["max_drawdown_overall_pct"] = v
     await update.message.reply_text(
-        "<b>Step 4 of 8</b> — Max Drawdown Daily %\n\nEnter the firm's raw daily DD limit (e.g. <code>3</code>):",
+        "<b>Step 4/9 — Daily Drawdown</b>\n\n"
+        "Enter the firm’s raw daily drawdown limit.\n"
+        "Example: <code>3</code>",
         parse_mode="HTML",
     )
     return PF_MAX_DD_DAILY
@@ -121,11 +128,13 @@ async def _wiz_max_dd_daily(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
         v = float(update.message.text.strip())
         assert v > 0
     except Exception:
-        await update.message.reply_text("Invalid — enter a positive number (e.g. <code>3</code>):", parse_mode="HTML")
+        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a positive number.\nExample: <code>3</code>", parse_mode="HTML")
         return PF_MAX_DD_DAILY
     _wizard_data["max_drawdown_daily_pct"] = v
     await update.message.reply_text(
-        "<b>Step 5 of 8</b> — Drawdown Type\n\nType <code>static</code> or <code>dynamic</code>:",
+        "<b>Step 5/9 — Drawdown Type</b>\n\n"
+        "Type one option:\n"
+        "<code>static</code> or <code>dynamic</code>",
         parse_mode="HTML",
     )
     return PF_DD_TYPE
@@ -140,16 +149,19 @@ async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             _wizard_data["drawdown_is_static"] = False
             _wizard_data.pop("_dd_type_confirming")
             await update.message.reply_text(
-                "Dynamic drawdown accepted (flagged).\n\n"
-                "<b>Step 6 of 8</b> — Raw Spread Account\n\nType <code>yes</code> or <code>no</code>:",
+                "⚠️ <b>Dynamic Drawdown Accepted</b>\n\n"
+                "This account is now flagged as dynamic drawdown.\n\n"
+                "<b>Step 6/9 — Raw Spread Account</b>\n"
+                "Type <code>yes</code> or <code>no</code>:",
                 parse_mode="HTML",
             )
             return PF_RAW_SPREAD
         else:
             _wizard_data.pop("_dd_type_confirming")
             await update.message.reply_text(
-                "Confirmation not received. Re-enter drawdown type:\n\n"
-                "<code>static</code>  or  <code>dynamic</code>",
+                "⚠️ <b>Confirmation Not Received</b>\n\n"
+                "Re-enter drawdown type:\n"
+                "<code>static</code> or <code>dynamic</code>",
                 parse_mode="HTML",
             )
             return PF_DD_TYPE
@@ -158,22 +170,24 @@ async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if v_lower == "static":
         _wizard_data["drawdown_is_static"] = True
         await update.message.reply_text(
-            "<b>Step 6 of 8</b> — Raw Spread Account\n\nType <code>yes</code> or <code>no</code>:",
+            "<b>Step 6/9 — Raw Spread Account</b>\n\n"
+            "Type one option:\n"
+            "<code>yes</code> or <code>no</code>",
             parse_mode="HTML",
         )
         return PF_RAW_SPREAD
     elif v_lower == "dynamic":
         _wizard_data["_dd_type_confirming"] = True
         await update.message.reply_text(
-            "<b>Warning — Dynamic Drawdown Flagged</b>\n\n"
-            "This system is designed for static drawdown accounts.\n"
-            "Reply <b>CONFIRM</b> to accept, or type <code>static</code> to correct.",
+            "⚠️ <b>Dynamic Drawdown Flagged</b>\n\n"
+            "This system is designed for static drawdown accounts.\n\n"
+            "Reply <b>CONFIRM</b> to accept dynamic drawdown, or type <code>static</code> to correct.",
             parse_mode="HTML",
         )
         return PF_DD_TYPE
     else:
         await update.message.reply_text(
-            "Type exactly: <code>static</code>  or  <code>dynamic</code>",
+            "⚠️ <b>Invalid Input</b>\n\nType exactly one option:\n<code>static</code> or <code>dynamic</code>",
             parse_mode="HTML",
         )
         return PF_DD_TYPE
@@ -188,16 +202,19 @@ async def _wiz_raw_spread(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> in
             _wizard_data["raw_spread_account"] = False
             _wizard_data.pop("_raw_spread_confirming")
             await update.message.reply_text(
-                "Non-raw spread accepted (flagged).\n\n"
-                "<b>Step 7 of 8</b> — Profit Sharing %\n\nEnter the profit sharing % (e.g. <code>80</code>):",
+                "⚠️ <b>Non-Raw Spread Accepted</b>\n\n"
+                "This account is now flagged as non-raw spread.\n\n"
+                "<b>Step 7/9 — Profit Sharing</b>\n"
+                "Enter the profit sharing percentage. Example: <code>80</code>",
                 parse_mode="HTML",
             )
             return PF_PROFIT_SHARE
         else:
             _wizard_data.pop("_raw_spread_confirming")
             await update.message.reply_text(
-                "Confirmation not received. Re-enter:\n\n"
-                "<code>yes</code>  or  <code>no</code>",
+                "⚠️ <b>Confirmation Not Received</b>\n\n"
+                "Re-enter one option:\n"
+                "<code>yes</code> or <code>no</code>",
                 parse_mode="HTML",
             )
             return PF_RAW_SPREAD
@@ -206,22 +223,24 @@ async def _wiz_raw_spread(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> in
     if v_lower == "yes":
         _wizard_data["raw_spread_account"] = True
         await update.message.reply_text(
-            "<b>Step 7 of 8</b> — Profit Sharing %\n\nEnter the profit sharing % (e.g. <code>80</code>):",
+            "<b>Step 7/9 — Profit Sharing</b>\n\n"
+            "Enter the profit sharing percentage.\n"
+            "Example: <code>80</code>",
             parse_mode="HTML",
         )
         return PF_PROFIT_SHARE
     elif v_lower == "no":
         _wizard_data["_raw_spread_confirming"] = True
         await update.message.reply_text(
-            "<b>Warning — Non-Raw Spread Account Flagged</b>\n\n"
-            "This system is designed for raw spread accounts.\n"
-            "Reply <b>CONFIRM</b> to accept, or type <code>yes</code> to correct.",
+            "⚠️ <b>Non-Raw Spread Flagged</b>\n\n"
+            "This system is designed for raw spread accounts.\n\n"
+            "Reply <b>CONFIRM</b> to accept non-raw spread, or type <code>yes</code> to correct.",
             parse_mode="HTML",
         )
         return PF_RAW_SPREAD
     else:
         await update.message.reply_text(
-            "Type exactly: <code>yes</code>  or  <code>no</code>",
+            "⚠️ <b>Invalid Input</b>\n\nType exactly one option:\n<code>yes</code> or <code>no</code>",
             parse_mode="HTML",
         )
         return PF_RAW_SPREAD
@@ -232,11 +251,13 @@ async def _wiz_profit_share(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
         v = float(update.message.text.strip())
         assert 0 < v <= 100
     except Exception:
-        await update.message.reply_text("Invalid — enter a number between 1 and 100:", parse_mode="HTML")
+        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a number between 1 and 100.", parse_mode="HTML")
         return PF_PROFIT_SHARE
     _wizard_data["profit_sharing_pct"] = v
     await update.message.reply_text(
-        "<b>Step 8 of 8</b> — Minimum Profit Days\n\nEnter the minimum trading days required (e.g. <code>5</code>):",
+        "<b>Step 8/9 — Minimum Profit Days</b>\n\n"
+        "Enter the minimum trading days required.\n"
+        "Example: <code>5</code>",
         parse_mode="HTML",
     )
     return PF_MIN_DAYS
@@ -247,16 +268,16 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         v = int(update.message.text.strip())
         assert v >= 0
     except Exception:
-        await update.message.reply_text("Invalid — enter a whole number (e.g. 5):")
+        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a whole number. Example: <code>5</code>", parse_mode="HTML")
         return PF_MIN_DAYS
     _wizard_data["min_profit_days"] = v
     await update.message.reply_text(
-        "<b>Step 9 of 9</b> — Consistency Rule Threshold\n\n"
-        "When the largest single profitable day falls below this % of total profit, "
-        "the system halts and prompts you to submit a payout claim.\n\n"
-        "Most prop firms require the largest day &lt; 30% of total profit.\n"
-        "We default to <b>29%</b> as a 1% safety buffer.\n\n"
-        "Enter a % between 1 and 50, or reply <code>29</code> to use the default:",
+        "<b>Step 9/9 — Consistency Rule</b>\n\n"
+        "When the largest profitable day falls below this percentage of total profit, "
+        "the system will halt and prompt payout submission.\n\n"
+        "Common target: largest day &lt; 30% of total profit.\n"
+        "Recommended buffer: <b>29%</b>.\n\n"
+        "Enter a value between 1 and 50. Example: <code>29</code>",
         parse_mode="HTML",
     )
     return PF_CONSISTENCY
@@ -268,7 +289,9 @@ async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
         assert 1.0 <= v <= 50.0
     except Exception:
         await update.message.reply_text(
-            "Invalid — enter a number between 1 and 50 (e.g. <code>29</code>):",
+            "⚠️ <b>Invalid Input</b>\n\n"
+            "Enter a number between 1 and 50.\n"
+            "Example: <code>29</code>",
             parse_mode="HTML",
         )
         return PF_CONSISTENCY
@@ -278,7 +301,7 @@ async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     dd_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["drawdown_is_static"] else ""
     rs_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["raw_spread_account"] else ""
     summary = (
-        f"<b>Review Before Saving</b>\n\n"
+        f"📊 <b>Review Prop Firm Setup</b>\n\n"
         f"<b>Firm:</b> {_wizard_data['propfirm_name']}\n"
         f"<b>Profit Target:</b> {_wizard_data['profit_target_pct']:.1f}%\n"
         f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']:.1f}% → enforced at <b>{eff['max_drawdown_overall_pct']:.1f}%</b> (no buffer — exact)\n"
@@ -288,14 +311,14 @@ async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
         f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']:.1f}%\n"
         f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n"
         f"<b>Consistency Threshold:</b> {v:.1f}%\n\n"
-        f"<b>Kill conditions:</b>\n"
+        f"<b>Risk Controls</b>\n"
         f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']:.1f}% → close all + halt\n"
         f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']:.1f}% from baseline → close all + <b>permanent halt</b>\n"
         f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']:.1f}% → close all + halt\n"
         f"Kill 4 — overall profit ≥ {_wizard_data['profit_target_pct']:.1f}% → permanent halt\n"
         f"Kill 5 — consistency: largest day &lt; {v:.1f}% of total → permanent halt <i>(Phase 2 only)</i>\n\n"
-        f"<i>Baseline equity will be fetched live from MT5 on confirm.</i>\n\n"
-        f"Reply <b>YES</b> to save  |  <b>NO</b> to cancel"
+        f"<i>Baseline equity will be fetched live from MT5 after confirmation.</i>\n\n"
+        f"Reply <b>YES</b> to save, or <b>NO</b> to cancel."
     )
     await update.message.reply_text(summary, parse_mode="HTML")
     return PF_CONFIRM
@@ -305,11 +328,11 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     v = update.message.text.strip().upper()
     if v == "NO":
         _wizard_data.clear()
-        await update.message.reply_text("Cancelled — no changes saved.", parse_mode="HTML")
+        await update.message.reply_text("⚠️ <b>Cancelled</b>\n\nNo changes were saved.", parse_mode="HTML")
         return ConversationHandler.END
     if v != "YES":
         await update.message.reply_text(
-            "Reply <b>YES</b> to save or <b>NO</b> to cancel.",
+            "Reply <b>YES</b> to save, or <b>NO</b> to cancel.",
             parse_mode="HTML",
         )
         return PF_CONFIRM
@@ -326,8 +349,9 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         baseline = _query_equity(ZMQ_REQ_PROP, "")["balance"]
     except Exception as exc:
         await update.message.reply_text(
-            f"<b>Warning</b> — could not fetch live balance:\n<code>{exc}</code>\n\n"
-            f"Baseline set to 0.0 — run /changepropfirm again once MT5 is connected.",
+            f"⚠️ <b>Live Balance Unavailable</b>\n\n"
+            f"Could not fetch prop account balance:\n<code>{exc}</code>\n\n"
+            f"Baseline has been set to 0.0. Run /changepropfirm again once MT5 is connected.",
             parse_mode="HTML",
         )
 
@@ -374,15 +398,15 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     _wizard_data.clear()
     await update.message.reply_text(
-        f"<b>Config Saved</b>\n\n"
-        f"Before: {before_str}\n"
-        f"After:  <b>{_propfirm['propfirm_name']}</b>  |  Baseline: ${baseline:,.2f}\n\n"
-        f"<b>Kill levels (prop account):</b>\n"
-        f"Kill 1 daily DD:   −${daily_dd_amt:,.2f} from day-start\n"
-        f"Kill 2 overall:    equity ≤ <b>${floor_amt:,.2f}</b>\n"
-        f"Kill 3 daily cap:  +${cap_amt:,.2f} from day-start\n"
-        f"Kill 4 profit tgt: equity ≥ ${target_lvl:,.2f}\n\n"
-        f"Send /phase1 or /phase2 to start trading.",
+        f"✅ <b>Prop Firm Config Saved</b>\n\n"
+        f"<b>Before</b>\n{before_str}\n\n"
+        f"<b>After</b>\n{_propfirm['propfirm_name']} | Baseline: <b>${baseline:,.2f}</b>\n\n"
+        f"<b>Risk Levels — Prop Account</b>\n"
+        f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
+        f"K2 Overall DD: equity ≤ <b>${floor_amt:,.2f}</b>\n"
+        f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
+        f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n\n"
+        f"<b>Next Step</b>\nSend /phase1 or /phase2 to continue.",
         parse_mode="HTML",
     )
     logger.info("Prop firm config updated — firm=%s  baseline=%.2f",
@@ -395,7 +419,9 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     _wizard_data.clear()
     await update.message.reply_text(
-        "<b>Cancelled: /changepropfirm</b>\n\nNo changes saved.\nType /changepropfirm to start again.",
+        "⚠️ <b>Setup Cancelled — /changepropfirm</b>\n\n"
+        "No changes were saved.\n"
+        "Type /changepropfirm to start again.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -422,9 +448,10 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         balance, err = await asyncio.to_thread(_lock_baseline_from_live)
         if err:
             await update.message.reply_text(
-                f"<b>Phase 1 Set</b> — personal lots ×{PHASE_MULT[1]:.2f}\n\n"
-                f"⚠️ Could not fetch live balance:\n<code>{err}</code>\n\n"
-                f"Baseline NOT set. Run /phase1 again once MT5 is connected.",
+                f"⚠️ <b>Phase 1 Prepared — Baseline Missing</b>\n\n"
+                f"Personal multiplier: ×{PHASE_MULT[1]:.2f}\n\n"
+                f"<b>Issue</b>\nCould not fetch live prop balance:\n<code>{err}</code>\n\n"
+                f"Baseline was not set. Run /phase1 again once MT5 is connected.",
                 parse_mode="HTML",
             )
             logger.warning("Telegram /phase1: baseline lock failed: %s", err)
@@ -449,15 +476,15 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     target_lvl   = round(baseline * (1.0 + target / 100.0), 2)    if target    > 0 and baseline > 0 else 0.0
 
     await update.message.reply_text(
-        f"<b>Phase 1 Active</b>\n\n"
-        f"Lots multiplier: ×{PHASE_MULT[1]:.2f}\n"
+        f"🟢 <b>Phase 1 Active</b>\n\n"
+        f"<b>Risk Mode</b>\nPersonal multiplier: ×{PHASE_MULT[1]:.2f}\n"
         f"Baseline: <b>${baseline:,.2f}</b> ({baseline_note})\n\n"
-        f"<b>Kill levels (prop account):</b>\n"
-        f"Kill 1 daily DD:   −${daily_dd_amt:,.2f} from day-start\n"
-        f"Kill 2 overall:    equity ≤ <b>${floor_amt:,.2f}</b>\n"
-        f"Kill 3 daily cap:  +${cap_amt:,.2f} from day-start\n"
-        f"Kill 4 profit tgt: equity ≥ ${target_lvl:,.2f}\n\n"
-        f"Send /resume to start trading.",
+        f"<b>Risk Levels — Prop Account</b>\n"
+        f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
+        f"K2 Overall DD: equity ≤ <b>${floor_amt:,.2f}</b>\n"
+        f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
+        f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n\n"
+        f"<b>Next Step</b>\nSend /resume to allow new signals.",
         parse_mode="HTML",
     )
     logger.info("Telegram: phase set to 1  baseline=%.2f", baseline)
@@ -474,7 +501,7 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if not phase1_cfg:
         await update.message.reply_text(
-            "<b>Phase 1 config not found.</b>\n\n"
+            "⚠️ <b>Phase 1 Config Missing</b>\n\n"
             "Run /changepropfirm first to configure Phase 1 settings.",
             parse_mode="HTML",
         )
@@ -488,9 +515,9 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     block = _p2_settings_block(phase1_cfg)
     await update.message.reply_text(
-        f"<b>Phase 2 Setup</b>\n\n"
-        f"Phase 1 settings:\n<pre>{block}</pre>\n\n"
-        f"Use the same details for Phase 2? (<b>yes</b> / <b>no</b>)",
+        f"🟢 <b>Phase 2 Setup</b>\n\n"
+        f"<b>Phase 1 Settings</b>\n<pre>{block}</pre>\n\n"
+        f"Use the same details for Phase 2? Reply <b>yes</b> or <b>no</b>.",
         parse_mode="HTML",
     )
     return P2_SAME_OR_DIFF
@@ -504,13 +531,14 @@ async def _p2_same_or_diff(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     if v == "no":
         block = _p2_settings_block(_p2_wizard_data["phase1_config"])
         await update.message.reply_text(
-            f"<pre>{block}</pre>\n\n"
-            f"Which settings to change? Reply with numbers separated by spaces.\n"
-            f"Example: <code>2 4</code> — numbers 1–9",
+            f"<b>Current Settings</b>\n<pre>{block}</pre>\n\n"
+            f"<b>Which settings should change?</b>\n"
+            f"Reply with numbers separated by spaces.\n"
+            f"Example: <code>2 4</code> | Range: 1–9",
             parse_mode="HTML",
         )
         return P2_WHICH_FIELDS
-    await update.message.reply_text("Reply <b>yes</b> or <b>no</b>.", parse_mode="HTML")
+    await update.message.reply_text("⚠️ <b>Invalid Reply</b>\n\nReply <b>yes</b> or <b>no</b>.", parse_mode="HTML")
     return P2_SAME_OR_DIFF
 
 
@@ -525,7 +553,9 @@ async def _p2_which_fields(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
             pass
     if not indices:
         await update.message.reply_text(
-            "No valid numbers. Enter numbers 1–9 separated by spaces (e.g. <code>2 4</code>):",
+            "⚠️ <b>No Valid Settings Selected</b>\n\n"
+            "Enter numbers 1–9 separated by spaces.\n"
+            "Example: <code>2 4</code>",
             parse_mode="HTML",
         )
         return P2_WHICH_FIELDS
@@ -549,8 +579,8 @@ async def _p2_ask_current_field(update) -> int:
         "int_nn":         "Enter a whole number ≥ 0:",
     }
     await update.message.reply_text(
-        f"<b>Setting {fields[idx]}: {name}</b>\n"
-        f"Phase 1 value: {_p2_display(key, current)}\n\n"
+        f"<b>Update Setting {fields[idx]} — {name}</b>\n\n"
+        f"Current Phase 1 value: {_p2_display(key, current)}\n\n"
         f"{hints[input_type]}",
         parse_mode="HTML",
     )
@@ -608,9 +638,9 @@ async def _p2_show_review(update) -> int:
     dd_flag = "  <b>[FLAGGED]</b>" if not new.get("drawdown_is_static") else ""
     rs_flag = "  <b>[FLAGGED]</b>" if not new.get("raw_spread_account") else ""
     await update.message.reply_text(
-        f"<b>Phase 2 Review</b>\n\n"
+        f"📊 <b>Phase 2 Review</b>\n\n"
         f"<pre>{block}</pre>\n\n"
-        f"<b>Kill conditions:</b>\n"
+        f"<b>Risk Controls</b>\n"
         f"Kill 1 — daily loss ≥ {eff['max_drawdown_daily_pct']:.1f}%\n"
         f"Kill 2 — overall loss ≥ {eff['max_drawdown_overall_pct']:.1f}%\n"
         f"Kill 3 — daily profit ≥ {eff['daily_profit_cap_pct']:.1f}%\n"
@@ -619,7 +649,7 @@ async def _p2_show_review(update) -> int:
         f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
         f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
         f"<i>Baseline equity locked from live MT5 on confirm.</i>\n\n"
-        f"Reply <b>YES</b> to save and start Phase 2  |  <b>NO</b> to cancel",
+        f"Reply <b>YES</b> to save and start Phase 2, or <b>NO</b> to cancel.",
         parse_mode="HTML",
     )
     return P2_CONFIRM
@@ -629,10 +659,10 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     v = update.message.text.strip().upper()
     if v == "NO":
         _p2_wizard_data.clear()
-        await update.message.reply_text("Cancelled — no changes saved.")
+        await update.message.reply_text("⚠️ <b>Cancelled</b>\n\nNo changes were saved.", parse_mode="HTML")
         return ConversationHandler.END
     if v != "YES":
-        await update.message.reply_text("Reply <b>YES</b> to save or <b>NO</b> to cancel.", parse_mode="HTML")
+        await update.message.reply_text("Reply <b>YES</b> to save, or <b>NO</b> to cancel.", parse_mode="HTML")
         return P2_CONFIRM
 
     new = _p2_wizard_data["new_config"]
@@ -646,8 +676,9 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         baseline = _query_equity(ZMQ_REQ_PROP, "")["balance"]
     except Exception as exc:
         await update.message.reply_text(
-            f"<b>Warning</b> — could not fetch live balance:\n<code>{exc}</code>\n\n"
-            f"Baseline set to 0.0 — run /phase2 again once MT5 is connected.",
+            f"⚠️ <b>Live Balance Unavailable</b>\n\n"
+            f"Could not fetch prop account balance:\n<code>{exc}</code>\n\n"
+            f"Baseline has been set to 0.0. Run /phase2 again once MT5 is connected.",
             parse_mode="HTML",
         )
 
@@ -692,18 +723,17 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     _p2_wizard_data.clear()
     await update.message.reply_text(
-        f"<b>Phase 2 Active</b>\n\n"
-        f"Firm: {_propfirm['propfirm_name']}\n"
-        f"Lots multiplier: ×{PHASE_MULT[2]:.2f}\n"
-        f"Baseline equity:\n"
-        f"  Before: ${old_baseline:,.2f}\n"
-        f"  After:  <b>${baseline:,.2f}</b> (locked from live MT5)\n\n"
-        f"<b>Kill levels (prop account):</b>\n"
-        f"Kill 1 daily DD:   −${daily_dd_amt:,.2f} from day-start\n"
-        f"Kill 2 overall:    equity ≤ <b>${floor_amt:,.2f}</b>\n"
-        f"Kill 3 daily cap:  +${cap_amt:,.2f} from day-start\n"
-        f"Kill 4 profit tgt: equity ≥ ${target_lvl:,.2f}\n\n"
-        f"Send /resume to start trading.",
+        f"🟢 <b>Phase 2 Active</b>\n\n"
+        f"<b>Firm</b>\n{_propfirm['propfirm_name']}\n\n"
+        f"<b>Risk Mode</b>\nPersonal multiplier: ×{PHASE_MULT[2]:.2f}\n"
+        f"Baseline before: ${old_baseline:,.2f}\n"
+        f"Baseline now: <b>${baseline:,.2f}</b> (locked from live MT5)\n\n"
+        f"<b>Risk Levels — Prop Account</b>\n"
+        f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
+        f"K2 Overall DD: equity ≤ <b>${floor_amt:,.2f}</b>\n"
+        f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
+        f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n\n"
+        f"<b>Next Step</b>\nSend /resume to allow new signals.",
         parse_mode="HTML",
     )
     logger.info("Phase 2 started — firm=%s  baseline=%.2f", _propfirm["propfirm_name"], baseline)
@@ -715,7 +745,9 @@ async def _p2_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     _p2_wizard_data.clear()
     await update.message.reply_text(
-        "<b>Cancelled: /phase2</b>\n\nNo changes saved.\nType /phase2 to start again.",
+        "⚠️ <b>Setup Cancelled — /phase2</b>\n\n"
+        "No changes were saved.\n"
+        "Type /phase2 to start again.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -748,7 +780,7 @@ async def _cmd_stop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         _phase_state["active"] = False
         _save_phase(_phase_state)
 
-    lines: list[str] = ["<b>Signal Processing Halted</b>\n", "<b>Open positions at halt:</b>"]
+    lines: list[str] = ["⚠️ <b>Signal Processing Halted</b>\n", "<b>Open Positions at Halt</b>"]
     total_open = 0
     for label, positions in [
         ("Personal (VPS #3)", pers_pos),
@@ -766,14 +798,14 @@ async def _cmd_stop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             lines.append("  No open positions")
 
-    lines.append("\n<b>Live equity:</b>\n" + "\n".join(eq_lines))
+    lines.append("\n<b>Live Equity</b>\n" + "\n".join(eq_lines))
 
     if total_open > 0:
         lines.append(
-            f"\n⚠️ {total_open} position(s) still open — will run to SL/TP naturally.\n"
-            f"Use /emergency to force-close all immediately."
+            f"\n⚠️ <b>{total_open} position(s) still open</b>\n"
+            f"They will continue to SL/TP naturally. Use /emergency to force-close immediately."
         )
-    lines.append("\nSend /resume to re-enable signal processing.")
+    lines.append("\n<b>Next Step</b>\nSend /resume to re-enable signal processing.")
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
     logger.warning("Telegram: halted by user")
 
@@ -785,7 +817,9 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         p_halt = _phase_state.get("permanently_halted", False)
     if p_halt:
         await update.message.reply_text(
-            "<b>Blocked</b> — Profit target was reached. Send /phase2 to configure and start the next phase.",
+            "🔴 <b>Resume Blocked</b>\n\n"
+            "Profit target has already been reached.\n\n"
+            "<b>Next Step</b>\nSend /phase2 to configure and start the next phase.",
             parse_mode="HTML",
         )
         return
@@ -812,8 +846,8 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         eq_lines = ["Could not query equity"]
 
-    curfew_note = "\n<i>SGT curfew active — signals from 12:00 SGT.</i>" if _is_sgt_curfew() else ""
-    lines: list[str] = [f"<b>Signal Processing Resumed</b>{curfew_note}\n", "<b>Current open positions:</b>\n"]
+    curfew_note = "\n<i>SGT curfew active — new signals start from 12:00 SGT.</i>" if _is_sgt_curfew() else ""
+    lines: list[str] = [f"🟢 <b>Signal Processing Resumed</b>{curfew_note}\n", "<b>Current Open Positions</b>\n"]
     for label, positions in [
         ("Personal (VPS #3)", pers_pos),
         ("Prop (VPS #2)",     prop_pos),
@@ -829,7 +863,7 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         else:
             lines.append("  No open positions")
 
-    lines.append("\n<b>Live equity:</b>\n" + "\n".join(eq_lines))
+    lines.append("\n<b>Live Equity</b>\n" + "\n".join(eq_lines))
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
     logger.info("Telegram: resumed by user")
 
@@ -865,22 +899,22 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         last_ts_display = "never"
     await update.message.reply_text(
-        f"<b>System Status</b>\n\n"
-        f"<b>Phase:</b> {phase}  (×{mult})\n"
-        f"<b>Active:</b> {'YES' if active else 'NO — halted'}\n"
-        f"<b>Perm Halt:</b> {'YES — /phase2 required' if p_halt else 'No'}\n"
-        f"<b>SGT Curfew:</b> {'YES (dormant)' if curfew else 'No'}\n"
-        f"<b>Trading Window:</b> {win_curr['start']}–{win_curr['end']} SGT"
-        + (f" (next: {win_next['start']}–{win_next['end']})" if win_next else "") + "\n"
-        f"<b>Max open positions:</b> {max_pos}\n"
-        f"<b>Firm:</b> {pf_name}\n\n"
-        f"<b>Equity</b>\n"
-        f"Baseline:         ${baseline:,.2f}\n"
-        f"DD floor:         ${floor:,.2f}  (−{dd_overall:.1f}% from baseline)\n"
-        f"Day-start:        ${day_start:,.2f}\n"
-        f"Daily DD limit:   {dd_daily:.1f}%\n"
-        f"Daily profit cap: {cap:.1f}%\n\n"
-        f"<b>Last signal:</b> {last_ts_display}",
+        f"📊 <b>System Status</b>\n\n"
+        f"<b>Trading</b>\n"
+        f"Phase: {phase} (×{mult})\n"
+        f"Status: {'🟢 Active' if active else '⚠️ Halted'}\n"
+        f"Permanent halt: {'🔴 Yes — /phase2 required' if p_halt else 'No'}\n"
+        f"Curfew: {'Yes — dormant' if curfew else 'No'}\n"
+        f"Window: {win_curr['start']}–{win_curr['end']} SGT"
+        + (f" | Next: {win_next['start']}–{win_next['end']}" if win_next else "") + "\n"
+        f"Max positions: {max_pos}\n\n"
+        f"<b>Prop Firm</b>\n{pf_name}\n\n"
+        f"<b>Risk Snapshot</b>\n"
+        f"Baseline: ${baseline:,.2f}\n"
+        f"DD floor: ${floor:,.2f} (−{dd_overall:.1f}%)\n"
+        f"Day-start: ${day_start:,.2f}\n"
+        f"Daily DD: {dd_daily:.1f}% | Daily cap: {cap:.1f}%\n\n"
+        f"<b>Last Signal</b>\n{last_ts_display}",
         parse_mode="HTML",
     )
 
@@ -891,7 +925,7 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
     with _pf_lock:
         pf = dict(_propfirm)
     await update.message.reply_text(
-        f"<b>Prop Firm Config</b>\n\n"
+        f"📊 <b>Prop Firm Configuration</b>\n\n"
         f"<b>Firm:</b> {pf.get('propfirm_name', '—')}\n"
         f"<b>Profit Target:</b> {pf.get('profit_target_pct', 0):.1f}%\n"
         f"<b>Max DD Overall:</b> {pf.get('max_drawdown_overall_pct', 0):.1f}%  (no buffer — exact firm limit)\n"
@@ -937,7 +971,7 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         pers_text = f"OFFLINE — {exc}"
     await update.message.reply_text(
-        f"<b>Live Equity Snapshot</b>\n\n"
+        f"📊 <b>Live Equity Snapshot</b>\n\n"
         f"<b>Prop (VPS #2):</b>\n{prop_text}\n\n"
         f"<b>Personal (VPS #3):</b>\n{pers_text}",
         parse_mode="HTML",
@@ -948,7 +982,7 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
     if not _auth(update):
         return ConversationHandler.END
 
-    await update.message.reply_text("Fetching open positions…")
+    await update.message.reply_text("Checking open positions…")
 
     try:
         prop_pos = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
@@ -963,7 +997,7 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
         pers_pos = None
         pers_err = str(exc)
 
-    lines = ["<b>EMERGENCY HALT — Position Summary</b>\n"]
+    lines = ["🔴 <b>Emergency Halt — Position Summary</b>\n"]
 
     total_open = 0
     for label, positions, err in [
@@ -977,7 +1011,7 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
             lines.append("  No open positions")
         else:
             for p in positions:
-                direction = "LONG" if p["type"] == 0 else "SHORT"
+                direction = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
                 lines.append(
                     f"  {p['symbol']}  {direction}  {p['volume']:.2f} lots"
                     f"  |  P&amp;L: ${p['profit']:+,.2f}"
@@ -988,7 +1022,8 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
     if total_open == 0:
         lines.append("No positions are currently open on either account.")
 
-    lines.append("⚠️ Reply <code>CONFIRM</code> to force-close all positions and halt signal processing.")
+    lines.append("⚠️ <b>Confirmation Required</b>")
+    lines.append("Reply <code>CONFIRM</code> to force-close all positions and halt signal processing.")
     lines.append("Send /cancel to abort.")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
@@ -1000,7 +1035,7 @@ async def _emergency_execute(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     if (update.message.text or "").strip() != "CONFIRM":
         await update.message.reply_text(
-            "Type <code>CONFIRM</code> to proceed, or /cancel to abort.",
+            "⚠️ <b>Confirmation Required</b>\n\nType <code>CONFIRM</code> to proceed, or /cancel to abort.",
             parse_mode="HTML",
         )
         return EMERGENCY_CONFIRM
@@ -1016,11 +1051,12 @@ async def _emergency_execute(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
     except Exception:
         eq_text = "Could not query equity"
     await update.message.reply_text(
-        f"<b>EMERGENCY HALT EXECUTED</b>\n\n"
+        f"🔴 <b>Emergency Halt Executed</b>\n\n"
+        f"<b>Action Taken</b>\n"
         f"All positions force-closed on both MT5 accounts.\n"
         f"Signal processing halted.\n\n"
-        f"<b>Equity after close:</b>\n{eq_text}\n\n"
-        f"Send /resume to restart trading.",
+        f"<b>Equity After Close</b>\n{eq_text}\n\n"
+        f"<b>Next Step</b>\nSend /resume only after confirming both accounts are safe.",
         parse_mode="HTML",
     )
     logger.warning("Telegram: emergency halt executed by user")
@@ -1031,7 +1067,9 @@ async def _emergency_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     if not _auth(update):
         return ConversationHandler.END
     await update.message.reply_text(
-        "<b>Cancelled: /emergency</b>\n\nNo positions closed.\nType /emergency to try again.",
+        "⚠️ <b>Emergency Cancelled</b>\n\n"
+        "No positions were closed.\n"
+        "Type /emergency to try again.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -1053,7 +1091,7 @@ async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         pers_pos = None
         pers_err = str(exc)
 
-    lines = ["<b>Open Positions</b>\n"]
+    lines = ["📊 <b>Open Positions</b>\n"]
     for label, positions, err in [
         ("Personal — signal direction (VPS #3)", pers_pos, pers_err),
         ("Prop — inverse direction (VPS #2)", prop_pos, prop_err),
@@ -1065,7 +1103,7 @@ async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
             lines.append("No open positions")
         else:
             for p in positions:
-                direction = "LONG" if p["type"] == 0 else "SHORT"
+                direction = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
                 lines.append(
                     f"{p['symbol']}  {direction}  {p['volume']:.2f} lots\n"
                     f"  Entry: {p['price_open']}  SL: {p['sl']}  TP: {p['tp']}\n"
@@ -1082,7 +1120,7 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
     except Exception as exc:
-        await update.message.reply_text(f"Prop worker offline: {exc}")
+        await update.message.reply_text(f"⚠️ <b>Prop Worker Offline</b>\n\n<code>{exc}</code>", parse_mode="HTML")
         return
     with _pf_lock:
         pf = dict(_propfirm)
@@ -1111,7 +1149,7 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return loss / lim * 100 if lim > 0 else 0.0
 
     await update.message.reply_text(
-        f"<b>P&amp;L Dashboard — Prop Account</b>\n\n"
+        f"📊 <b>P&amp;L Dashboard — Prop Account</b>\n\n"
         f"Baseline: ${baseline:,.2f}\n"
         f"Day started: ${day_start:,.2f}\n"
         f"Now: ${equity:,.2f}\n\n"
@@ -1135,26 +1173,26 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             resp = await client.get("http://127.0.0.1:8000/health")
-        l1 = "✅ alive" if resp.status_code == 200 else f"⚠️ HTTP {resp.status_code}"
+        l1 = "🟢 Alive" if resp.status_code == 200 else f"⚠️ HTTP {resp.status_code}"
     except Exception as exc:
-        l1 = f"❌ OFFLINE — {exc}"
+        l1 = f"🔴 Offline — {exc}"
     try:
         await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_h = "✅ alive"
+        prop_h = "🟢 Alive"
     except Exception as exc:
-        prop_h = f"❌ OFFLINE — {exc}"
+        prop_h = f"🔴 Offline — {exc}"
     try:
         await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_h = "✅ alive"
+        pers_h = "🟢 Alive"
     except Exception as exc:
-        pers_h = f"❌ OFFLINE — {exc}"
+        pers_h = f"🔴 Offline — {exc}"
 
     await update.message.reply_text(
-        f"<b>System Health</b>\n\n"
+        f"📊 <b>System Health</b>\n\n"
         f"Layer 1 (VPS #1): {l1}\n"
-        f"Layer 2 (VPS #1): ✅ alive\n"
-        f"Prop (VPS #2): {prop_h}\n"
-        f"Personal (VPS #3): {pers_h}",
+        f"Layer 2 (VPS #1): 🟢 Alive\n"
+        f"Prop Worker (VPS #2): {prop_h}\n"
+        f"Personal Worker (VPS #3): {pers_h}",
         parse_mode="HTML",
     )
 
@@ -1165,7 +1203,7 @@ async def _cmd_news(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         events = await asyncio.to_thread(_fetch_ff_events)
     except Exception as exc:
-        await update.message.reply_text(f"FF calendar error: {exc}")
+        await update.message.reply_text(f"⚠️ <b>News Calendar Error</b>\n\n<code>{exc}</code>", parse_mode="HTML")
         return
 
     now     = datetime.now(timezone.utc)
@@ -1190,10 +1228,10 @@ async def _cmd_news(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     relevant.sort(key=lambda x: x[0])
 
     if not relevant:
-        await update.message.reply_text("No high-impact events in the next 4 hours for covered pairs.")
+        await update.message.reply_text("📰 <b>News Check</b>\n\nNo high-impact events in the next 4 hours for covered pairs.", parse_mode="HTML")
         return
 
-    lines = ["<b>Upcoming High-Impact News (next 4h)</b>\n"]
+    lines = ["📰 <b>Upcoming High-Impact News</b>\n<i>Next 4 hours | Covered pairs only</i>\n"]
     for t, ccy, title, pairs in relevant:
         sgt_str   = (t + sgt_off).strftime("%H:%M SGT")
         pairs_str = ", ".join(pairs) if pairs else "—"
@@ -1207,7 +1245,7 @@ async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
         return
     now     = datetime.now(timezone.utc)
     sgt_off = timedelta(hours=8)
-    lines   = ["<b>Active Suppression Blackboard</b>\n"]
+    lines   = ["📊 <b>Suppression Blackboard</b>\n"]
 
     with _news_suppressed_lock:
         news_active = {t: e for t, e in _news_suppressed_pairs.items() if e > now}
@@ -1216,7 +1254,7 @@ async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
 
     all_pairs = set(news_active) | manual_active
     if not all_pairs:
-        await update.message.reply_text("No pairs currently suppressed. Blackboard is clear.")
+        await update.message.reply_text("🟢 <b>Blackboard Clear</b>\n\nNo pairs are currently suppressed.", parse_mode="HTML")
         return
 
     for ticker in sorted(all_pairs):
@@ -1238,20 +1276,23 @@ async def _cmd_closepair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     text = (update.message.text or "").strip().split()
     if len(text) < 2:
-        await update.message.reply_text("Usage: /closepair EURUSD")
+        await update.message.reply_text("Usage: <code>/closepair EURUSD</code>", parse_mode="HTML")
         return ConversationHandler.END
     ticker = text[1].upper()
     if ticker not in ALLOWED_PAIRS:
         await update.message.reply_text(
-            f"Unknown pair: {ticker}\nAllowed: {', '.join(sorted(ALLOWED_PAIRS))}"
+            f"⚠️ <b>Unknown Pair</b>\n\n"
+            f"Pair: <code>{ticker}</code>\n"
+            f"Allowed: {', '.join(sorted(ALLOWED_PAIRS))}",
+            parse_mode="HTML",
         )
         return ConversationHandler.END
 
     ctx.chat_data["closepair_ticker"] = ticker
-    await update.message.reply_text(f"Fetching {ticker} positions…")
+    await update.message.reply_text(f"Checking {ticker} positions…")
 
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
-    lines = [f"<b>Close Pair — {ticker}</b>\n"]
+    lines = [f"⚠️ <b>Close Pair — {ticker}</b>\n"]
     total_open = 0
     for label, url in [("Personal (VPS #3)", ZMQ_REQ_PERS), ("Prop (VPS #2)", ZMQ_REQ_PROP)]:
         try:
@@ -1274,6 +1315,7 @@ async def _cmd_closepair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if total_open == 0:
         lines.append(f"No {ticker} positions are currently open on either account.")
+    lines.append("<b>Confirmation Required</b>")
     lines.append(f"Reply <code>CONFIRM</code> to close all {ticker} positions and block new signals.")
     lines.append("Send /cancel to abort.")
 
@@ -1286,7 +1328,7 @@ async def _closepair_execute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     if (update.message.text or "").strip() != "CONFIRM":
         await update.message.reply_text(
-            "Type <code>CONFIRM</code> to proceed, or /cancel to abort.",
+            "⚠️ <b>Confirmation Required</b>\n\nType <code>CONFIRM</code> to proceed, or /cancel to abort.",
             parse_mode="HTML",
         )
         return CLOSEPAIR_CONFIRM
@@ -1306,10 +1348,12 @@ async def _closepair_execute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         eq_text = "Could not query equity"
     await update.message.reply_text(
-        f"<b>{ticker} closed and blocked.</b>\n\n"
+        f"⚠️ <b>Pair Closed and Blocked — {ticker}</b>\n\n"
+        f"<b>Action Taken</b>\n"
         f"All {ticker} positions closed on both accounts.\n"
-        f"New {ticker} signals suppressed until /resumepair {ticker}.\n\n"
-        f"<b>Equity after close:</b>\n{eq_text}",
+        f"New {ticker} signals are blocked.\n\n"
+        f"<b>Equity After Close</b>\n{eq_text}\n\n"
+        f"<b>To Unblock</b>\n/resumepair {ticker}",
         parse_mode="HTML",
     )
     logger.warning("Manual closepair executed: %s", ticker)
@@ -1321,7 +1365,8 @@ async def _closepair_abort(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
     ticker = ctx.chat_data.get("closepair_ticker", "")
     await update.message.reply_text(
-        f"<b>Cancelled: /closepair {ticker}</b>\n\nNo positions closed.\n"
+        f"⚠️ <b>Close Pair Cancelled — {ticker}</b>\n\n"
+        f"No positions were closed.\n"
         f"Type /closepair {ticker} to try again.",
         parse_mode="HTML",
     )
@@ -1333,12 +1378,15 @@ async def _cmd_resumepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
         return
     text = (update.message.text or "").strip().split()
     if len(text) < 2:
-        await update.message.reply_text("Usage: /resumepair EURUSD")
+        await update.message.reply_text("Usage: <code>/resumepair EURUSD</code>", parse_mode="HTML")
         return
     ticker = text[1].upper()
     if ticker not in ALLOWED_PAIRS:
         await update.message.reply_text(
-            f"Unknown pair: {ticker}\nAllowed: {', '.join(sorted(ALLOWED_PAIRS))}"
+            f"⚠️ <b>Unknown Pair</b>\n\n"
+            f"Pair: <code>{ticker}</code>\n"
+            f"Allowed: {', '.join(sorted(ALLOWED_PAIRS))}",
+            parse_mode="HTML",
         )
         return
 
@@ -1347,7 +1395,7 @@ async def _cmd_resumepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
     _dispatch_news_clear(ticker)
 
     await update.message.reply_text(
-        f"<b>{ticker} resumed.</b>\n\nNew {ticker} signals will now be accepted.",
+        f"🟢 <b>Pair Resumed — {ticker}</b>\n\nNew {ticker} signals will now be accepted.",
         parse_mode="HTML",
     )
     logger.info("Manual resumepair: %s", ticker)
@@ -1359,7 +1407,9 @@ async def _cmd_setmaxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
     text = (update.message.text or "").strip().split()
     if len(text) < 2:
         await update.message.reply_text(
-            "Usage: /setmaxpos &lt;number&gt;\nExample: /setmaxpos 2\nRange: 1–10",
+            "Usage: <code>/setmaxpos &lt;number&gt;</code>\n"
+            "Example: <code>/setmaxpos 2</code>\n"
+            "Range: 1–10",
             parse_mode="HTML",
         )
         return
@@ -1367,7 +1417,7 @@ async def _cmd_setmaxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         n = int(text[1])
         assert 1 <= n <= 10
     except Exception:
-        await update.message.reply_text("Enter a whole number between 1 and 10.")
+        await update.message.reply_text("⚠️ <b>Invalid Limit</b>\n\nEnter a whole number between 1 and 10.", parse_mode="HTML")
         return
 
     with _state_lock:
@@ -1387,9 +1437,9 @@ async def _cmd_setmaxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     await update.message.reply_text(
-        f"<b>Max open positions:</b>\n"
-        f"  Before: {old_max}\n"
-        f"  After:  <b>{n}</b>{warning}",
+        f"📊 <b>Max Position Limit Updated</b>\n\n"
+        f"Before: {old_max}\n"
+        f"After: <b>{n}</b>{warning}",
         parse_mode="HTML",
     )
     logger.info("Telegram: max_open_positions set to %d", n)
@@ -1406,9 +1456,8 @@ async def _cmd_maxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         count_str = f"unknown ({exc})"
     await update.message.reply_text(
-        f"<b>Position Limit</b>\n\n"
-        f"Max allowed: {limit}\n"
-        f"Currently open: {count_str}",
+        f"📊 <b>Position Limit</b>\n\n"
+        f"Open positions: {count_str}/{limit}",
         parse_mode="HTML",
     )
 
@@ -1421,8 +1470,9 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
 
     if phase != 2:
         await update.message.reply_text(
-            "<b>Consistency Tracker</b>\n\n"
-            "Not active — Phase 2 (funded) only.\n"
+            "📊 <b>Consistency Tracker</b>\n\n"
+            "Status: Not active\n"
+            "Requirement: Phase 2 only\n\n"
             "Run /phase2 to start the funded phase.",
             parse_mode="HTML",
         )
@@ -1432,7 +1482,7 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         prop_equity = prop["equity"]
     except Exception as exc:
-        await update.message.reply_text(f"Prop worker offline: {exc}")
+        await update.message.reply_text(f"⚠️ <b>Prop Worker Offline</b>\n\n<code>{exc}</code>", parse_mode="HTML")
         return
 
     with _pf_lock:
@@ -1454,16 +1504,16 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     )
 
     if rule_met:
-        status_line = f"<b>RULE MET ✓ — ready to submit payout claim to {firm}</b>"
+        status_line = f"🟢 <b>RULE MET</b> — ready to submit payout claim to {firm}"
     else:
         days_with_profit = len(locked_days) + (1 if today_running > 0 else 0)
         if days_with_profit < 2:
-            status_line = "Need at least 2 profitable days to evaluate"
+            status_line = "Need at least 2 profitable days to evaluate."
         else:
-            status_line = f"Not met yet — largest day at {ratio_pct:.1f}% (need &lt; {threshold:.1f}%)"
+            status_line = f"Not met yet — largest day is {ratio_pct:.1f}% of total profit (need &lt; {threshold:.1f}%)."
 
     await update.message.reply_text(
-        f"<b>Consistency Tracker</b>\n"
+        f"📊 <b>Consistency Tracker</b>\n"
         f"Phase 2  ·  {firm}  ·  Threshold: &lt; {threshold:.0f}%\n\n"
         f"<pre>{table_str}</pre>\n\n"
         f"{status_line}",
@@ -1477,8 +1527,10 @@ async def _cmd_setwindow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
     args = (update.message.text or "").split()[1:]
     if len(args) != 2:
         await update.message.reply_text(
-            "Usage: <code>/setwindow HH:MM HH:MM</code>\n"
-            "Example: <code>/setwindow 09:00 00:00</code>  (00:00 = midnight)",
+            "🕒 <b>Trading Window Usage</b>\n\n"
+            "Format: <code>/setwindow HH:MM HH:MM</code>\n"
+            "Example: <code>/setwindow 09:00 00:00</code>\n"
+            "Note: <code>00:00</code> = midnight",
             parse_mode="HTML",
         )
         return ConversationHandler.END
@@ -1489,7 +1541,9 @@ async def _cmd_setwindow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
             assert 0 <= h <= 23 and 0 <= m <= 59
     except Exception:
         await update.message.reply_text(
-            "Invalid time format — use HH:MM (e.g. <code>09:00</code>, <code>00:00</code>).",
+            "⚠️ <b>Invalid Time Format</b>\n\n"
+            "Use HH:MM in 24-hour SGT time.\n"
+            "Example: <code>/setwindow 09:00 00:00</code>",
             parse_mode="HTML",
         )
         return ConversationHandler.END
@@ -1499,12 +1553,12 @@ async def _cmd_setwindow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
     _setwindow_data["start"] = start_str
     _setwindow_data["end"]   = end_str
     await update.message.reply_text(
-        f"<b>Trading Window Update</b>\n\n"
-        f"New window: <b>{start_str} – {end_str} SGT</b>\n"
-        f"Current:    {curr['start']} – {curr['end']} SGT\n\n"
-        "Apply when?\n"
-        "<b>1</b> — Today (immediate)\n"
-        "<b>2</b> — Tomorrow (next session rollover at 11:00 SGT)",
+        f"🕒 <b>Update Trading Window</b>\n\n"
+        f"<b>New Window</b>\n{start_str}–{end_str} SGT\n\n"
+        f"<b>Current Window</b>\n{curr['start']}–{curr['end']} SGT\n\n"
+        "<b>Apply When?</b>\n"
+        "<b>1</b> — Today, effective immediately\n"
+        "<b>2</b> — Tomorrow, next session rollover at 11:00 SGT",
         parse_mode="HTML",
     )
     return SETWINDOW_CONFIRM
@@ -1523,7 +1577,9 @@ async def _setwindow_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
             _trading_window["next_window"]    = None
             _save_trading_window()
         await update.message.reply_text(
-            f"Trading window updated — now <b>{start} – {end} SGT</b> (effective immediately).",
+            f"🕒 <b>Trading Window Updated</b>\n\n"
+            f"Applied: Today, effective immediately\n"
+            f"Window: <b>{start}–{end} SGT</b>",
             parse_mode="HTML",
         )
     elif choice in ("2", "tomorrow"):
@@ -1531,12 +1587,14 @@ async def _setwindow_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
             _trading_window["next_window"] = new_window
             _save_trading_window()
         await update.message.reply_text(
-            f"Trading window scheduled — <b>{start} – {end} SGT</b> will apply from the next session (11:00 SGT rollover).",
+            f"🕒 <b>Trading Window Scheduled</b>\n\n"
+            f"Applied: Tomorrow, next session rollover at 11:00 SGT\n"
+            f"Window: <b>{start}–{end} SGT</b>",
             parse_mode="HTML",
         )
     else:
         await update.message.reply_text(
-            "Reply <b>1</b> for today or <b>2</b> for tomorrow. Or /cancel to abort.",
+            "⚠️ <b>Invalid Selection</b>\n\nReply <b>1</b> for today or <b>2</b> for tomorrow. Or /cancel to abort.",
             parse_mode="HTML",
         )
         return SETWINDOW_CONFIRM
@@ -1548,7 +1606,7 @@ async def _setwindow_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     if not _auth(update):
         return ConversationHandler.END
     _setwindow_data.clear()
-    await update.message.reply_text("Window update cancelled.")
+    await update.message.reply_text("⚠️ <b>Trading Window Update Cancelled</b>\n\nNo changes were applied.", parse_mode="HTML")
     return ConversationHandler.END
 
 
