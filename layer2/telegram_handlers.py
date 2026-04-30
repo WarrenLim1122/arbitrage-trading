@@ -46,9 +46,24 @@ logger = logging.getLogger("layer2")
 
 # ── Telegram wizard — /changepropfirm ────────────────────────────────────
 
-(PF_NAME, PF_PROFIT_TARGET, PF_MAX_DD_OVERALL, PF_MAX_DD_DAILY,
- PF_DD_TYPE, PF_RAW_SPREAD, PF_PROFIT_SHARE, PF_MIN_DAYS,
- PF_CONSISTENCY, PF_INITIAL_BALANCE, PF_CONFIRM) = range(11)
+PF_WHICH_FIELDS = 0
+PF_COLLECTING   = 1
+PF_CONFIRM      = 10
+
+# Field definitions: (idx, wizard_data_key, display_label, input_type, example)
+_PF_FIELD_DEFS = [
+    (1,  "propfirm_name",            "Firm name",          "str",            "FundingPips"),
+    (2,  "profit_target_pct",        "Profit target %",    "float_pos",      "10"),
+    (3,  "max_drawdown_overall_pct", "Overall DD %",       "float_pos",      "10"),
+    (4,  "max_drawdown_daily_pct",   "Daily DD %",         "float_pos",      "3"),
+    (5,  "drawdown_is_static",       "Drawdown type",      "static_dynamic", "static"),
+    (6,  "raw_spread_account",       "Raw spread acct",    "yes_no",         "yes"),
+    (7,  "profit_sharing_pct",       "Profit sharing %",   "float_pos",      "80"),
+    (8,  "min_profit_days",          "Min profit days",    "int_nn",         "5"),
+    (9,  "consistency_threshold_pct","Consistency %",      "float_pos",      "30"),
+    (10, "initial_balance",          "Initial balance",    "float_pos",      "100000"),
+]
+_PF_FIELD_BY_IDX = {d[0]: d for d in _PF_FIELD_DEFS}
 
 (P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_INITIAL_BALANCE, P2_CONFIRM) = range(10, 15)
 
@@ -65,329 +80,295 @@ def _auth(update: Update) -> bool:
     return update.effective_chat is not None and update.effective_chat.id == CHAT_ID
 
 
-async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    if not _auth(update):
-        return ConversationHandler.END
-    _wizard_data.clear()
-    await update.message.reply_text(
-        "🏦 <b>Prop Firm Setup</b>\n\n"
-        "<b>Step 1/10 — Firm Name</b>\n"
-        "Enter the prop firm name:",
-        parse_mode="HTML",
-    )
-    return PF_NAME
+# ── /changepropfirm wizard — helpers ─────────────────────────────────────
+
+def _pf_raw_values() -> dict:
+    """Read current raw (pre-buffer) field values from _propfirm / phase_configs."""
+    with _pf_lock:
+        pf = dict(_propfirm)
+    p1 = pf.get("phase_configs", {}).get("1", {})
+    return {
+        "propfirm_name":            pf.get("propfirm_name", ""),
+        "profit_target_pct":        pf.get("profit_target_pct", 0.0),
+        "max_drawdown_overall_pct": p1.get("max_drawdown_overall_pct", pf.get("max_drawdown_overall_pct", 0.0)),
+        "max_drawdown_daily_pct":   p1.get("max_drawdown_daily_pct",   pf.get("max_drawdown_daily_pct",   0.0) + 1.0),
+        "drawdown_is_static":       pf.get("drawdown_is_static", True),
+        "raw_spread_account":       pf.get("raw_spread_account", True),
+        "profit_sharing_pct":       pf.get("profit_sharing_pct", 0.0),
+        "min_profit_days":          pf.get("min_profit_days", 0),
+        "consistency_threshold_pct": p1.get("consistency_threshold_pct", pf.get("consistency_threshold_pct", 0.0) + 1.0),
+        "initial_balance":          pf.get("baseline_equity", 0.0),
+    }
 
 
-async def _wiz_name(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    _wizard_data["propfirm_name"] = update.message.text.strip()
-    await update.message.reply_text(
-        "<b>Step 2/10 — Profit Target</b>\n\n"
-        "Enter the firm’s profit target percentage.\n"
-        "Example: <code>10</code>",
-        parse_mode="HTML",
-    )
-    return PF_PROFIT_TARGET
+def _pf_fmt(key: str, val, input_type: str) -> str:
+    if input_type == "static_dynamic":
+        return "Static" if val else "Dynamic"
+    if input_type == "yes_no":
+        return "Yes" if val else "No"
+    if key == "initial_balance":
+        return f"${float(val):,.2f}"
+    if key == "max_drawdown_daily_pct":
+        return f"{val:.1f}% (bot triggers at {val - 1:.1f}%)"
+    if key == "consistency_threshold_pct":
+        return f"{val:.1f}% (bot triggers at {val - 1:.1f}%)"
+    if isinstance(val, float):
+        return f"{val:.1f}%"
+    return str(val)
 
 
-async def _wiz_profit_target(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        v = float(update.message.text.strip())
-        assert v > 0
-    except Exception:
-        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a positive number.\nExample: <code>10</code>", parse_mode="HTML")
-        return PF_PROFIT_TARGET
-    _wizard_data["profit_target_pct"] = v
-    await update.message.reply_text(
-        "<b>Step 3/10 — Overall Drawdown</b>\n\n"
-        "Enter the firm’s raw overall drawdown limit.\n"
-        "Example: <code>10</code>\n\n"
-        "⚠️ No automatic buffer is applied — the value you enter is enforced exactly.\n"
-        "Enter the firm’s stated limit as-is.",
-        parse_mode="HTML",
-    )
-    return PF_MAX_DD_OVERALL
+def _pf_settings_block(raw: dict) -> str:
+    lines = []
+    for idx, key, label, input_type, _ in _PF_FIELD_DEFS:
+        val = raw.get(key, "—")
+        display = _pf_fmt(key, val, input_type) if val not in ("—", "", 0.0, 0) or key == "min_profit_days" else "—"
+        lines.append(f"{idx:2}. {label:<22} {display}")
+    return "\n".join(lines)
 
 
-async def _wiz_max_dd_overall(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        v = float(update.message.text.strip())
-        assert v > 0
-    except Exception:
-        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a positive number.\nExample: <code>10</code>", parse_mode="HTML")
-        return PF_MAX_DD_OVERALL
-    _wizard_data["max_drawdown_overall_pct"] = v
-    await update.message.reply_text(
-        "<b>Step 4/10 — Daily Drawdown</b>\n\n"
-        "Enter the firm’s raw daily drawdown limit.\n"
-        "Example: <code>3</code>\n\n"
-        "⚠️ Enter the firm’s stated limit WITHOUT buffer.\n"
-        "The system will subtract 1pp automatically.\n"
-        "(e.g. firm says 3% → enter <code>3</code> → bot triggers at 2%)",
-        parse_mode="HTML",
-    )
-    return PF_MAX_DD_DAILY
+def _pf_field_prompt(field_idx: int, step_n: int, total: int) -> str:
+    _, key, label, input_type, example = _PF_FIELD_BY_IDX[field_idx]
+    hdr = f"<b>({step_n}/{total}) {label}</b>"
+    if field_idx == 1:
+        return f"{hdr}\n\nEnter the prop firm name:"
+    if field_idx == 2:
+        return f"{hdr}\n\nEnter the profit target %.\nExample: <code>{example}</code>"
+    if field_idx == 3:
+        return (f"{hdr}\n\nEnter the firm's raw overall drawdown limit.\nExample: <code>{example}</code>\n\n"
+                "⚠️ No automatic buffer — enter the firm's stated limit as-is.")
+    if field_idx == 4:
+        return (f"{hdr}\n\nEnter the firm's raw daily drawdown limit.\nExample: <code>{example}</code>\n\n"
+                "⚠️ Enter WITHOUT buffer — system subtracts 1pp automatically.\n"
+                "(e.g. firm says 3% → enter <code>3</code> → bot triggers at 2%)")
+    if field_idx == 5:
+        return f"{hdr}\n\nType: <code>static</code> or <code>dynamic</code>"
+    if field_idx == 6:
+        return f"{hdr}\n\nType: <code>yes</code> or <code>no</code>"
+    if field_idx == 7:
+        return f"{hdr}\n\nEnter profit sharing %.\nExample: <code>{example}</code>"
+    if field_idx == 8:
+        return f"{hdr}\n\nEnter minimum trading days required.\nExample: <code>{example}</code>"
+    if field_idx == 9:
+        return (f"{hdr}\n\nEnter the consistency rule %.\nExample: <code>{example}</code>\n\n"
+                "⚠️ Enter WITHOUT buffer — system subtracts 1pp automatically.\n"
+                "(e.g. firm says 30% → enter <code>30</code> → bot triggers at 29%)")
+    if field_idx == 10:
+        return (f"{hdr}\n\nEnter the initial account balance.\nExample: <code>{example}</code>\n\n"
+                "This is the static baseline for all kill condition calculations.")
+    return hdr
 
 
-async def _wiz_max_dd_daily(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        v = float(update.message.text.strip())
-        assert v > 0
-    except Exception:
-        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a positive number.\nExample: <code>3</code>", parse_mode="HTML")
-        return PF_MAX_DD_DAILY
-    _wizard_data["max_drawdown_daily_pct"] = v
-    await update.message.reply_text(
-        "<b>Step 5/10 — Drawdown Type</b>\n\n"
-        "Type one option:\n"
-        "<code>static</code> or <code>dynamic</code>",
-        parse_mode="HTML",
-    )
-    return PF_DD_TYPE
+async def _pf_ask_field(update: Update) -> int:
+    fields = _wizard_data["_fields"]
+    pos    = _wizard_data["_pos"]
+    if pos >= len(fields):
+        return await _pf_show_confirm(update)
+    prompt = _pf_field_prompt(fields[pos], pos + 1, len(fields))
+    await update.message.reply_text(prompt, parse_mode="HTML")
+    return PF_COLLECTING
 
 
-async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    v = update.message.text.strip()
-
-    # Confirmation step — user previously entered "dynamic" and was warned
-    if _wizard_data.get("_dd_type_confirming"):
-        if v.upper() == "CONFIRM":
-            _wizard_data["drawdown_is_static"] = False
-            _wizard_data.pop("_dd_type_confirming")
-            await update.message.reply_text(
-                "⚠️ <b>Dynamic Drawdown Accepted</b>\n\n"
-                "This account is now flagged as dynamic drawdown.\n\n"
-                "<b>Step 6/10 — Raw Spread Account</b>\n"
-                "Type <code>yes</code> or <code>no</code>:",
-                parse_mode="HTML",
-            )
-            return PF_RAW_SPREAD
-        else:
-            _wizard_data.pop("_dd_type_confirming")
-            await update.message.reply_text(
-                "⚠️ <b>Confirmation Not Received</b>\n\n"
-                "Re-enter drawdown type:\n"
-                "<code>static</code> or <code>dynamic</code>",
-                parse_mode="HTML",
-            )
-            return PF_DD_TYPE
-
-    v_lower = v.lower()
-    if v_lower == "static":
-        _wizard_data["drawdown_is_static"] = True
-        await update.message.reply_text(
-            "<b>Step 6/10 — Raw Spread Account</b>\n\n"
-            "Type one option:\n"
-            "<code>yes</code> or <code>no</code>",
-            parse_mode="HTML",
-        )
-        return PF_RAW_SPREAD
-    elif v_lower == "dynamic":
-        _wizard_data["_dd_type_confirming"] = True
-        await update.message.reply_text(
-            "⚠️ <b>Dynamic Drawdown Flagged</b>\n\n"
-            "This system is designed for static drawdown accounts.\n\n"
-            "Reply <b>CONFIRM</b> to accept dynamic drawdown, or type <code>static</code> to correct.",
-            parse_mode="HTML",
-        )
-        return PF_DD_TYPE
-    else:
-        await update.message.reply_text(
-            "⚠️ <b>Invalid Input</b>\n\nType exactly one option:\n<code>static</code> or <code>dynamic</code>",
-            parse_mode="HTML",
-        )
-        return PF_DD_TYPE
-
-
-async def _wiz_raw_spread(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    v = update.message.text.strip()
-
-    # Confirmation step — user previously entered "no" and was warned
-    if _wizard_data.get("_raw_spread_confirming"):
-        if v.upper() == "CONFIRM":
-            _wizard_data["raw_spread_account"] = False
-            _wizard_data.pop("_raw_spread_confirming")
-            await update.message.reply_text(
-                "⚠️ <b>Non-Raw Spread Accepted</b>\n\n"
-                "This account is now flagged as non-raw spread.\n\n"
-                "<b>Step 7/10 — Profit Sharing</b>\n"
-                "Enter the profit sharing percentage. Example: <code>80</code>",
-                parse_mode="HTML",
-            )
-            return PF_PROFIT_SHARE
-        else:
-            _wizard_data.pop("_raw_spread_confirming")
-            await update.message.reply_text(
-                "⚠️ <b>Confirmation Not Received</b>\n\n"
-                "Re-enter one option:\n"
-                "<code>yes</code> or <code>no</code>",
-                parse_mode="HTML",
-            )
-            return PF_RAW_SPREAD
-
-    v_lower = v.lower()
-    if v_lower == "yes":
-        _wizard_data["raw_spread_account"] = True
-        await update.message.reply_text(
-            "<b>Step 7/10 — Profit Sharing</b>\n\n"
-            "Enter the profit sharing percentage.\n"
-            "Example: <code>80</code>",
-            parse_mode="HTML",
-        )
-        return PF_PROFIT_SHARE
-    elif v_lower == "no":
-        _wizard_data["_raw_spread_confirming"] = True
-        await update.message.reply_text(
-            "⚠️ <b>Non-Raw Spread Flagged</b>\n\n"
-            "This system is designed for raw spread accounts.\n\n"
-            "Reply <b>CONFIRM</b> to accept non-raw spread, or type <code>yes</code> to correct.",
-            parse_mode="HTML",
-        )
-        return PF_RAW_SPREAD
-    else:
-        await update.message.reply_text(
-            "⚠️ <b>Invalid Input</b>\n\nType exactly one option:\n<code>yes</code> or <code>no</code>",
-            parse_mode="HTML",
-        )
-        return PF_RAW_SPREAD
-
-
-async def _wiz_profit_share(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        v = float(update.message.text.strip())
-        assert 0 < v <= 100
-    except Exception:
-        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a number between 1 and 100.", parse_mode="HTML")
-        return PF_PROFIT_SHARE
-    _wizard_data["profit_sharing_pct"] = v
-    await update.message.reply_text(
-        "<b>Step 8/10 — Minimum Profit Days</b>\n\n"
-        "Enter the minimum trading days required.\n"
-        "Example: <code>5</code>",
-        parse_mode="HTML",
-    )
-    return PF_MIN_DAYS
-
-
-async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        v = int(update.message.text.strip())
-        assert v >= 0
-    except Exception:
-        await update.message.reply_text("⚠️ <b>Invalid Input</b>\n\nEnter a whole number. Example: <code>5</code>", parse_mode="HTML")
-        return PF_MIN_DAYS
-    _wizard_data["min_profit_days"] = v
-    await update.message.reply_text(
-        "<b>Step 9/10 — Consistency Rule</b>\n\n"
-        "When the largest profitable day falls below this percentage of total profit, "
-        "the system will halt and prompt payout submission.\n\n"
-        "Common target: largest day &lt; 30% of total profit.\n\n"
-        "⚠️ Enter the firm's stated limit WITHOUT buffer.\n"
-        "The system will subtract 1pp automatically.\n"
-        "(e.g. firm says 30% → enter <code>30</code> → bot triggers at 29%)\n\n"
-        "Enter a value between 2 and 50. Example: <code>30</code>",
-        parse_mode="HTML",
-    )
-    return PF_CONSISTENCY
-
-
-async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        v = float(update.message.text.strip())
-        assert 2.0 <= v <= 50.0
-    except Exception:
-        await update.message.reply_text(
-            "⚠️ <b>Invalid Input</b>\n\n"
-            "Enter a number between 2 and 50.\n"
-            "Example: <code>30</code>",
-            parse_mode="HTML",
-        )
-        return PF_CONSISTENCY
-    _wizard_data["consistency_threshold_pct"] = v
-    await update.message.reply_text(
-        "<b>Step 10/10 — Initial Account Balance</b>\n\n"
-        "Enter the prop firm's initial account balance (the starting balance the firm set for this evaluation).\n"
-        "This is used as the static baseline for all kill condition calculations.\n\n"
-        "Example: <code>100000</code>",
-        parse_mode="HTML",
-    )
-    return PF_INITIAL_BALANCE
-
-
-async def _wiz_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        v = float(update.message.text.strip().replace(",", ""))
-        assert v > 0
-    except Exception:
-        await update.message.reply_text(
-            "⚠️ <b>Invalid Input</b>\n\nEnter a positive number. Example: <code>100000</code>",
-            parse_mode="HTML",
-        )
-        return PF_INITIAL_BALANCE
-    _wizard_data["initial_balance"] = v
-
+async def _pf_show_confirm(update: Update) -> int:
+    old = _wizard_data.get("_old", {})
+    v   = _wizard_data.get("initial_balance", old.get("initial_balance", 0.0))
     eff = _apply_buffers(_wizard_data)
-    dd_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["drawdown_is_static"] else ""
-    rs_flag = "  <b>[FLAGGED]</b>" if not _wizard_data["raw_spread_account"] else ""
-    daily_dd_amt = round(v * eff["max_drawdown_daily_pct"] / 100.0, 2)
-    floor_amt    = round(v * (1.0 - eff["max_drawdown_overall_pct"] / 100.0), 2)
-    cap_amt      = round(v * eff["daily_profit_cap_pct"] / 100.0, 2)
-    target_lvl   = round(v * (1.0 + _wizard_data["profit_target_pct"] / 100.0), 2)
-    cons_raw = _wizard_data["consistency_threshold_pct"]
-    cons_eff = eff["consistency_threshold_pct"]
-    summary = (
-        f"📊 <b>Review Prop Firm Setup</b>\n\n"
-        f"<b>Firm:</b> {_wizard_data['propfirm_name']}\n"
-        f"<b>Initial Balance:</b> ${v:,.2f}\n"
-        f"<b>Profit Target:</b> {_wizard_data['profit_target_pct']:.1f}%\n"
-        f"<b>Max DD Overall:</b> {_wizard_data['max_drawdown_overall_pct']:.1f}% → enforced at <b>{eff['max_drawdown_overall_pct']:.1f}%</b> (no buffer — exact)\n"
-        f"<b>Max DD Daily:</b> {_wizard_data['max_drawdown_daily_pct']:.1f}% → enforced at <b>{eff['max_drawdown_daily_pct']:.1f}%</b> (−1pp buffer)\n"
-        f"<b>Drawdown Type:</b> {'Static' if _wizard_data['drawdown_is_static'] else 'Dynamic'}{dd_flag}\n"
-        f"<b>Raw Spread Acct:</b> {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
-        f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']:.1f}%\n"
-        f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n"
-        f"<b>Consistency:</b> {cons_raw:.1f}% → enforced at <b>{cons_eff:.1f}%</b> (−1pp buffer)\n\n"
-        f"<b>Kill Levels (static, based on ${v:,.0f} baseline)</b>\n"
+    changed_set = set(_wizard_data.get("_fields", []))
+
+    changed_lines, unchanged_lines = [], []
+    for idx, key, label, input_type, _ in _PF_FIELD_DEFS:
+        new_fmt = _pf_fmt(key, _wizard_data.get(key), input_type)
+        old_fmt = _pf_fmt(key, old.get(key), input_type)
+        if idx in changed_set and new_fmt != old_fmt:
+            changed_lines.append(f"  {idx}. {label}: {old_fmt} → <b>{new_fmt}</b>")
+        else:
+            unchanged_lines.append(f"  {idx}. {label}: {new_fmt}")
+
+    dd_daily   = eff["max_drawdown_daily_pct"]
+    dd_overall = eff["max_drawdown_overall_pct"]
+    cap        = eff["daily_profit_cap_pct"]
+    target_pct = _wizard_data.get("profit_target_pct", 0.0)
+    cons_eff   = eff["consistency_threshold_pct"]
+    dd_flag = "  <b>[FLAGGED]</b>" if not _wizard_data.get("drawdown_is_static", True) else ""
+    rs_flag = "  <b>[FLAGGED]</b>" if not _wizard_data.get("raw_spread_account", True) else ""
+
+    daily_dd_amt = round(v * dd_daily   / 100.0, 2) if v > 0 else 0.0
+    floor_amt    = round(v * (1 - dd_overall / 100.0), 2) if v > 0 else 0.0
+    cap_amt      = round(v * cap        / 100.0, 2) if v > 0 else 0.0
+    target_lvl   = round(v * (1 + target_pct / 100.0), 2) if v > 0 else 0.0
+
+    msg = "📊 <b>Review Changes</b>\n\n"
+    if changed_lines:
+        msg += "✏️ <b>Changed:</b>\n" + "\n".join(changed_lines) + "\n\n"
+    if unchanged_lines:
+        msg += "📌 <b>Unchanged:</b>\n" + "\n".join(unchanged_lines) + "\n\n"
+    msg += (
+        f"<b>Kill Levels</b> (based on ${v:,.0f} baseline)\n"
         f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
         f"K2 Overall DD: equity ≤ ${floor_amt:,.2f}\n"
         f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
         f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n"
-        f"K5 Consistency: largest day &lt; {cons_eff:.1f}% of total <i>(Phase 2 only)</i>\n\n"
-        f"Reply <b>YES</b> to save, or <b>NO</b> to cancel."
+        f"K5 Consistency: &lt;{cons_eff:.1f}% of total{dd_flag}{rs_flag} <i>(Phase 2 only)</i>\n\n"
+        "Reply <b>YES</b> to save or <b>NO</b> to cancel."
     )
-    await update.message.reply_text(summary, parse_mode="HTML")
+    await update.message.reply_text(msg, parse_mode="HTML")
     return PF_CONFIRM
 
 
-async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    v = update.message.text.strip().upper()
-    if v == "NO":
+# ── /changepropfirm wizard — handlers ────────────────────────────────────
+
+async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    _wizard_data.clear()
+    raw = _pf_raw_values()
+    has_config = bool(raw.get("propfirm_name"))
+    block = _pf_settings_block(raw)
+
+    if has_config:
+        msg = (
+            f"🏦 <b>Prop Firm — {raw['propfirm_name']}</b>\n\n"
+            f"<code>{block}</code>\n\n"
+            "Type the <b>field numbers</b> to change (e.g. <code>3 4</code>)\n"
+            "or <code>all</code> to redo all 10 fields:"
+        )
+    else:
+        msg = "🏦 <b>No prop firm configured yet.</b>\n\nType <code>all</code> to set up from scratch:"
+
+    _wizard_data.update(raw)
+    _wizard_data["_old"] = dict(raw)
+    await update.message.reply_text(msg, parse_mode="HTML")
+    return PF_WHICH_FIELDS
+
+
+async def _pf_which_fields(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip().lower()
+    if text == "all":
+        selected = list(range(1, 11))
+    else:
+        try:
+            selected = sorted(set(int(p) for p in text.replace(",", " ").split()))
+            assert selected and all(1 <= n <= 10 for n in selected)
+        except Exception:
+            await update.message.reply_text(
+                "⚠️ Enter field numbers 1–10 separated by spaces, or <code>all</code>.\n"
+                "Example: <code>3 4</code>",
+                parse_mode="HTML")
+            return PF_WHICH_FIELDS
+    _wizard_data["_fields"] = selected
+    _wizard_data["_pos"]    = 0
+    _wizard_data.pop("_confirming", None)
+    return await _pf_ask_field(update)
+
+
+async def _pf_collect_field(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    text      = update.message.text.strip()
+    fields    = _wizard_data["_fields"]
+    pos       = _wizard_data["_pos"]
+    field_idx = fields[pos]
+    _, key, label, input_type, example = _PF_FIELD_BY_IDX[field_idx]
+
+    # Sub-dialog: CONFIRM prompt for dynamic DD or non-raw spread
+    if _wizard_data.get("_confirming") == field_idx:
+        if text.upper() == "CONFIRM":
+            _wizard_data.pop("_confirming")
+            _wizard_data["_pos"] += 1
+            return await _pf_ask_field(update)
+        else:
+            _wizard_data.pop("_confirming")
+            prompt = _pf_field_prompt(field_idx, pos + 1, len(fields))
+            await update.message.reply_text(f"⚠️ Confirmation not received.\n\n{prompt}", parse_mode="HTML")
+            return PF_COLLECTING
+
+    if input_type == "str":
+        if not text:
+            await update.message.reply_text("⚠️ Name cannot be empty.", parse_mode="HTML")
+            return PF_COLLECTING
+        _wizard_data[key] = text
+
+    elif input_type == "float_pos":
+        try:
+            v = float(text.replace(",", ""))
+            assert v > 0
+            if field_idx == 7: assert v <= 100
+            if field_idx == 9: assert 2.0 <= v <= 50.0
+        except Exception:
+            hint = {7: "between 1 and 100", 9: "between 2 and 50"}.get(field_idx, "a positive number")
+            await update.message.reply_text(
+                f"⚠️ <b>Invalid Input</b>\n\nEnter {hint}.\nExample: <code>{example}</code>",
+                parse_mode="HTML")
+            return PF_COLLECTING
+        _wizard_data[key] = v
+
+    elif input_type == "int_nn":
+        try:
+            v = int(text); assert v >= 0
+        except Exception:
+            await update.message.reply_text(
+                f"⚠️ Enter a whole number ≥ 0.\nExample: <code>{example}</code>", parse_mode="HTML")
+            return PF_COLLECTING
+        _wizard_data[key] = v
+
+    elif input_type == "static_dynamic":
+        vl = text.lower()
+        if vl == "static":
+            _wizard_data[key] = True
+        elif vl == "dynamic":
+            _wizard_data[key] = False
+            _wizard_data["_confirming"] = field_idx
+            await update.message.reply_text(
+                "⚠️ <b>Dynamic Drawdown Flagged</b>\n\n"
+                "This system is designed for static drawdown accounts.\n\n"
+                "Reply <b>CONFIRM</b> to accept, or type <code>static</code> to correct.",
+                parse_mode="HTML")
+            return PF_COLLECTING
+        else:
+            await update.message.reply_text(
+                "⚠️ Type exactly: <code>static</code> or <code>dynamic</code>", parse_mode="HTML")
+            return PF_COLLECTING
+
+    elif input_type == "yes_no":
+        vl = text.lower()
+        if vl == "yes":
+            _wizard_data[key] = True
+        elif vl == "no":
+            _wizard_data[key] = False
+            _wizard_data["_confirming"] = field_idx
+            await update.message.reply_text(
+                "⚠️ <b>Non-Raw Spread Flagged</b>\n\n"
+                "This system is designed for raw spread accounts.\n\n"
+                "Reply <b>CONFIRM</b> to accept, or type <code>yes</code> to correct.",
+                parse_mode="HTML")
+            return PF_COLLECTING
+        else:
+            await update.message.reply_text(
+                "⚠️ Type exactly: <code>yes</code> or <code>no</code>", parse_mode="HTML")
+            return PF_COLLECTING
+
+    _wizard_data["_pos"] += 1
+    return await _pf_ask_field(update)
+
+
+async def _pf_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    v_text = update.message.text.strip().upper()
+    if v_text == "NO":
         _wizard_data.clear()
         await update.message.reply_text("⚠️ <b>Cancelled</b>\n\nNo changes were saved.", parse_mode="HTML")
         return ConversationHandler.END
-    if v != "YES":
-        await update.message.reply_text(
-            "Reply <b>YES</b> to save, or <b>NO</b> to cancel.",
-            parse_mode="HTML",
-        )
+    if v_text != "YES":
+        await update.message.reply_text("Reply <b>YES</b> to save or <b>NO</b> to cancel.", parse_mode="HTML")
         return PF_CONFIRM
 
-    eff = _apply_buffers(_wizard_data)
-
-    # Capture old state before overwriting
-    with _pf_lock:
-        old_name     = _propfirm.get("propfirm_name", "—")
-        old_baseline = _propfirm.get("baseline_equity", 0.0)
-
-    # Baseline is the user-provided initial account balance — always static for the evaluation life.
-    # day_start_equity is fetched live from MT5 (resets daily).
+    eff      = _apply_buffers(_wizard_data)
     baseline = _wizard_data.get("initial_balance", 0.0)
     day_start = baseline
     try:
         day_start = _query_equity(ZMQ_REQ_PROP, "")["balance"]
     except Exception:
-        pass  # fall back to baseline if MT5 unavailable
+        pass
 
     with _pf_lock:
+        old_name     = _propfirm.get("propfirm_name", "—")
+        old_baseline = _propfirm.get("baseline_equity", 0.0)
         _propfirm.update({
             "propfirm_name":              _wizard_data["propfirm_name"],
             "profit_target_pct":          _wizard_data["profit_target_pct"],
@@ -402,10 +383,9 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "baseline_equity":            baseline,
             "day_start_equity":           day_start,
             "day_start_date_utc":         _propfirm_day(_sgt_now()),
-            "k1_layer":                   0,  # reset staircase layers on new evaluation
+            "k1_layer":                   0,
             "k3_layer":                   0,
         })
-        # Store raw Phase 1 values for /phase2 wizard (raw = before buffers, what the firm states)
         _propfirm.setdefault("phase_configs", {})["1"] = {
             "propfirm_name":              _wizard_data["propfirm_name"],
             "profit_target_pct":          _wizard_data["profit_target_pct"],
@@ -426,28 +406,31 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     dd_overall = eff["max_drawdown_overall_pct"]
     cap        = eff["daily_profit_cap_pct"]
     target_pct = _wizard_data["profit_target_pct"]
-    layer_loss = round(baseline * dd_daily   / 100.0, 2) if baseline > 0 else 0.0
-    layer_cap  = round(baseline * cap        / 100.0, 2) if baseline > 0 else 0.0
-    overall_fl = round(baseline * (1 - dd_overall / 100.0), 2) if baseline > 0 else 0.0
-    target_lvl = round(baseline * (1.0 + target_pct / 100.0), 2) if baseline > 0 else 0.0
+    layer_loss = round(baseline * dd_daily            / 100.0, 2) if baseline > 0 else 0.0
+    layer_cap  = round(baseline * cap                 / 100.0, 2) if baseline > 0 else 0.0
+    overall_fl = round(baseline * (1 - dd_overall     / 100.0), 2) if baseline > 0 else 0.0
+    target_lvl = round(baseline * (1.0 + target_pct  / 100.0), 2) if baseline > 0 else 0.0
     max_layers = round(dd_overall / dd_daily) if dd_daily > 0 else 0
-    before_str = f"{old_name}  |  Baseline: ${old_baseline:,.2f}" if old_name != "—" else "No previous config"
+    before_str = f"{old_name}  |  Baseline: ${old_baseline:,.2f}" if old_name and old_name != "—" else "No previous config"
 
+    firm_name = _wizard_data["propfirm_name"]
+    logger.info("Prop firm config updated — firm=%s  baseline=%.2f", firm_name, baseline)
     _wizard_data.clear()
+
+    raw_new    = _pf_raw_values()
+    final_block = _pf_settings_block(raw_new)
     await update.message.reply_text(
         f"✅ <b>Prop Firm Config Saved</b>\n\n"
-        f"<b>Before</b>\n{before_str}\n\n"
-        f"<b>After</b>\n{_propfirm['propfirm_name']} | Baseline: <b>${baseline:,.2f}</b>\n\n"
-        f"<b>Risk Levels — Prop Account</b>\n"
+        f"<b>Previous:</b> {before_str}\n\n"
+        f"<b>Current Settings:</b>\n<code>{final_block}</code>\n\n"
+        f"<b>Kill Levels</b>\n"
         f"K1 Layer 1/{max_layers} — floor: ${baseline - layer_loss:,.2f}  (layer ${layer_loss:,.2f})\n"
         f"K2 Overall floor: ${overall_fl:,.2f}\n"
-        f"K3 Layer 1 — cap: ${baseline + layer_cap:,.2f}  (layer ${layer_cap:,.2f})\n"
+        f"K3 Layer 1 cap: ${baseline + layer_cap:,.2f}  (layer ${layer_cap:,.2f})\n"
         f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n\n"
         f"<b>Next Step</b>\nSend /phase1 or /phase2 to continue.",
         parse_mode="HTML",
     )
-    logger.info("Prop firm config updated — firm=%s  baseline=%.2f",
-                _propfirm["propfirm_name"], baseline)
     return ConversationHandler.END
 
 
@@ -464,85 +447,46 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-# ── /changepropfirm wizard — /back handlers (one per step) ───────────────
+# ── /changepropfirm wizard — /back handlers ───────────────────────────────
 
-async def _wiz_back_step1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Already at Step 1 — enter the prop firm name:", parse_mode="HTML")
-    return PF_NAME
-
-async def _wiz_back_step2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def _pf_back_which_fields(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "<b>Step 1/10 — Firm Name</b>\n\nEnter the prop firm name:", parse_mode="HTML")
-    return PF_NAME
-
-async def _wiz_back_step3(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "<b>Step 2/10 — Profit Target</b>\n\nEnter the firm's profit target percentage.\nExample: <code>10</code>",
+        "Already at the start. Enter field numbers or <code>all</code>.",
         parse_mode="HTML")
-    return PF_PROFIT_TARGET
+    return PF_WHICH_FIELDS
 
-async def _wiz_back_step4(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "<b>Step 3/10 — Overall Drawdown</b>\n\nEnter the firm's raw overall drawdown limit.\nExample: <code>10</code>\n\n"
-        "⚠️ No automatic buffer is applied — the value you enter is enforced exactly.\nEnter the firm's stated limit as-is.",
-        parse_mode="HTML")
-    return PF_MAX_DD_OVERALL
 
-async def _wiz_back_step5(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "<b>Step 4/10 — Daily Drawdown</b>\n\nEnter the firm's raw daily drawdown limit.\nExample: <code>3</code>\n\n"
-        "⚠️ Enter the firm's stated limit WITHOUT buffer.\nThe system will subtract 1pp automatically.\n"
-        "(e.g. firm says 3% → enter <code>3</code> → bot triggers at 2%)",
-        parse_mode="HTML")
-    return PF_MAX_DD_DAILY
+async def _pf_back_collect(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    _wizard_data.pop("_confirming", None)
+    pos = _wizard_data.get("_pos", 0)
+    if pos == 0:
+        raw  = _wizard_data.get("_old", _pf_raw_values())
+        name = raw.get("propfirm_name", "—")
+        block = _pf_settings_block(raw)
+        await update.message.reply_text(
+            f"🏦 <b>Prop Firm — {name}</b>\n\n"
+            f"<code>{block}</code>\n\n"
+            "Type field numbers to change (e.g. <code>3 4</code>) or <code>all</code>:",
+            parse_mode="HTML")
+        return PF_WHICH_FIELDS
+    _wizard_data["_pos"] = pos - 1
+    fields    = _wizard_data["_fields"]
+    field_idx = fields[pos - 1]
+    prompt    = _pf_field_prompt(field_idx, pos, len(fields))
+    await update.message.reply_text(f"↩️ {prompt}", parse_mode="HTML")
+    return PF_COLLECTING
 
-async def _wiz_back_step6(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    _wizard_data.pop("_dd_type_confirming", None)
-    await update.message.reply_text(
-        "<b>Step 5/10 — Drawdown Type</b>\n\nType one option:\n<code>static</code> or <code>dynamic</code>",
-        parse_mode="HTML")
-    return PF_DD_TYPE
 
-async def _wiz_back_step7(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    _wizard_data.pop("_raw_spread_confirming", None)
-    await update.message.reply_text(
-        "<b>Step 6/10 — Raw Spread Account</b>\n\nType one option:\n<code>yes</code> or <code>no</code>",
-        parse_mode="HTML")
-    return PF_RAW_SPREAD
-
-async def _wiz_back_step8(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "<b>Step 7/10 — Profit Sharing</b>\n\nEnter the profit sharing percentage.\nExample: <code>80</code>",
-        parse_mode="HTML")
-    return PF_PROFIT_SHARE
-
-async def _wiz_back_step9(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "<b>Step 8/10 — Minimum Profit Days</b>\n\nEnter the minimum trading days required.\nExample: <code>5</code>",
-        parse_mode="HTML")
-    return PF_MIN_DAYS
-
-async def _wiz_back_step10(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "<b>Step 9/10 — Consistency Rule</b>\n\n"
-        "When the largest profitable day falls below this percentage of total profit, "
-        "the system will halt and prompt payout submission.\n\n"
-        "Common target: largest day &lt; 30% of total profit.\n\n"
-        "⚠️ Enter the firm's stated limit WITHOUT buffer.\n"
-        "The system will subtract 1pp automatically.\n"
-        "(e.g. firm says 30% → enter <code>30</code> → bot triggers at 29%)\n\n"
-        "Enter a value between 2 and 50. Example: <code>30</code>",
-        parse_mode="HTML")
-    return PF_CONSISTENCY
-
-async def _wiz_back_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text(
-        "<b>Step 10/10 — Initial Account Balance</b>\n\n"
-        "Enter the prop firm's initial account balance (the starting balance the firm set for this evaluation).\n"
-        "This is used as the static baseline for all kill condition calculations.\n\n"
-        "Example: <code>100000</code>",
-        parse_mode="HTML")
-    return PF_INITIAL_BALANCE
+async def _pf_back_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    fields = _wizard_data.get("_fields", [])
+    if not fields:
+        return await _pf_back_which_fields(update, None)
+    _wizard_data["_pos"] = len(fields) - 1
+    _wizard_data.pop("_confirming", None)
+    field_idx = fields[-1]
+    prompt    = _pf_field_prompt(field_idx, len(fields), len(fields))
+    await update.message.reply_text(f"↩️ {prompt}", parse_mode="HTML")
+    return PF_COLLECTING
 
 
 # ── Telegram commands ─────────────────────────────────────────────────────
@@ -1830,7 +1774,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
         "<b>Configuration</b>\n"
         "/propfirm — Current prop firm settings\n"
-        "/changepropfirm — Update prop firm (10-step wizard)\n"
+        "/changepropfirm — Update prop firm settings (select fields to change)\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/back — Go back one step in /changepropfirm wizard\n"
         "/cancel — Cancel any active wizard\n\n"
@@ -1854,17 +1798,9 @@ def _run_bot() -> None:
     wizard = ConversationHandler(
         entry_points=[CommandHandler("changepropfirm", _cmd_changepropfirm)],
         states={
-            PF_NAME:           [CommandHandler("back", _wiz_back_step1),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_name)],
-            PF_PROFIT_TARGET:  [CommandHandler("back", _wiz_back_step2),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_target)],
-            PF_MAX_DD_OVERALL: [CommandHandler("back", _wiz_back_step3),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_max_dd_overall)],
-            PF_MAX_DD_DAILY:   [CommandHandler("back", _wiz_back_step4),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_max_dd_daily)],
-            PF_DD_TYPE:        [CommandHandler("back", _wiz_back_step5),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_dd_type)],
-            PF_RAW_SPREAD:     [CommandHandler("back", _wiz_back_step6),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_raw_spread)],
-            PF_PROFIT_SHARE:   [CommandHandler("back", _wiz_back_step7),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_profit_share)],
-            PF_MIN_DAYS:       [CommandHandler("back", _wiz_back_step8),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_min_days)],
-            PF_CONSISTENCY:    [CommandHandler("back", _wiz_back_step9),  MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_consistency)],
-            PF_INITIAL_BALANCE:[CommandHandler("back", _wiz_back_step10), MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_initial_balance)],
-            PF_CONFIRM:        [CommandHandler("back", _wiz_back_confirm), MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _wiz_confirm)],
+            PF_WHICH_FIELDS: [CommandHandler("back", _pf_back_which_fields), MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _pf_which_fields)],
+            PF_COLLECTING:   [CommandHandler("back", _pf_back_collect),      MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _pf_collect_field)],
+            PF_CONFIRM:      [CommandHandler("back", _pf_back_confirm),       MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _pf_confirm)],
         },
         fallbacks=[CommandHandler("cancel", _wiz_cancel)],
         per_chat=True,
