@@ -95,6 +95,9 @@ def fetch_events_sync() -> list[dict]:
             _cache["fetched_at"] = now
         logger.info("FF calendar refreshed — %d timed events loaded", len(events))
     else:
-        logger.warning("FF calendar: no events returned — cache unchanged")
+        logger.warning("FF calendar: no events returned from either URL — using stale cache if available")
+        with _cache_lock:
+            if _cache["events"] is not None:
+                return _cache["events"]
 
     return events

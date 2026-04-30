@@ -639,24 +639,26 @@ def _run_equity_check() -> None:
         _update_day_start(prop_equity)
         return
 
-    # Kill 1 — daily loss (all phases) — measured from day_start_equity
-    daily_loss_pct = (day_start - prop_equity) / day_start * 100
-    if daily_loss_pct >= pf["max_drawdown_daily_pct"] > 0:
-        pos_str = _snapshot_positions_str()
-        _dispatch_force_close("daily_loss_limit", halt=True)
-        msg = (
-            f"<b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
-            f"Daily loss: <b>{daily_loss_pct:.1f}%</b> ≥ {pf['max_drawdown_daily_pct']:.1f}%\n"
-            f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-            f"<b>Positions closed:</b>\n{pos_str}\n\n"
-            f"All positions force-closed. System halted.\n\n"
-            f"<b>Next steps:</b>\n"
-            f"/resume — resume trading tomorrow\n"
-            f"/changepropfirm — switch to a new prop firm account"
-        )
-        logger.warning(msg)
-        _alert_sync(msg)
-        return
+    # Kill 1 — daily loss (all phases) — static: % of baseline, not day_start
+    if baseline > 0:
+        dd_daily_pct = pf.get("max_drawdown_daily_pct", 0.0)
+        daily_loss_pct = (day_start - prop_equity) / baseline * 100
+        if dd_daily_pct > 0 and daily_loss_pct >= dd_daily_pct:
+            pos_str = _snapshot_positions_str()
+            _dispatch_force_close("daily_loss_limit", halt=True)
+            msg = (
+                f"<b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
+                f"Daily loss: <b>{daily_loss_pct:.1f}%</b> ≥ {dd_daily_pct:.1f}% of baseline\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Day-start: ${day_start:,.2f}\n\n"
+                f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                f"All positions force-closed. System halted.\n\n"
+                f"<b>Next steps:</b>\n"
+                f"/resume — resume trading tomorrow\n"
+                f"/changepropfirm — switch to a new prop firm account"
+            )
+            logger.warning(msg)
+            _alert_sync(msg)
+            return
 
     # Kill 2 — overall drawdown (all phases) — exact user-input threshold, no buffer
     # Prop firm closes account at this exact %. Personal positions become unhedged → close both + permanent halt.
@@ -681,24 +683,25 @@ def _run_equity_check() -> None:
                 _alert_sync(msg)
                 return
 
-    # Kill 3 — daily profit cap (all phases) — prop firm consistency rule
-    daily_profit_pct = (prop_equity - day_start) / day_start * 100
-    cap = pf.get("daily_profit_cap_pct", 0.0)
-    if cap > 0 and daily_profit_pct >= cap:
-        pos_str = _snapshot_positions_str()
-        _dispatch_force_close("daily_profit_cap", halt=True)
-        msg = (
-            f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
-            f"Daily profit: <b>{daily_profit_pct:.1f}%</b> ≥ {cap:.1f}%\n"
-            f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-            f"<b>Positions closed:</b>\n{pos_str}\n\n"
-            f"All positions force-closed. Daily cap enforced.\n\n"
-            f"<b>Next steps:</b>\n"
-            f"/resume — resume trading tomorrow"
-        )
-        logger.warning(msg)
-        _alert_sync(msg)
-        return
+    # Kill 3 — daily profit cap (all phases) — static: % of baseline, not day_start
+    if baseline > 0:
+        cap = pf.get("daily_profit_cap_pct", 0.0)
+        daily_profit_pct = (prop_equity - day_start) / baseline * 100
+        if cap > 0 and daily_profit_pct >= cap:
+            pos_str = _snapshot_positions_str()
+            _dispatch_force_close("daily_profit_cap", halt=True)
+            msg = (
+                f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
+                f"Daily profit: <b>{daily_profit_pct:.1f}%</b> ≥ {cap:.1f}% of baseline\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Day-start: ${day_start:,.2f}\n\n"
+                f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                f"All positions force-closed. Daily cap enforced.\n\n"
+                f"<b>Next steps:</b>\n"
+                f"/resume — resume trading tomorrow"
+            )
+            logger.warning(msg)
+            _alert_sync(msg)
+            return
 
     # Kill 4 — profit target reached (all phases) — cumulative from baseline
     if baseline > 0:
@@ -899,7 +902,7 @@ async def _verify_and_notify(
     msg += f"\n\nPhase {phase}  |  Baseline: ${baseline_equity:,.2f}"
 
     if not prop_ok or not pers_ok:
-        msg += "\n\n<b>ACTION REQUIRED:</b> Check the failed account immediately.\nCheck VPS logs — MT5 algo trading may be disabled."
+        msg += "\n\n⚠️ <b>ACTION REQUIRED:</b> Check the failed account immediately.\nCheck VPS logs — MT5 algo trading may be disabled."
     else:
         # Both legs confirmed open — register as a known position so the close
         # detector and mismatch checker have a source of truth.

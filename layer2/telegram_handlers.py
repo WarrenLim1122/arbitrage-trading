@@ -405,7 +405,7 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     with _pf_lock:
-        old_baseline = _propfirm.get("baseline_equity", 0.0)
+        existing_baseline = _propfirm.get("baseline_equity", 0.0)
 
     with _state_lock:
         _phase_state["phase"] = 1
@@ -413,16 +413,24 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         _phase_state.pop("phase1_permanently_halted", None)  # backward compat
         _save_phase(_phase_state)
 
-    balance, err = await asyncio.to_thread(_lock_baseline_from_live)
-    if err:
-        await update.message.reply_text(
-            f"<b>Phase 1 Set</b> — personal lots ×{PHASE_MULT[1]:.2f}\n\n"
-            f"<b>Warning</b> — could not fetch live balance:\n<code>{err}</code>\n\n"
-            f"Baseline NOT updated. Run /phase1 again once MT5 is connected.",
-            parse_mode="HTML",
-        )
-        logger.warning("Telegram /phase1: baseline lock failed: %s", err)
-        return
+    # Only lock a new baseline if none exists — baseline is STATIC for the life of an evaluation.
+    # Re-running /phase1 mid-evaluation (e.g. after /stop) must not overwrite the baseline.
+    if existing_baseline <= 0:
+        balance, err = await asyncio.to_thread(_lock_baseline_from_live)
+        if err:
+            await update.message.reply_text(
+                f"<b>Phase 1 Set</b> — personal lots ×{PHASE_MULT[1]:.2f}\n\n"
+                f"⚠️ Could not fetch live balance:\n<code>{err}</code>\n\n"
+                f"Baseline NOT set. Run /phase1 again once MT5 is connected.",
+                parse_mode="HTML",
+            )
+            logger.warning("Telegram /phase1: baseline lock failed: %s", err)
+            return
+        baseline = balance
+        baseline_note = "locked from live MT5"
+    else:
+        baseline = existing_baseline
+        baseline_note = "unchanged — use /changepropfirm to reset"
 
     await asyncio.to_thread(_dispatch_parameters)
 
@@ -432,17 +440,15 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     dd_overall = pf.get("max_drawdown_overall_pct", 0.0)
     cap        = pf.get("daily_profit_cap_pct",     0.0)
     target     = pf.get("profit_target_pct",        0.0)
-    floor_amt    = round(balance * (1.0 - dd_overall / 100.0), 2) if dd_overall > 0 and balance > 0 else 0.0
-    daily_dd_amt = round(balance * dd_daily   / 100.0, 2) if dd_daily  > 0 and balance > 0 else 0.0
-    cap_amt      = round(balance * cap        / 100.0, 2) if cap       > 0 and balance > 0 else 0.0
-    target_lvl   = round(balance * (1.0 + target / 100.0), 2) if target > 0 and balance > 0 else 0.0
+    floor_amt    = round(baseline * (1.0 - dd_overall / 100.0), 2) if dd_overall > 0 and baseline > 0 else 0.0
+    daily_dd_amt = round(baseline * dd_daily / 100.0, 2)           if dd_daily  > 0 and baseline > 0 else 0.0
+    cap_amt      = round(baseline * cap      / 100.0, 2)           if cap       > 0 and baseline > 0 else 0.0
+    target_lvl   = round(baseline * (1.0 + target / 100.0), 2)    if target    > 0 and baseline > 0 else 0.0
 
     await update.message.reply_text(
         f"<b>Phase 1 Active</b>\n\n"
         f"Lots multiplier: ×{PHASE_MULT[1]:.2f}\n"
-        f"Baseline equity:\n"
-        f"  Before: ${old_baseline:,.2f}\n"
-        f"  After:  <b>${balance:,.2f}</b> (locked from live MT5)\n\n"
+        f"Baseline: <b>${baseline:,.2f}</b> ({baseline_note})\n\n"
         f"<b>Kill levels (prop account):</b>\n"
         f"Kill 1 daily DD:   −${daily_dd_amt:,.2f} from day-start\n"
         f"Kill 2 overall:    equity ≤ <b>${floor_amt:,.2f}</b>\n"
@@ -451,7 +457,7 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Send /resume to start trading.",
         parse_mode="HTML",
     )
-    logger.info("Telegram: phase set to 1  baseline=%.2f", balance)
+    logger.info("Telegram: phase set to 1  baseline=%.2f", baseline)
 
 
 # ── Phase 2 setup wizard (/phase2) ───────────────────────────────────────
@@ -729,8 +735,8 @@ async def _cmd_stop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         prop_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         pers_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
         eq_lines = [
-            f"Prop:     Balance ${prop_eq['balance']:,.2f}  |  Equity: ${prop_eq['equity']:,.2f}",
-            f"Personal: Balance ${pers_eq['balance']:,.2f}  |  Equity: ${pers_eq['equity']:,.2f}",
+            f"Prop: Balance ${prop_eq['balance']:,.2f} | Equity: ${prop_eq['equity']:,.2f}",
+            f"Personal: Balance ${pers_eq['balance']:,.2f} | Equity: ${pers_eq['equity']:,.2f}",
         ]
     except Exception:
         eq_lines = ["Could not query equity"]
@@ -797,14 +803,14 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         prop_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         pers_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
         eq_lines = [
-            f"Prop:     Balance ${prop_eq['balance']:,.2f}  |  Equity: ${prop_eq['equity']:,.2f}",
-            f"Personal: Balance ${pers_eq['balance']:,.2f}  |  Equity: ${pers_eq['equity']:,.2f}",
+            f"Prop: Balance ${prop_eq['balance']:,.2f} | Equity: ${prop_eq['equity']:,.2f}",
+            f"Personal: Balance ${pers_eq['balance']:,.2f} | Equity: ${pers_eq['equity']:,.2f}",
         ]
     except Exception:
         eq_lines = ["Could not query equity"]
 
     curfew_note = "\n<i>SGT curfew active — signals from 12:00 SGT.</i>" if _is_sgt_curfew() else ""
-    lines: list[str] = [f"<b>Signal Processing Resumed</b>{curfew_note}\n", "<b>Current open positions:</b>"]
+    lines: list[str] = [f"<b>Signal Processing Resumed</b>{curfew_note}\n", "<b>Current open positions:</b>\n"]
     for label, positions in [
         ("Personal (VPS #3)", pers_pos),
         ("Prop (VPS #2)",     prop_pos),
@@ -896,14 +902,30 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
 async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
+    with _pf_lock:
+        pf = dict(_propfirm)
+    baseline  = pf.get("baseline_equity",  0.0)
+    day_start = pf.get("day_start_equity", 0.0)
+
     try:
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_text = f"Balance: ${prop['balance']:,.2f}  |  Equity: ${prop['equity']:,.2f}"
+        eq = prop["equity"]
+        daily_pnl   = eq - day_start if day_start > 0 else 0.0
+        overall_pnl = eq - baseline  if baseline  > 0 else 0.0
+        daily_pct   = daily_pnl   / baseline * 100 if baseline > 0 else 0.0
+        overall_pct = overall_pnl / baseline * 100 if baseline > 0 else 0.0
+        d_arrow = "↑" if daily_pnl   >= 0 else "↓"
+        o_arrow = "↑" if overall_pnl >= 0 else "↓"
+        prop_text = (
+            f"Balance: ${prop['balance']:,.2f} | Equity: ${eq:,.2f}\n"
+            f"{d_arrow} Today: ${daily_pnl:+,.2f} ({daily_pct:+.2f}%)"
+            f"  {o_arrow} Overall: ${overall_pnl:+,.2f} ({overall_pct:+.2f}%)"
+        )
     except Exception as exc:
         prop_text = f"OFFLINE — {exc}"
     try:
         pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_text = f"Balance: ${pers['balance']:,.2f}  |  Equity: ${pers['equity']:,.2f}"
+        pers_text = f"Balance: ${pers['balance']:,.2f} | Equity: ${pers['equity']:,.2f}"
     except Exception as exc:
         pers_text = f"OFFLINE — {exc}"
     await update.message.reply_text(
@@ -958,7 +980,7 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
     if total_open == 0:
         lines.append("No positions are currently open on either account.")
 
-    lines.append("Reply <code>CONFIRM</code> to force-close all positions and halt signal processing.")
+    lines.append("⚠️ Reply <code>CONFIRM</code> to force-close all positions and halt signal processing.")
     lines.append("Send /cancel to abort.")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
@@ -980,8 +1002,8 @@ async def _emergency_execute(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
         prop_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         pers_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
         eq_text = (
-            f"Prop:     Balance ${prop_eq['balance']:,.2f}  |  Equity: ${prop_eq['equity']:,.2f}\n"
-            f"Personal: Balance ${pers_eq['balance']:,.2f}  |  Equity: ${pers_eq['equity']:,.2f}"
+            f"Prop: Balance ${prop_eq['balance']:,.2f} | Equity: ${prop_eq['equity']:,.2f}\n"
+            f"Personal: Balance ${pers_eq['balance']:,.2f} | Equity: ${pers_eq['equity']:,.2f}"
         )
     except Exception:
         eq_text = "Could not query equity"
@@ -1121,10 +1143,10 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     await update.message.reply_text(
         f"<b>System Health</b>\n\n"
-        f"VPS #1 (Layer 1) — {l1}\n"
-        f"VPS #1 (Layer 2) — ✅ alive\n"
-        f"VPS #2 (prop) — {prop_h}\n"
-        f"VPS #3 (personal) — {pers_h}",
+        f"Layer 1 (VPS #1): {l1}\n"
+        f"Layer 2 (VPS #1): ✅ alive\n"
+        f"Prop (VPS #2): {prop_h}\n"
+        f"Personal (VPS #3): {pers_h}",
         parse_mode="HTML",
     )
 
@@ -1270,8 +1292,8 @@ async def _closepair_execute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
         prop_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         pers_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
         eq_text = (
-            f"Prop:     Balance ${prop_eq['balance']:,.2f}  |  Equity: ${prop_eq['equity']:,.2f}\n"
-            f"Personal: Balance ${pers_eq['balance']:,.2f}  |  Equity: ${pers_eq['equity']:,.2f}"
+            f"Prop: Balance ${prop_eq['balance']:,.2f} | Equity: ${prop_eq['equity']:,.2f}\n"
+            f"Personal: Balance ${pers_eq['balance']:,.2f} | Equity: ${pers_eq['equity']:,.2f}"
         )
     except Exception:
         eq_text = "Could not query equity"
@@ -1351,7 +1373,7 @@ async def _cmd_setmaxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         with _pf_lock:
             dd_daily_raw = _propfirm.get("max_drawdown_daily_pct", 0.0) + 1.0  # before buffer
         warning = (
-            f"\n\n<b>Warning:</b> {n} positions × {PROP_RISK_PCT*100:.1f}% = "
+            f"\n\n⚠️ <b>Warning:</b> {n} positions × {PROP_RISK_PCT*100:.1f}% = "
             f"<b>{theoretical:.1f}% theoretical max daily loss</b> if all SLs hit simultaneously.\n"
             f"Daily DD limit (before buffer): {dd_daily_raw:.1f}%"
         )
@@ -1378,7 +1400,7 @@ async def _cmd_maxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         f"<b>Position Limit</b>\n\n"
         f"Max allowed: {limit}\n"
-        f"Currently open (prop): {count_str}",
+        f"Currently open: {count_str}",
         parse_mode="HTML",
     )
 
@@ -1480,11 +1502,11 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/cancel — Cancel any active wizard\n\n"
 
         "<b>Kill Conditions</b> (automatic)\n"
-        "K1 — Daily loss ≥ daily DD limit → close all + halt\n"
-        "K2 — Overall loss ≥ overall DD limit → close all + permanent halt\n"
-        "K3 — Daily profit ≥ daily cap → close all + halt\n"
-        "K4 — Overall profit ≥ target → close all + permanent halt → /phase2\n"
-        "K5 — Consistency rule met → close all + permanent halt → claim payout\n\n"
+        "K1 — Daily loss ≥ DD limit → close all + halt\n"
+        "K2 — Overall loss ≥ DD limit → close all + permanent halt\n"
+        "K3 — Daily profit ≥ cap → close all + halt\n"
+        "K4 — Overall profit ≥ target → permanent halt → /phase2\n"
+        "K5 — Consistency rule met → permanent halt → claim payout\n\n"
 
         "<b>Trading Window</b>\n"
         "12:00–00:00 SGT, weekdays only\n\n"
