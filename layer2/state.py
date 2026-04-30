@@ -253,11 +253,13 @@ def _apply_buffers(raw: dict) -> dict:
     - Daily DD: subtract 1 percentage point (buffer against prop firm's daily limit).
     - Overall DD: NO buffer — trigger at exact value user inputs (prop firm closes at this exact %).
     - Daily profit cap: enforce at 25% of target (vs the 30% consistency rule).
+    - Consistency threshold: subtract 1 percentage point (fire 1% before the firm's stated limit).
     """
     effective = raw.copy()
-    effective["max_drawdown_daily_pct"]   = round(raw["max_drawdown_daily_pct"]   - 1.0, 2)
-    effective["max_drawdown_overall_pct"] = raw["max_drawdown_overall_pct"]
-    effective["daily_profit_cap_pct"]     = round(raw["profit_target_pct"] * 0.25, 2)
+    effective["max_drawdown_daily_pct"]      = round(raw["max_drawdown_daily_pct"]          - 1.0, 2)
+    effective["max_drawdown_overall_pct"]    = raw["max_drawdown_overall_pct"]
+    effective["daily_profit_cap_pct"]        = round(raw["profit_target_pct"] * 0.25, 2)
+    effective["consistency_threshold_pct"]   = round(raw.get("consistency_threshold_pct", 30.0) - 1.0, 2)
     return effective
 
 

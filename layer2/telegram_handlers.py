@@ -281,10 +281,10 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         "When the largest profitable day falls below this percentage of total profit, "
         "the system will halt and prompt payout submission.\n\n"
         "Common target: largest day &lt; 30% of total profit.\n\n"
-        "⚠️ No automatic buffer is applied here — the value you enter is used exactly as your trigger threshold.\n"
-        "Enter WITH your own buffer already included.\n"
-        "(e.g. firm requires &lt; 30% → enter <code>29</code> to fire 1% before the limit)\n\n"
-        "Enter a value between 1 and 50. Example: <code>29</code>",
+        "⚠️ Enter the firm's stated limit WITHOUT buffer.\n"
+        "The system will subtract 1pp automatically.\n"
+        "(e.g. firm says 30% → enter <code>30</code> → bot triggers at 29%)\n\n"
+        "Enter a value between 2 and 50. Example: <code>30</code>",
         parse_mode="HTML",
     )
     return PF_CONSISTENCY
@@ -293,12 +293,12 @@ async def _wiz_min_days(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 async def _wiz_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     try:
         v = float(update.message.text.strip())
-        assert 1.0 <= v <= 50.0
+        assert 2.0 <= v <= 50.0
     except Exception:
         await update.message.reply_text(
             "⚠️ <b>Invalid Input</b>\n\n"
-            "Enter a number between 1 and 50.\n"
-            "Example: <code>29</code>",
+            "Enter a number between 2 and 50.\n"
+            "Example: <code>30</code>",
             parse_mode="HTML",
         )
         return PF_CONSISTENCY
@@ -332,7 +332,8 @@ async def _wiz_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) 
     floor_amt    = round(v * (1.0 - eff["max_drawdown_overall_pct"] / 100.0), 2)
     cap_amt      = round(v * eff["daily_profit_cap_pct"] / 100.0, 2)
     target_lvl   = round(v * (1.0 + _wizard_data["profit_target_pct"] / 100.0), 2)
-    cons_v       = _wizard_data["consistency_threshold_pct"]
+    cons_raw = _wizard_data["consistency_threshold_pct"]
+    cons_eff = eff["consistency_threshold_pct"]
     summary = (
         f"📊 <b>Review Prop Firm Setup</b>\n\n"
         f"<b>Firm:</b> {_wizard_data['propfirm_name']}\n"
@@ -344,13 +345,13 @@ async def _wiz_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) 
         f"<b>Raw Spread Acct:</b> {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
         f"<b>Profit Sharing:</b> {_wizard_data['profit_sharing_pct']:.1f}%\n"
         f"<b>Min Profit Days:</b> {_wizard_data['min_profit_days']}\n"
-        f"<b>Consistency Threshold:</b> {cons_v:.1f}%\n\n"
+        f"<b>Consistency:</b> {cons_raw:.1f}% → enforced at <b>{cons_eff:.1f}%</b> (−1pp buffer)\n\n"
         f"<b>Kill Levels (static, based on ${v:,.0f} baseline)</b>\n"
         f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
         f"K2 Overall DD: equity ≤ ${floor_amt:,.2f}\n"
         f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
         f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n"
-        f"K5 Consistency: largest day &lt; {cons_v:.1f}% of total <i>(Phase 2 only)</i>\n\n"
+        f"K5 Consistency: largest day &lt; {cons_eff:.1f}% of total <i>(Phase 2 only)</i>\n\n"
         f"Reply <b>YES</b> to save, or <b>NO</b> to cancel."
     )
     await update.message.reply_text(summary, parse_mode="HTML")
@@ -386,7 +387,7 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     except Exception:
         pass  # fall back to baseline if MT5 unavailable
 
-    cons_threshold = _wizard_data.get("consistency_threshold_pct", 29.0)
+    cons_threshold = eff.get("consistency_threshold_pct", 29.0)
     with _pf_lock:
         _propfirm.update({
             "propfirm_name":              _wizard_data["propfirm_name"],
@@ -790,7 +791,7 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         pass
 
     today = _propfirm_day(_sgt_now())
-    cons_threshold = new.get("consistency_threshold_pct", 29.0)
+    cons_threshold = eff.get("consistency_threshold_pct", 29.0)
     with _pf_lock:
         _propfirm.update({
             "propfirm_name":              new["propfirm_name"],
