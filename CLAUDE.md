@@ -71,7 +71,7 @@ Telegram Bot API ←→ layer2/logic_core.py
 |---|---|---|
 | 0 — Signal Engine | `layer0/signal_engine.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `layer1/news_filter.py`, `layer1/ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
-| 2 — Logic Core | `layer2/logic_core.py`, `layer2/telegram_handlers.py`, `layer2/state.py` | ✅ LIVE — all features below deployed 2026-04-30 |
+| 2 — Logic Core | `layer2/logic_core.py`, `layer2/telegram_handlers.py`, `layer2/state.py` | ✅ LIVE — all features below deployed 2026-05-01 |
 | 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — PowerShell on VPS #2 + #3 |
 
 **Current phase**: Gate D — 7-day demo run started 2026-04-25. Target go-live: ~2026-05-03.
@@ -114,6 +114,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - Change via `/setwindow HH:MM HH:MM` Telegram command — choose "today" (immediate) or "tomorrow" (next rollover).
 - `_is_sgt_curfew()` reads from `_trading_window` dict dynamically — no restart needed after `/setwindow`.
 - Weekends always curfew regardless of window setting.
+- **`00:00` is ambiguous — handled by `is_end` flag in `_window_minutes(t_str, is_end=False)`**: as a start time `00:00` = 0 min; as an end time `00:00` = 1440 min (midnight). Without this, setting a 24-hour window (`00:00–00:00`) would cause permanent curfew because start and end would both resolve to 1440. Always pass `is_end=True` when calling `_window_minutes` for the end time.
 
 ---
 
@@ -124,6 +125,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - **5-second position verification**: after every signal dispatch, Layer 2 waits 5s, queries actual positions from both workers, and sends "Trade Confirmed ✅✅" or "⚠️ EXECUTION FAILURE ❌" with the exact error. No more silent failures.
 - **XAGUSD lot sizing**: use `trade_tick_size` (0.0001), NOT `point` (0.001). Using `point` inflates lots 10×. Fixed 2026-04-22.
 - **MetaTrader5 import on Linux = instant crash.** Layers 1 and 2 must never import it.
+- **Price display must use `_fmt_price(symbol, price)` from `state.py`** — MT5 returns floats with binary precision artifacts (e.g. `1.3498700000000001`). `_fmt_price` rounds to the correct decimal places per instrument: JPY pairs = 3dp, XAUUSD = 2dp, XAGUSD = 4dp, all others = 5dp. Every SL/TP/entry price shown in Telegram alerts goes through this helper. Any new price display code must use it too.
 
 - **Close detection buffer**: when one leg of a hedge closes before the other (e.g. personal SL hits one poll before prop TP), the close is held in `_pending_closes` for up to 30 s. A single combined alert fires only after both legs confirm closed or the buffer expires. This prevents duplicate split alerts and false orphan force-closes.
 - **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
@@ -137,7 +139,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - Lot sizing uses `baseline_equity × 0.67%` — never live equity.
 - Personal lots = `prop_lots × phase_ratio`. Never compute from a separate dollar risk formula.
 - Prop firm config: wizard-only (`/changepropfirm`). Never edit `propfirm_config.json` manually.
-- **`baseline_equity` is immutable** — only written by explicit user commands: `/changepropfirm` wizard (Step 10/10), `/setbaseline <amount>`, `/phase1` (only when baseline is 0), `/phase2` wizard. `_update_day_start()` NEVER touches it — only `day_start_equity` and `day_start_date_utc`. Nothing automatic can overwrite it.
+- **`baseline_equity` is immutable** — only written by explicit user commands: `/changepropfirm` wizard (Step 10/10), `/phase1` (only when baseline is 0), `/phase2` wizard. `_update_day_start()` NEVER touches it — only `day_start_equity` and `day_start_date_utc`. Nothing automatic can overwrite it. `/setbaseline` command does NOT exist — was removed; re-run wizard Step 10/10 to correct baseline.
 - Phase switching: Telegram-only (`/phase1`, `/phase2`).
 - ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open between VPS #1 and VPS #2/#3.
 - TradingView Premium required for webhook delivery.
@@ -146,7 +148,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 ---
 
-## Current State (as of 2026-04-30, session 2)
+## Current State (as of 2026-05-01, session 3)
 
 All four layers deployed and operational. Gate D demo run in progress. Target go-live ~2026-05-03.
 
@@ -161,16 +163,17 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - `trade_allowed` monitoring + 5 s position verification
   - News suppression clear notification: grouped 🔴→🟢 Telegram alert on window expiry
   - `/news` shows 🟠 per event; `/blackboard` shows 🔴 per pair, 🟢 when clear
-  - `/changepropfirm` wizard buffer rules explicit in each step prompt:
+  - `/changepropfirm` wizard (10 steps, `/back` supported): buffer rules explicit in each prompt:
     - Step 3/10 (Overall DD): NO auto-buffer — enter firm's exact stated limit
     - Step 4/10 (Daily DD): system subtracts −1pp — enter firm's raw stated value
     - Step 9/10 (Consistency): system subtracts −1pp — enter firm's raw stated value
-  - `_apply_buffers()` now buffers all three: daily DD, consistency (both −1pp), daily cap (25% of target)
+  - `_apply_buffers()` buffers all three: daily DD, consistency (both −1pp), daily cap (25% of target)
   - `phase_configs["1"]` stores raw wizard values; `_propfirm` stores buffered effective values — no double-buffer on Phase 2
   - All hardcoded `29.0` consistency defaults removed — fully dynamic from wizard input
-  - `/setbaseline <amount>` command for correcting baseline without re-running wizard
+  - `/cancel` outside a wizard replies "No active wizard to cancel." (no silent failure)
+  - All SL/TP/entry prices in Telegram alerts use `_fmt_price(symbol, price)` — no more float artifacts
+  - `_window_minutes` fixed: `00:00` as start = 0 min, as end = 1440 min (24h window now works correctly)
+  - `/setbaseline` command removed — use `/changepropfirm` Step 10/10 to set baseline
 - Layer 3: Both workers running (VPS #2 prop account 5049711515, VPS #3 personal account 106260846, both MetaQuotes demo).
-
-**⚠️ Action required**: Run `/setbaseline 100000` on Telegram if `baseline_equity` in `/pnl` still shows $105,637 — the old wizard set it from live MT5 equity. The new wizard (Step 10/10) asks for the initial balance explicitly.
 
 **Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations.
