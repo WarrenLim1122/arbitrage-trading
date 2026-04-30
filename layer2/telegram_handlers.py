@@ -1376,7 +1376,7 @@ async def _cmd_news(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     for t, ccy, title, pairs in relevant:
         sgt_str   = (t + sgt_off).strftime("%H:%M SGT")
         pairs_str = ", ".join(pairs) if pairs else "—"
-        lines.append(f"{sgt_str} — {ccy}: {title}\n  Affects: {pairs_str}")
+        lines.append(f"🟠 {sgt_str} — {ccy}: {title}\n  Affects: {pairs_str}")
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -1399,7 +1399,7 @@ async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     for ticker in sorted(all_pairs):
-        lines.append(f"<b>{ticker}</b>")
+        lines.append(f"🔴 <b>{ticker}</b>")
         if ticker in manual_active:
             lines.append(f"  Manually blocked via /closepair")
             lines.append(f"  Unblock: /resumepair {ticker}")

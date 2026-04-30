@@ -373,10 +373,23 @@ def _run_news_preclose_check() -> None:
             if datetime.fromisoformat(ts) > cutoff
         }
 
-    # Expire suppression windows that have ended — send NEWS_CLEAR to Layer 3.
+    # Expire suppression windows that have ended — alert Telegram, then send NEWS_CLEAR to Layer 3.
     with _news_suppressed_lock:
-        expired = [t for t, end in _news_suppressed_pairs.items() if end <= now]
-    for t in expired:
+        expired = [(t, end) for t, end in _news_suppressed_pairs.items() if end <= now]
+
+    if expired:
+        _sgt = timedelta(hours=8)
+        pair_lines = []
+        for t, end in sorted(expired):
+            expired_sgt = (end + _sgt).strftime("%H:%M SGT")
+            pair_lines.append(f"🔴 → 🟢  <b>{t}</b> — window expired (was until {expired_sgt})")
+        _alert_sync(
+            f"🟢 <b>News Window Cleared</b>\n\n"
+            + "\n".join(pair_lines)
+            + "\n\nNew signals accepted for these pairs."
+        )
+
+    for t, _ in expired:
         with _news_suppressed_lock:
             _news_suppressed_pairs.pop(t, None)
         _dispatch_news_clear(t)
