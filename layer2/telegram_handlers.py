@@ -50,11 +50,11 @@ logger = logging.getLogger("layer2")
  PF_DD_TYPE, PF_RAW_SPREAD, PF_PROFIT_SHARE, PF_MIN_DAYS,
  PF_CONSISTENCY, PF_INITIAL_BALANCE, PF_CONFIRM) = range(11)
 
-(P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_CONFIRM) = range(10, 14)
+(P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING, P2_INITIAL_BALANCE, P2_CONFIRM) = range(10, 15)
 
-EMERGENCY_CONFIRM  = 14
-CLOSEPAIR_CONFIRM  = 15
-SETWINDOW_CONFIRM  = 16
+EMERGENCY_CONFIRM  = 15
+CLOSEPAIR_CONFIRM  = 16
+SETWINDOW_CONFIRM  = 17
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
@@ -453,6 +453,54 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
 # ── Telegram commands ─────────────────────────────────────────────────────
 
+async def _cmd_setbaseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Directly overwrite baseline_equity without re-running /changepropfirm."""
+    if not _auth(update):
+        return
+    text = (update.message.text or "").strip().split()
+    if len(text) < 2:
+        with _pf_lock:
+            cur = _propfirm.get("baseline_equity", 0.0)
+        await update.message.reply_text(
+            f"Usage: <code>/setbaseline 100000</code>\n\nCurrent baseline: <b>${cur:,.2f}</b>",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        new_baseline = float(text[1].replace(",", ""))
+        assert new_baseline > 0
+    except Exception:
+        await update.message.reply_text("⚠️ <b>Invalid Amount</b>\n\nExample: <code>/setbaseline 100000</code>", parse_mode="HTML")
+        return
+
+    with _pf_lock:
+        old = _propfirm.get("baseline_equity", 0.0)
+        _propfirm["baseline_equity"] = new_baseline
+        _save_propfirm(_propfirm)
+        dd_daily   = _propfirm.get("max_drawdown_daily_pct",  0.0)
+        dd_overall = _propfirm.get("max_drawdown_overall_pct", 0.0)
+        cap        = _propfirm.get("daily_profit_cap_pct",     0.0)
+        target     = _propfirm.get("profit_target_pct",        0.0)
+
+    k1 = round(new_baseline * dd_daily   / 100.0, 2) if dd_daily   > 0 else 0.0
+    k2 = round(new_baseline * (1 - dd_overall / 100.0), 2) if dd_overall > 0 else 0.0
+    k3 = round(new_baseline * cap        / 100.0, 2) if cap        > 0 else 0.0
+    k4 = round(new_baseline * (1 + target / 100.0), 2) if target   > 0 else 0.0
+
+    await update.message.reply_text(
+        f"✅ <b>Baseline Updated</b>\n\n"
+        f"Before: ${old:,.2f}\n"
+        f"After:  <b>${new_baseline:,.2f}</b>\n\n"
+        f"<b>New Kill Levels</b>\n"
+        f"K1 Daily DD: −${k1:,.2f} from day-start\n"
+        f"K2 Overall DD: equity ≤ ${k2:,.2f}\n"
+        f"K3 Daily Cap: +${k3:,.2f} from day-start\n"
+        f"K4 Profit Target: equity ≥ ${k4:,.2f}",
+        parse_mode="HTML",
+    )
+    logger.info("Baseline manually updated: %.2f → %.2f", old, new_baseline)
+
+
 async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -672,21 +720,40 @@ async def _p2_show_review(update) -> int:
         f"Kill 5 — consistency: largest day &lt; {new.get('consistency_threshold_pct', 29.0):.1f}% of total → permanent halt\n"
         f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
         f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
-        f"<i>Baseline equity locked from live MT5 on confirm.</i>\n\n"
-        f"Reply <b>YES</b> to save and start Phase 2, or <b>NO</b> to cancel.",
+        f"Reply <b>YES</b> to proceed, or <b>NO</b> to cancel.",
         parse_mode="HTML",
     )
-    return P2_CONFIRM
+    return P2_INITIAL_BALANCE
 
 
-async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def _p2_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     v = update.message.text.strip().upper()
     if v == "NO":
         _p2_wizard_data.clear()
         await update.message.reply_text("⚠️ <b>Cancelled</b>\n\nNo changes were saved.", parse_mode="HTML")
         return ConversationHandler.END
     if v != "YES":
-        await update.message.reply_text("Reply <b>YES</b> to save, or <b>NO</b> to cancel.", parse_mode="HTML")
+        await update.message.reply_text("Reply <b>YES</b> to proceed, or <b>NO</b> to cancel.", parse_mode="HTML")
+        return P2_INITIAL_BALANCE
+    await update.message.reply_text(
+        "<b>Initial Account Balance</b>\n\n"
+        "Enter the prop firm's initial account balance for this Phase 2 challenge.\n"
+        "This becomes the static baseline for all kill condition calculations.\n\n"
+        "Example: <code>200000</code>",
+        parse_mode="HTML",
+    )
+    return P2_CONFIRM
+
+
+async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        v_bal = float(update.message.text.strip().replace(",", ""))
+        assert v_bal > 0
+    except Exception:
+        await update.message.reply_text(
+            "⚠️ <b>Invalid Input</b>\n\nEnter a positive number. Example: <code>200000</code>",
+            parse_mode="HTML",
+        )
         return P2_CONFIRM
 
     new = _p2_wizard_data["new_config"]
@@ -695,16 +762,14 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     with _pf_lock:
         old_baseline = _propfirm.get("baseline_equity", 0.0)
 
-    baseline = 0.0
+    # baseline = user-provided initial balance (static for evaluation life)
+    # day_start = live MT5 equity (resets daily)
+    baseline = v_bal
+    day_start = baseline
     try:
-        baseline = _query_equity(ZMQ_REQ_PROP, "")["balance"]
-    except Exception as exc:
-        await update.message.reply_text(
-            f"⚠️ <b>Live Balance Unavailable</b>\n\n"
-            f"Could not fetch prop account balance:\n<code>{exc}</code>\n\n"
-            f"Baseline has been set to 0.0. Run /phase2 again once MT5 is connected.",
-            parse_mode="HTML",
-        )
+        day_start = _query_equity(ZMQ_REQ_PROP, "")["balance"]
+    except Exception:
+        pass
 
     today = _propfirm_day(_sgt_now())
     cons_threshold = new.get("consistency_threshold_pct", 29.0)
@@ -721,7 +786,7 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "daily_profit_cap_pct":       eff["daily_profit_cap_pct"],
             "consistency_threshold_pct":  cons_threshold,
             "baseline_equity":            baseline,
-            "day_start_equity":           baseline,
+            "day_start_equity":           day_start,
             "day_start_date_utc":         today,
         })
         # Store raw Phase 2 config for future reference
@@ -1711,10 +1776,11 @@ def _run_bot() -> None:
     p2_wizard = ConversationHandler(
         entry_points=[CommandHandler("phase2", _cmd_phase2)],
         states={
-            P2_SAME_OR_DIFF: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_same_or_diff)],
-            P2_WHICH_FIELDS: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_which_fields)],
-            P2_COLLECTING:   [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_collect_field)],
-            P2_CONFIRM:      [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_confirm)],
+            P2_SAME_OR_DIFF:    [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_same_or_diff)],
+            P2_WHICH_FIELDS:    [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_which_fields)],
+            P2_COLLECTING:      [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_collect_field)],
+            P2_INITIAL_BALANCE: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_initial_balance)],
+            P2_CONFIRM:         [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p2_confirm)],
         },
         fallbacks=[CommandHandler("cancel", _p2_cancel)],
         per_chat=True,
@@ -1754,6 +1820,7 @@ def _run_bot() -> None:
     tg_app.add_handler(closepair_wizard)
     tg_app.add_handler(setwindow_wizard)
     tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
+    tg_app.add_handler(CommandHandler("setbaseline",   _cmd_setbaseline))
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))

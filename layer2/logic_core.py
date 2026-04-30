@@ -437,9 +437,10 @@ def _run_news_preclose_check() -> None:
                 direction = f"in {int(mins_to_event)} min"
             else:
                 direction = f"{int(abs(mins_to_event))} min ago"
+            _sgt = timedelta(hours=8)
             event_desc = (
                 f"[{event['currency']}] {event['title']} "
-                f"@ {event_utc.strftime('%Y-%m-%d %H:%M')} UTC ({direction})"
+                f"@ {(event_utc + _sgt).strftime('%H:%M')} SGT ({direction})"
             )
             logger.warning("NEWS BAN %s — %s", ticker, event_desc)
             pos_str = _snapshot_positions_str()
@@ -449,7 +450,7 @@ def _run_news_preclose_check() -> None:
                 f"{event_desc}\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
                 f"New signals blocked until "
-                f"{suppression_end.strftime('%H:%M')} UTC "
+                f"{(suppression_end + _sgt).strftime('%H:%M')} SGT "
                 f"(event +{_NEWS_TRADING_BAN_WINDOW} min)."
             )
 
