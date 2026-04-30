@@ -30,7 +30,7 @@ from layer2.state import (
     _p2_display, _p2_settings_block,
     _P2_FIELD_DEFS, _P2_FIELD_BY_IDX,
     _is_sgt_curfew, _sgt_now, _propfirm_day,
-    _apply_buffers, _pnl_bar,
+    _apply_buffers, _pnl_bar, _fmt_price,
     _trading_window, _window_lock, _save_trading_window, _window_minutes,
 )
 from layer2.zmq_helpers import (
@@ -1214,7 +1214,7 @@ async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 direction = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
                 lines.append(
                     f"{p['symbol']}  {direction}  {p['volume']:.2f} lots\n"
-                    f"  Entry: {p['price_open']}  SL: {p['sl']}  TP: {p['tp']}\n"
+                    f"  Entry: {_fmt_price(p['symbol'], p['price_open'])}  SL: {_fmt_price(p['symbol'], p['sl'])}  TP: {_fmt_price(p['symbol'], p['tp'])}\n"
                     f"  P&amp;L: ${p['profit']:+,.2f}"
                 )
         lines.append("")

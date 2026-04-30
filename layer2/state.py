@@ -343,6 +343,19 @@ def _pnl_bar(pct: float, width: int = 10) -> str:
     return "[" + "█" * filled + "░" * (width - filled) + f"] {pct:.1f}%"
 
 
+def _fmt_price(symbol: str, price: float) -> str:
+    sym = symbol.upper()
+    if "JPY" in sym:
+        digits = 3
+    elif sym == "XAUUSD":
+        digits = 2
+    elif sym == "XAGUSD":
+        digits = 4
+    else:
+        digits = 5
+    return f"{price:.{digits}f}"
+
+
 # ── Phase 2 field definitions (used by telegram_handlers wizard) ───────────
 
 # Ordered field definitions used to display and collect Phase 2 settings.

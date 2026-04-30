@@ -54,6 +54,7 @@ from layer2.state import (
     _record_day_profit, _build_consistency_table,
     _invert, _load_consistency_log,
     _trading_window, _window_lock, _apply_next_window,
+    _fmt_price,
 )
 from layer2.zmq_helpers import (
     _query_equity, _query_positions, _snapshot_positions_str,
@@ -288,7 +289,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         parts.append(
             f"\n<b>Personal (signal, VPS #3):</b>\n"
             f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
-            f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
+            f"  Entry: {_fmt_price(symbol, pos['price_open'])}  |  SL: {_fmt_price(symbol, pos['sl'])}  |  TP: {_fmt_price(symbol, pos['tp'])}\n"
             f"  P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
@@ -302,7 +303,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         parts.append(
             f"\n<b>Prop (inverse, VPS #2):</b>\n"
             f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
-            f"  Entry: {pos['price_open']}  |  SL: {pos['sl']}  |  TP: {pos['tp']}\n"
+            f"  Entry: {_fmt_price(symbol, pos['price_open'])}  |  SL: {_fmt_price(symbol, pos['sl'])}  |  TP: {_fmt_price(symbol, pos['tp'])}\n"
             f"  P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
