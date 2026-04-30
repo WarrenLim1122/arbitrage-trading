@@ -1072,8 +1072,13 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     dd_all_lim  = baseline * overall_dd  / 100
     target_lim  = baseline * target_pct  / 100
 
-    def _pct(val, lim):
+    def _profit_pct(val, lim):
         return abs(val) / lim * 100 if lim > 0 else 0.0
+
+    def _loss_pct(pnl, lim):
+        # Only tracks DD consumed — stays 0% while equity is above the starting point
+        loss = max(0.0, -pnl)
+        return loss / lim * 100 if lim > 0 else 0.0
 
     await update.message.reply_text(
         f"<b>P&amp;L Dashboard — Prop Account</b>\n\n"
@@ -1082,14 +1087,14 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Now: ${equity:,.2f}\n\n"
         f"<b>Daily P&amp;L: ${daily_pnl:+,.2f}</b>\n"
         f"Profit cap: ${cap_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_pct(daily_pnl, cap_lim))}</code>\n"
+        f"<code>{_pnl_bar(_profit_pct(daily_pnl, cap_lim))}</code>\n"
         f"DD limit: -${dd_day_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_pct(-daily_pnl, dd_day_lim))}</code>\n\n"
+        f"<code>{_pnl_bar(_loss_pct(daily_pnl, dd_day_lim))}</code>\n\n"
         f"<b>Overall P&amp;L: ${overall_pnl:+,.2f}</b>\n"
         f"Target: ${target_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_pct(overall_pnl, target_lim))}</code>\n"
+        f"<code>{_pnl_bar(_profit_pct(overall_pnl, target_lim))}</code>\n"
         f"DD limit: -${dd_all_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_pct(-overall_pnl, dd_all_lim))}</code>",
+        f"<code>{_pnl_bar(_loss_pct(overall_pnl, dd_all_lim))}</code>",
         parse_mode="HTML",
     )
 
@@ -1440,68 +1445,51 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     await update.message.reply_text(
-        "<b>TEE Bot — Commands</b>\n\n"
+        "<b>HedgeHog — Command Reference</b>\n\n"
 
         "<b>Emergency</b>\n"
-        "/emergency\n"
-        "Force-close ALL positions on both accounts + halt\n\n"
+        "/emergency — Force-close ALL positions on both accounts + halt\n\n"
 
-        "<b>Phase &amp; Trading Control</b>\n"
-        "/phase1\n"
-        "Enter Phase 1 (×0.20 lots) — runs prop firm config wizard\n"
-        "/phase2\n"
-        "Enter Phase 2 (×0.70 lots) — same config or update settings\n"
-        "/resume\n"
-        "Resume signal processing after halt\n"
-        "/stop\n"
-        "Halt new signals (open trades continue to SL/TP)\n\n"
+        "<b>System Status</b>\n"
+        "/health — Connectivity across all 4 layers\n"
+        "/status — Phase, active flag, last signal time\n"
+        "/positions — Open trades on both accounts\n"
+        "/equity — Live balance and equity\n"
+        "/pnl — Daily and overall P&amp;L vs cap and DD limits\n\n"
 
-        "<b>Position Limits</b>\n"
-        "/setmaxpos 2\n"
-        "Set max simultaneous open trades (1–10)\n"
-        "/maxpos\n"
-        "Show current limit and open count\n\n"
+        "<b>Trading Control</b>\n"
+        "/resume — Resume signal processing after halt\n"
+        "/stop — Halt new signals (open trades run to SL/TP)\n"
+        "/phase1 — Start Phase 1 (×0.20 lots) + run prop firm wizard\n"
+        "/phase2 — Start Phase 2 (×0.70 lots) + review/update settings\n\n"
 
-        "<b>Pair Control</b>\n"
-        "/closepair EURUSD\n"
-        "Close all positions for a pair + block new signals\n"
-        "/resumepair EURUSD\n"
-        "Unblock a pair and allow new signals\n\n"
+        "<b>Position Management</b>\n"
+        "/maxpos — Current open trade limit and live count\n"
+        "/setmaxpos N — Set max simultaneous open trades (1–10)\n"
+        "/closepair EURUSD — Close pair + block new signals\n"
+        "/resumepair EURUSD — Unblock pair\n\n"
 
-        "<b>Status &amp; Monitoring</b>\n"
-        "/positions\n"
-        "Open positions on both accounts\n"
-        "/equity\n"
-        "Live balance + equity on both accounts\n"
-        "/pnl\n"
-        "Today's P&amp;L vs daily cap and DD limits\n"
-        "/consistency\n"
-        "Consistency rule tracker (Phase 2 only)\n"
-        "/health\n"
-        "Ping all 4 layers and report live/dead\n"
-        "/news\n"
-        "Upcoming high-impact events (next 4h)\n"
-        "/blackboard\n"
-        "Active suppression blackboard (manual + news)\n"
-        "/status\n"
-        "Live system status and last signal time\n"
-        "/propfirm\n"
-        "Current prop firm config\n"
-        "/changepropfirm\n"
-        "Set up or update prop firm (9-step wizard)\n"
-        "/cancel\n"
-        "Cancel any wizard mid-flow\n\n"
+        "<b>Risk Monitoring</b>\n"
+        "/news — High-impact events in the next 4h\n"
+        "/blackboard — Active manual and news blocks\n"
+        "/consistency — Consistency rule tracker (Phase 2 only)\n\n"
+
+        "<b>Configuration</b>\n"
+        "/propfirm — Current prop firm settings\n"
+        "/changepropfirm — Update prop firm (9-step wizard)\n"
+        "/cancel — Cancel any active wizard\n\n"
 
         "<b>Kill Conditions</b> (automatic)\n"
-        "Kill 1 — daily loss ≥ DD daily limit → close all + halt\n"
-        "Kill 2 — overall loss ≥ DD overall limit → close all + permanent halt\n"
-        "Kill 3 — daily profit ≥ cap → close all + halt\n"
-        "Kill 4 — overall profit ≥ target → close all + permanent halt → /phase2\n"
-        "Kill 5 — consistency rule met → close all + permanent halt → claim payout\n\n"
+        "K1 — Daily loss ≥ daily DD limit → close all + halt\n"
+        "K2 — Overall loss ≥ overall DD limit → close all + permanent halt\n"
+        "K3 — Daily profit ≥ daily cap → close all + halt\n"
+        "K4 — Overall profit ≥ target → close all + permanent halt → /phase2\n"
+        "K5 — Consistency rule met → close all + permanent halt → claim payout\n\n"
 
-        "<b>Trading window:</b> 12:00–00:00 SGT, weekdays only\n\n"
+        "<b>Trading Window</b>\n"
+        "12:00–00:00 SGT, weekdays only\n\n"
 
-        "<b>Startup Sequence</b>\n"
+        "<b>First-Time Setup</b>\n"
         "/changepropfirm → /phase1 → /resume",
         parse_mode="HTML",
     )
