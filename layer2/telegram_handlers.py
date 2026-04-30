@@ -395,6 +395,8 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "baseline_equity":            baseline,
             "day_start_equity":           day_start,
             "day_start_date_utc":         _propfirm_day(_sgt_now()),
+            "k1_layer":                   0,  # reset staircase layers on new evaluation
+            "k3_layer":                   0,
         })
         # Store raw Phase 1 values for /phase2 wizard (raw = before buffers, what the firm states)
         _propfirm.setdefault("phase_configs", {})["1"] = {
@@ -413,12 +415,16 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if baseline > 0:
         _dispatch_parameters()
 
-    # Compute kill dollar levels so user can see them without opening MT5
-    floor_amt    = round(baseline * (1.0 - eff["max_drawdown_overall_pct"] / 100.0), 2) if baseline > 0 else 0.0
-    daily_dd_amt = round(baseline * eff["max_drawdown_daily_pct"]  / 100.0, 2) if baseline > 0 else 0.0
-    cap_amt      = round(baseline * eff["daily_profit_cap_pct"]    / 100.0, 2) if baseline > 0 else 0.0
-    target_lvl   = round(baseline * (1.0 + _wizard_data["profit_target_pct"] / 100.0), 2) if baseline > 0 else 0.0
-    before_str   = f"{old_name}  |  Baseline: ${old_baseline:,.2f}" if old_name != "—" else "No previous config"
+    dd_daily   = eff["max_drawdown_daily_pct"]
+    dd_overall = eff["max_drawdown_overall_pct"]
+    cap        = eff["daily_profit_cap_pct"]
+    target_pct = _wizard_data["profit_target_pct"]
+    layer_loss = round(baseline * dd_daily   / 100.0, 2) if baseline > 0 else 0.0
+    layer_cap  = round(baseline * cap        / 100.0, 2) if baseline > 0 else 0.0
+    overall_fl = round(baseline * (1 - dd_overall / 100.0), 2) if baseline > 0 else 0.0
+    target_lvl = round(baseline * (1.0 + target_pct / 100.0), 2) if baseline > 0 else 0.0
+    max_layers = round(dd_overall / dd_daily) if dd_daily > 0 else 0
+    before_str = f"{old_name}  |  Baseline: ${old_baseline:,.2f}" if old_name != "—" else "No previous config"
 
     _wizard_data.clear()
     await update.message.reply_text(
@@ -426,9 +432,9 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         f"<b>Before</b>\n{before_str}\n\n"
         f"<b>After</b>\n{_propfirm['propfirm_name']} | Baseline: <b>${baseline:,.2f}</b>\n\n"
         f"<b>Risk Levels — Prop Account</b>\n"
-        f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
-        f"K2 Overall DD: equity ≤ <b>${floor_amt:,.2f}</b>\n"
-        f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
+        f"K1 Layer 1/{max_layers} — floor: ${baseline - layer_loss:,.2f}  (layer ${layer_loss:,.2f})\n"
+        f"K2 Overall floor: ${overall_fl:,.2f}\n"
+        f"K3 Layer 1 — cap: ${baseline + layer_cap:,.2f}  (layer ${layer_cap:,.2f})\n"
         f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n\n"
         f"<b>Next Step</b>\nSend /phase1 or /phase2 to continue.",
         parse_mode="HTML",
@@ -476,6 +482,8 @@ async def _cmd_setbaseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     with _pf_lock:
         old = _propfirm.get("baseline_equity", 0.0)
         _propfirm["baseline_equity"] = new_baseline
+        _propfirm["k1_layer"] = 0  # reset staircase layers when baseline changes
+        _propfirm["k3_layer"] = 0
         _save_propfirm(_propfirm)
         dd_daily   = _propfirm.get("max_drawdown_daily_pct",  0.0)
         dd_overall = _propfirm.get("max_drawdown_overall_pct", 0.0)
@@ -538,23 +546,28 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     with _pf_lock:
         pf = dict(_propfirm)
-    dd_daily   = pf.get("max_drawdown_daily_pct",  0.0)
-    dd_overall = pf.get("max_drawdown_overall_pct", 0.0)
-    cap        = pf.get("daily_profit_cap_pct",     0.0)
-    target     = pf.get("profit_target_pct",        0.0)
-    floor_amt    = round(baseline * (1.0 - dd_overall / 100.0), 2) if dd_overall > 0 and baseline > 0 else 0.0
-    daily_dd_amt = round(baseline * dd_daily / 100.0, 2)           if dd_daily  > 0 and baseline > 0 else 0.0
-    cap_amt      = round(baseline * cap      / 100.0, 2)           if cap       > 0 and baseline > 0 else 0.0
-    target_lvl   = round(baseline * (1.0 + target / 100.0), 2)    if target    > 0 and baseline > 0 else 0.0
+    dd_daily   = pf.get("max_drawdown_daily_pct",   0.0)
+    dd_overall = pf.get("max_drawdown_overall_pct",  0.0)
+    cap        = pf.get("daily_profit_cap_pct",      0.0)
+    target     = pf.get("profit_target_pct",         0.0)
+    k1_layer   = int(pf.get("k1_layer", 0))
+    k3_layer   = int(pf.get("k3_layer", 0))
+    layer_loss = round(baseline * dd_daily   / 100.0, 2) if dd_daily   > 0 and baseline > 0 else 0.0
+    layer_cap  = round(baseline * cap        / 100.0, 2) if cap        > 0 and baseline > 0 else 0.0
+    overall_fl = round(baseline * (1 - dd_overall / 100.0), 2) if dd_overall > 0 and baseline > 0 else 0.0
+    target_lvl = round(baseline * (1.0 + target / 100.0), 2)   if target    > 0 and baseline > 0 else 0.0
+    max_layers = round(dd_overall / dd_daily) if dd_daily > 0 else 0
+    active_fl  = baseline - (k1_layer + 1) * layer_loss if layer_loss > 0 else 0.0
+    active_cap = baseline + (k3_layer + 1) * layer_cap  if layer_cap  > 0 else 0.0
 
     await update.message.reply_text(
         f"🟢 <b>Phase 1 Active</b>\n\n"
         f"<b>Risk Mode</b>\nPersonal multiplier: ×{PHASE_MULT[1]:.2f}\n"
         f"Baseline: <b>${baseline:,.2f}</b> ({baseline_note})\n\n"
         f"<b>Risk Levels — Prop Account</b>\n"
-        f"K1 Daily DD: −${daily_dd_amt:,.2f} from day-start\n"
-        f"K2 Overall DD: equity ≤ <b>${floor_amt:,.2f}</b>\n"
-        f"K3 Daily Cap: +${cap_amt:,.2f} from day-start\n"
+        f"K1 Layer {k1_layer + 1}/{max_layers} — floor: <b>${active_fl:,.2f}</b>  (layer size: ${layer_loss:,.2f})\n"
+        f"K2 Overall floor: ${overall_fl:,.2f}\n"
+        f"K3 Layer {k3_layer + 1} — cap: <b>${active_cap:,.2f}</b>  (layer size: ${layer_cap:,.2f})\n"
         f"K4 Profit Target: equity ≥ ${target_lvl:,.2f}\n\n"
         f"<b>Next Step</b>\nSend /resume to allow new signals.",
         parse_mode="HTML",
@@ -788,6 +801,8 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
             "baseline_equity":            baseline,
             "day_start_equity":           day_start,
             "day_start_date_utc":         today,
+            "k1_layer":                   0,  # reset staircase layers on new evaluation
+            "k3_layer":                   0,
         })
         # Store raw Phase 2 config for future reference
         _propfirm.setdefault("phase_configs", {})["2"] = {k: new[k] for k in new}
@@ -1214,46 +1229,84 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     with _pf_lock:
         pf = dict(_propfirm)
 
-    baseline   = pf.get("baseline_equity",        0.0)
-    day_start  = pf.get("day_start_equity",        0.0)
-    daily_cap  = pf.get("daily_profit_cap_pct",    0.0)
-    daily_dd   = pf.get("max_drawdown_daily_pct",  0.0)
-    overall_dd = pf.get("max_drawdown_overall_pct",0.0)
-    target_pct = pf.get("profit_target_pct",       0.0)
-    equity     = prop["equity"]
+    baseline    = pf.get("baseline_equity",         0.0)
+    day_start   = pf.get("day_start_equity",         0.0)
+    daily_cap   = pf.get("daily_profit_cap_pct",     0.0)
+    daily_dd    = pf.get("max_drawdown_daily_pct",   0.0)
+    overall_dd  = pf.get("max_drawdown_overall_pct", 0.0)
+    target_pct  = pf.get("profit_target_pct",        0.0)
+    k1_layer    = int(pf.get("k1_layer", 0))
+    k3_layer    = int(pf.get("k3_layer", 0))
+    equity      = prop["equity"]
 
-    daily_pnl   = equity - day_start
-    overall_pnl = equity - baseline
-    cap_lim     = baseline * daily_cap   / 100
-    dd_day_lim  = baseline * daily_dd    / 100
-    dd_all_lim  = baseline * overall_dd  / 100
-    target_lim  = baseline * target_pct  / 100
+    overall_pnl    = equity - baseline
+    daily_pnl      = equity - day_start
+    layer_loss_amt = round(baseline * daily_dd   / 100.0, 2) if daily_dd   > 0 else 0.0
+    layer_cap_amt  = round(baseline * daily_cap  / 100.0, 2) if daily_cap  > 0 else 0.0
+    overall_dd_amt = round(baseline * overall_dd / 100.0, 2) if overall_dd > 0 else 0.0
+    target_amt     = round(baseline * target_pct / 100.0, 2) if target_pct > 0 else 0.0
+    max_loss_layers = round(overall_dd / daily_dd) if daily_dd > 0 else 0
 
-    def _profit_pct(val, lim):
-        return abs(val) / lim * 100 if lim > 0 else 0.0
+    overall_floor   = baseline - overall_dd_amt
+    active_floor    = baseline - (k1_layer + 1) * layer_loss_amt if layer_loss_amt > 0 else 0.0
+    active_ceiling  = baseline + (k3_layer + 1) * layer_cap_amt  if layer_cap_amt  > 0 else 0.0
+    k4_target       = baseline + target_amt
 
-    def _loss_pct(pnl, lim):
-        # Only tracks DD consumed — stays 0% while equity is above the starting point
-        loss = max(0.0, -pnl)
-        return loss / lim * 100 if lim > 0 else 0.0
+    # Layer consumption bars: % consumed within the current active layer band
+    # K1: band from (baseline - k1_layer*layer_amt) down to active_floor
+    k1_prev_floor = baseline - k1_layer * layer_loss_amt
+    k1_consumed   = max(0.0, k1_prev_floor - equity)
+    k1_bar_pct    = k1_consumed / layer_loss_amt * 100 if layer_loss_amt > 0 else 0.0
 
-    await update.message.reply_text(
-        f"📊 <b>P&amp;L Dashboard — Prop Account</b>\n\n"
-        f"Baseline: ${baseline:,.2f}\n"
-        f"Day started: ${day_start:,.2f}\n"
-        f"Now: ${equity:,.2f}\n\n"
-        f"<b>Daily P&amp;L: ${daily_pnl:+,.2f}</b>\n"
-        f"Profit cap: ${cap_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_profit_pct(daily_pnl, cap_lim))}</code>\n"
-        f"DD limit: -${dd_day_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_loss_pct(daily_pnl, dd_day_lim))}</code>\n\n"
-        f"<b>Overall P&amp;L: ${overall_pnl:+,.2f}</b>\n"
-        f"Target: ${target_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_profit_pct(overall_pnl, target_lim))}</code>\n"
-        f"DD limit: -${dd_all_lim:,.2f}\n"
-        f"<code>{_pnl_bar(_loss_pct(overall_pnl, dd_all_lim))}</code>",
-        parse_mode="HTML",
-    )
+    k3_prev_ceil  = baseline + k3_layer * layer_cap_amt
+    k3_consumed   = max(0.0, equity - k3_prev_ceil)
+    k3_bar_pct    = k3_consumed / layer_cap_amt * 100 if layer_cap_amt > 0 else 0.0
+
+    k1_status = "🔴 BREACHED" if equity <= active_floor else "🟢 Active"
+    k3_status = "🔴 BREACHED" if equity >= active_ceiling else "🟢 Active"
+
+    k2_consumed = max(0.0, baseline - equity)
+    k2_bar_pct  = k2_consumed / overall_dd_amt * 100 if overall_dd_amt > 0 else 0.0
+
+    k4_bar_pct  = max(0.0, overall_pnl) / target_amt * 100 if target_amt > 0 else 0.0
+
+    lines = [
+        f"📊 <b>P&amp;L Dashboard — Prop Account</b>\n",
+        f"Baseline: ${baseline:,.2f}",
+        f"Day started: ${day_start:,.2f}",
+        f"Now: ${equity:,.2f}",
+        f"Daily P&amp;L: <b>${daily_pnl:+,.2f}</b>",
+        f"Overall P&amp;L: <b>${overall_pnl:+,.2f}</b>\n",
+    ]
+    if layer_loss_amt > 0 and max_loss_layers > 0:
+        lines += [
+            f"<b>K1 — Loss Layers</b>",
+            f"Layer size: ${layer_loss_amt:,.2f} ({daily_dd:.1f}% of baseline)",
+            f"Active layer: {k1_layer + 1}/{max_loss_layers}  |  {k1_status}",
+            f"Active floor: <b>${active_floor:,.2f}</b>",
+            f"Overall DD floor: ${overall_floor:,.2f}",
+            f"<code>{_pnl_bar(k1_bar_pct)}</code>  {k1_bar_pct:.1f}% toward floor\n",
+        ]
+    if layer_cap_amt > 0:
+        lines += [
+            f"<b>K3 — Profit Cap Layers</b>",
+            f"Layer size: ${layer_cap_amt:,.2f} ({daily_cap:.1f}% of baseline)",
+            f"Active layer: {k3_layer + 1}  |  {k3_status}",
+            f"Active cap: <b>${active_ceiling:,.2f}</b>",
+            f"<code>{_pnl_bar(k3_bar_pct)}</code>  {k3_bar_pct:.1f}% toward cap\n",
+        ]
+    if target_amt > 0:
+        lines += [
+            f"<b>K4 — Profit Target: ${k4_target:,.2f}</b>",
+            f"<code>{_pnl_bar(k4_bar_pct)}</code>  {k4_bar_pct:.1f}%\n",
+        ]
+    if overall_dd_amt > 0:
+        lines += [
+            f"<b>K2 — Overall DD floor: ${overall_floor:,.2f}</b>",
+            f"<code>{_pnl_bar(k2_bar_pct)}</code>  {k2_bar_pct:.1f}% consumed",
+        ]
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
 
 async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:

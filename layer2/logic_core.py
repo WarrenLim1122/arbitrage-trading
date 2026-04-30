@@ -647,67 +647,92 @@ def _run_equity_check() -> None:
         _update_day_start(prop_equity)
         return
 
-    # Kill 1 — daily loss (all phases) — static: % of baseline, not day_start
-    if baseline > 0:
-        dd_daily_pct = pf.get("max_drawdown_daily_pct", 0.0)
-        daily_loss_pct = (day_start - prop_equity) / baseline * 100
-        if dd_daily_pct > 0 and daily_loss_pct >= dd_daily_pct:
+    if baseline <= 0:
+        return
+
+    dd_daily_pct   = pf.get("max_drawdown_daily_pct",   0.0)
+    dd_overall_pct = pf.get("max_drawdown_overall_pct",  0.0)
+    cap_pct        = pf.get("daily_profit_cap_pct",      0.0)
+    k1_layer       = int(pf.get("k1_layer", 0))
+    k3_layer       = int(pf.get("k3_layer", 0))
+
+    layer_loss_amt  = round(baseline * dd_daily_pct  / 100.0, 2) if dd_daily_pct  > 0 else 0.0
+    layer_cap_amt   = round(baseline * cap_pct        / 100.0, 2) if cap_pct        > 0 else 0.0
+    overall_dd_amt  = round(baseline * dd_overall_pct / 100.0, 2) if dd_overall_pct > 0 else 0.0
+    max_loss_layers = round(dd_overall_pct / dd_daily_pct) if dd_daily_pct > 0 else 0
+    overall_floor   = baseline - overall_dd_amt
+
+    # Kill 2 — hard floor safety net (catches equity drops that land below all layers at once)
+    if dd_overall_pct > 0 and prop_equity <= overall_floor:
+        pos_str = _snapshot_positions_str()
+        _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
+        msg = (
+            f"<b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
+            f"Equity: <b>${prop_equity:,.2f}</b>  |  Overall floor: ${overall_floor:,.2f}\n"
+            f"Baseline: ${baseline:,.2f}  |  Overall DD: {dd_overall_pct:.1f}%\n\n"
+            f"<b>Positions closed:</b>\n{pos_str}\n\n"
+            f"All positions force-closed. Prop firm account blown. <b>Permanent halt.</b>\n\n"
+            f"<b>Next steps:</b>\n"
+            f"Buy a new prop firm challenge, then run /changepropfirm → /phase1 → /resume"
+        )
+        logger.warning("KILL2: equity=%.2f floor=%.2f", prop_equity, overall_floor)
+        _alert_sync(msg)
+        return
+
+    # Kill 1 — layered loss floors (all phases)
+    # Floors are fixed from baseline. Day-start equity is NOT used.
+    # Each breach advances the active floor one layer lower until K2 is reached.
+    if layer_loss_amt > 0 and max_loss_layers > 0:
+        active_floor = baseline - (k1_layer + 1) * layer_loss_amt
+        if prop_equity <= active_floor:
+            new_k1_layer = k1_layer + 1
+            with _pf_lock:
+                _propfirm["k1_layer"] = new_k1_layer
+                _save_propfirm(_propfirm)
             pos_str = _snapshot_positions_str()
+            next_floor = baseline - (new_k1_layer + 1) * layer_loss_amt
             _dispatch_force_close("daily_loss_limit", halt=True)
             msg = (
-                f"<b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
-                f"Daily loss: <b>{daily_loss_pct:.1f}%</b> ≥ {dd_daily_pct:.1f}% of baseline\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Day-start: ${day_start:,.2f}\n\n"
+                f"<b>KILL 1 — Loss Layer {new_k1_layer}/{max_loss_layers} Broken</b>\n\n"
+                f"Active floor ${active_floor:,.2f} breached.\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Baseline: ${baseline:,.2f}\n\n"
+                f"<b>New active floor: ${next_floor:,.2f}</b> (Layer {new_k1_layer + 1}/{max_loss_layers})\n"
+                f"Overall DD floor: ${overall_floor:,.2f}\n\n"
                 f"<b>Positions closed:</b>\n{pos_str}\n\n"
                 f"All positions force-closed. System halted.\n\n"
                 f"<b>Next steps:</b>\n"
-                f"/resume — resume trading tomorrow\n"
+                f"/resume — resume trading (new floor is now active)\n"
                 f"/changepropfirm — switch to a new prop firm account"
             )
-            logger.warning(msg)
+            logger.warning("KILL1: equity=%.2f floor=%.2f layer=%d/%d",
+                           prop_equity, active_floor, new_k1_layer, max_loss_layers)
             _alert_sync(msg)
             return
 
-    # Kill 2 — overall drawdown (all phases) — exact user-input threshold, no buffer
-    # Prop firm closes account at this exact %. Personal positions become unhedged → close both + permanent halt.
-    if baseline > 0:
-        overall_dd_limit = pf.get("max_drawdown_overall_pct", 0.0)
-        if overall_dd_limit > 0:
-            overall_loss_pct = (baseline - prop_equity) / baseline * 100
-            if overall_loss_pct >= overall_dd_limit:
-                floor = round(baseline * (1.0 - overall_dd_limit / 100.0), 2)
-                pos_str = _snapshot_positions_str()
-                _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
-                msg = (
-                    f"<b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
-                    f"Overall loss: <b>{overall_loss_pct:.1f}%</b> ≥ {overall_dd_limit:.1f}%\n"
-                    f"Baseline: ${baseline:,.2f}  |  Floor: ${floor:,.2f}  |  Equity: <b>${prop_equity:,.2f}</b>\n\n"
-                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
-                    f"All positions force-closed. Prop firm account blown. <b>Permanent halt.</b>\n\n"
-                    f"<b>Next steps:</b>\n"
-                    f"Buy a new prop firm challenge, then run /changepropfirm → /phase1 → /resume"
-                )
-                logger.warning(msg)
-                _alert_sync(msg)
-                return
-
-    # Kill 3 — daily profit cap (all phases) — static: % of baseline, not day_start
-    if baseline > 0:
-        cap = pf.get("daily_profit_cap_pct", 0.0)
-        daily_profit_pct = (prop_equity - day_start) / baseline * 100
-        if cap > 0 and daily_profit_pct >= cap:
+    # Kill 3 — layered profit ceilings (all phases)
+    # Ceilings are fixed from baseline. Day-start equity is NOT used.
+    if layer_cap_amt > 0:
+        active_ceiling = baseline + (k3_layer + 1) * layer_cap_amt
+        if prop_equity >= active_ceiling:
+            new_k3_layer = k3_layer + 1
+            with _pf_lock:
+                _propfirm["k3_layer"] = new_k3_layer
+                _save_propfirm(_propfirm)
             pos_str = _snapshot_positions_str()
+            next_ceiling = baseline + (new_k3_layer + 1) * layer_cap_amt
             _dispatch_force_close("daily_profit_cap", halt=True)
             msg = (
-                f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
-                f"Daily profit: <b>{daily_profit_pct:.1f}%</b> ≥ {cap:.1f}% of baseline\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Day-start: ${day_start:,.2f}\n\n"
+                f"<b>KILL 3 — Profit Layer {new_k3_layer} Cap Hit</b>\n\n"
+                f"Active cap ${active_ceiling:,.2f} reached.\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Baseline: ${baseline:,.2f}\n\n"
+                f"<b>Next cap: ${next_ceiling:,.2f}</b> (Layer {new_k3_layer + 1})\n\n"
                 f"<b>Positions closed:</b>\n{pos_str}\n\n"
-                f"All positions force-closed. Daily cap enforced.\n\n"
+                f"All positions force-closed. Profit cap enforced.\n\n"
                 f"<b>Next steps:</b>\n"
-                f"/resume — resume trading tomorrow"
+                f"/resume — resume trading (next cap layer is now active)"
             )
-            logger.warning(msg)
+            logger.warning("KILL3: equity=%.2f cap=%.2f layer=%d",
+                           prop_equity, active_ceiling, new_k3_layer)
             _alert_sync(msg)
             return
 
