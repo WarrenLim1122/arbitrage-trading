@@ -98,10 +98,11 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 | K2 — Overall loss | `(baseline − equity) / baseline × 100 ≥ max_drawdown_overall_pct` | Fixed floor, e.g. $94,000 if DD=6% |
 | K3 — Daily profit cap | `(equity − day_start) / baseline × 100 ≥ daily_profit_cap_pct` | Always +$2,500 if cap=2.5% and baseline=$100k |
 | K4 — Profit target | `equity ≥ baseline × (1 + profit_target_pct / 100)` | Fixed ceiling |
-| K5 — Consistency | largest day / total profit < consistency_threshold_pct (Phase 2 only) | e.g. largest day < 29% of total |
+| K5 — Consistency | largest day / total profit < consistency_threshold_pct (Phase 2 only) | e.g. firm says 30% → stored as 29% → fires when largest day < 29% |
 
 `daily_profit_cap_pct` is auto-set to `profit_target_pct × 0.25` (25% of target, enforcing before the 30% consistency threshold).
 `max_drawdown_daily_pct` enforced after −1pp buffer (e.g. firm says 3% → bot triggers at 2%).
+`consistency_threshold_pct` also buffered −1pp automatically (e.g. firm says 30% → enter 30 → stored/enforced at 29%).
 `/phase1` is idempotent — re-running it mid-evaluation does NOT overwrite an existing baseline.
 
 ---
@@ -126,6 +127,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 - **Close detection buffer**: when one leg of a hedge closes before the other (e.g. personal SL hits one poll before prop TP), the close is held in `_pending_closes` for up to 30 s. A single combined alert fires only after both legs confirm closed or the buffer expires. This prevents duplicate split alerts and false orphan force-closes.
 - **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
+- **News suppression clear notification**: when a news suppression window expires, a grouped 🔴→🟢 Telegram alert fires (listing all pairs cleared at once) before dispatching `NEWS_CLEAR` to Layer 3. `/news` shows 🟠 per event; `/blackboard` shows 🔴 per suppressed pair.
 
 ---
 
@@ -135,6 +137,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - Lot sizing uses `baseline_equity × 0.67%` — never live equity.
 - Personal lots = `prop_lots × phase_ratio`. Never compute from a separate dollar risk formula.
 - Prop firm config: wizard-only (`/changepropfirm`). Never edit `propfirm_config.json` manually.
+- **`baseline_equity` is immutable** — only written by explicit user commands: `/changepropfirm` wizard (Step 10/10), `/setbaseline <amount>`, `/phase1` (only when baseline is 0), `/phase2` wizard. `_update_day_start()` NEVER touches it — only `day_start_equity` and `day_start_date_utc`. Nothing automatic can overwrite it.
 - Phase switching: Telegram-only (`/phase1`, `/phase2`).
 - ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open between VPS #1 and VPS #2/#3.
 - TradingView Premium required for webhook delivery.
@@ -143,19 +146,31 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 ---
 
-## Current State (as of 2026-04-30)
+## Current State (as of 2026-04-30, session 2)
 
 All four layers deployed and operational. Gate D demo run in progress. Target go-live ~2026-05-03.
 
 - Layer 0: 8 alerts active. `in_trade` gate live. **Signal engine is frozen — do not touch.**
 - Layer 1: Live. News filter active. Stale-cache fallback on FF calendar failure deployed.
 - Layer 2: Full feature set deployed:
-  - Kill 1/2/3 use static `baseline_equity` divisor (not day-start or live equity)
+  - Kill 1/2/3/4/5 use static `baseline_equity` divisor — all thresholds are fixed dollar amounts
+  - K1 layered floors from baseline (staircase). K2 hard floor safety net. K3 daily cap from day_start. K4 cumulative profit target. K5 consistency (Phase 2 only).
   - `/phase1` is idempotent — will not overwrite an existing baseline mid-evaluation
   - 30 s close-detection buffer prevents duplicate split alerts and false orphan closes
   - Dynamic trading window: `config/trading_window.json` + `/setwindow` Telegram command
   - `trade_allowed` monitoring + 5 s position verification
-  - Telegram message style refactor in progress (session ended mid-task)
+  - News suppression clear notification: grouped 🔴→🟢 Telegram alert on window expiry
+  - `/news` shows 🟠 per event; `/blackboard` shows 🔴 per pair, 🟢 when clear
+  - `/changepropfirm` wizard buffer rules explicit in each step prompt:
+    - Step 3/10 (Overall DD): NO auto-buffer — enter firm's exact stated limit
+    - Step 4/10 (Daily DD): system subtracts −1pp — enter firm's raw stated value
+    - Step 9/10 (Consistency): system subtracts −1pp — enter firm's raw stated value
+  - `_apply_buffers()` now buffers all three: daily DD, consistency (both −1pp), daily cap (25% of target)
+  - `phase_configs["1"]` stores raw wizard values; `_propfirm` stores buffered effective values — no double-buffer on Phase 2
+  - All hardcoded `29.0` consistency defaults removed — fully dynamic from wizard input
+  - `/setbaseline <amount>` command for correcting baseline without re-running wizard
 - Layer 3: Both workers running (VPS #2 prop account 5049711515, VPS #3 personal account 106260846, both MetaQuotes demo).
 
-**Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations. Complete Telegram message style refactor (65-template spec provided by Warren — `logic_core.py` and `telegram_handlers.py`).
+**⚠️ Action required**: Run `/setbaseline 100000` on Telegram if `baseline_equity` in `/pnl` still shows $105,637 — the old wizard set it from live MT5 equity. The new wizard (Step 10/10) asks for the initial balance explicitly.
+
+**Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations.
