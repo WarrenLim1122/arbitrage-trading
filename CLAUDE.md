@@ -69,9 +69,9 @@ Telegram Bot API ←→ layer2/logic_core.py
 
 | Layer | Files | Status |
 |---|---|---|
-| 0 — Signal Engine | `layer0/signal_engine.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27 |
-| 1 — Gatekeeper | `layer1/main.py`, `layer1/news_filter.py` | ✅ LIVE — systemd on VPS #1 |
-| 2 — Logic Core | `layer2/logic_core.py` | ✅ LIVE — `trade_allowed` monitoring + 5s verification deployed 2026-04-27 |
+| 0 — Signal Engine | `layer0/signal_engine.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
+| 1 — Gatekeeper | `layer1/main.py`, `layer1/news_filter.py`, `layer1/ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
+| 2 — Logic Core | `layer2/logic_core.py`, `layer2/telegram_handlers.py`, `layer2/state.py` | ✅ LIVE — all features below deployed 2026-04-30 |
 | 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — PowerShell on VPS #2 + #3 |
 
 **Current phase**: Gate D — 7-day demo run started 2026-04-25. Target go-live: ~2026-05-03.
@@ -88,6 +88,34 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ---
 
+## Kill Condition Math (static baseline — critical to understand)
+
+All kill thresholds are calculated against `baseline_equity` (the locked starting balance), never against live equity or day-start equity. This means every % threshold converts to a fixed dollar amount for the entire evaluation.
+
+| Kill | Trigger condition | Formula |
+|---|---|---|
+| K1 — Daily loss | `(day_start − equity) / baseline × 100 ≥ max_drawdown_daily_pct` | Always −$2,000 if DD=2% and baseline=$100k |
+| K2 — Overall loss | `(baseline − equity) / baseline × 100 ≥ max_drawdown_overall_pct` | Fixed floor, e.g. $94,000 if DD=6% |
+| K3 — Daily profit cap | `(equity − day_start) / baseline × 100 ≥ daily_profit_cap_pct` | Always +$2,500 if cap=2.5% and baseline=$100k |
+| K4 — Profit target | `equity ≥ baseline × (1 + profit_target_pct / 100)` | Fixed ceiling |
+| K5 — Consistency | largest day / total profit < consistency_threshold_pct (Phase 2 only) | e.g. largest day < 29% of total |
+
+`daily_profit_cap_pct` is auto-set to `profit_target_pct × 0.25` (25% of target, enforcing before the 30% consistency threshold).
+`max_drawdown_daily_pct` enforced after −1pp buffer (e.g. firm says 3% → bot triggers at 2%).
+`/phase1` is idempotent — re-running it mid-evaluation does NOT overwrite an existing baseline.
+
+---
+
+## Trading Window
+
+- Stored in `config/trading_window.json` — `current_window` (start/end HH:MM SGT) and `next_window` (optional, applied at 11:00 SGT session rollover).
+- Default: 12:00–00:00 SGT weekdays. `00:00` end = midnight (treated as 1440 minutes internally).
+- Change via `/setwindow HH:MM HH:MM` Telegram command — choose "today" (immediate) or "tomorrow" (next rollover).
+- `_is_sgt_curfew()` reads from `_trading_window` dict dynamically — no restart needed after `/setwindow`.
+- Weekends always curfew regardless of window setting.
+
+---
+
 ## Known MT5 Gotchas (operational — read before touching Layer 3)
 
 - **"Disable algorithmic trading when the account has been changed"** (MT5 → Tools → Options → Expert Advisors) must be **unchecked** on both VPS #2 and VPS #3. If checked, MT5 silently disables algo trading after any account change — orders are rejected with no error in Layer 3. Root cause of the 2026-04-24 NZDUSD silent failure. Uncheck once; it persists.
@@ -95,6 +123,9 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 - **5-second position verification**: after every signal dispatch, Layer 2 waits 5s, queries actual positions from both workers, and sends "Trade Confirmed ✅✅" or "⚠️ EXECUTION FAILURE ❌" with the exact error. No more silent failures.
 - **XAGUSD lot sizing**: use `trade_tick_size` (0.0001), NOT `point` (0.001). Using `point` inflates lots 10×. Fixed 2026-04-22.
 - **MetaTrader5 import on Linux = instant crash.** Layers 1 and 2 must never import it.
+
+- **Close detection buffer**: when one leg of a hedge closes before the other (e.g. personal SL hits one poll before prop TP), the close is held in `_pending_closes` for up to 30 s. A single combined alert fires only after both legs confirm closed or the buffer expires. This prevents duplicate split alerts and false orphan force-closes.
+- **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
 
 ---
 
@@ -112,13 +143,19 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ---
 
-## Current State (as of 2026-04-27)
+## Current State (as of 2026-04-30)
 
-All four layers deployed and operational. Gate D demo run in progress.
+All four layers deployed and operational. Gate D demo run in progress. Target go-live ~2026-05-03.
 
-- Layer 0: 8 alerts active. `in_trade` gate live on all charts — no double entries.
-- Layer 1: Live, news filter active, SGT curfew rejections working.
-- Layer 2: `trade_allowed` monitoring + 5-second position verification deployed.
+- Layer 0: 8 alerts active. `in_trade` gate live. **Signal engine is frozen — do not touch.**
+- Layer 1: Live. News filter active. Stale-cache fallback on FF calendar failure deployed.
+- Layer 2: Full feature set deployed:
+  - Kill 1/2/3 use static `baseline_equity` divisor (not day-start or live equity)
+  - `/phase1` is idempotent — will not overwrite an existing baseline mid-evaluation
+  - 30 s close-detection buffer prevents duplicate split alerts and false orphan closes
+  - Dynamic trading window: `config/trading_window.json` + `/setwindow` Telegram command
+  - `trade_allowed` monitoring + 5 s position verification
+  - Telegram message style refactor in progress (session ended mid-task)
 - Layer 3: Both workers running (VPS #2 prop account 5049711515, VPS #3 personal account 106260846, both MetaQuotes demo).
 
-**Next action**: Wait for signals during trading hours (12:00–00:00 SGT, weekdays). On each signal, check Telegram for "Trade Confirmed ✅✅". Tick off Gate D checklist items as they occur. Go live ~2026-05-03.
+**Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations. Complete Telegram message style refactor (65-template spec provided by Warren — `logic_core.py` and `telegram_handlers.py`).
