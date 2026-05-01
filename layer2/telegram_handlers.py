@@ -1957,15 +1957,6 @@ async def _cmd_checkaccount(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
-# ── /accounthelp ─────────────────────────────────────────────────────────
-
-async def _cmd_accounthelp(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _auth(update):
-        return
-    await update.message.reply_text(_changeaccount_text_personal(), parse_mode="HTML")
-    await update.message.reply_text(_changeaccount_text_prop(), parse_mode="HTML")
-
-
 # ── /update ───────────────────────────────────────────────────────────────
 
 def _update_menu_text() -> str:
@@ -1975,7 +1966,8 @@ def _update_menu_text() -> str:
         "/update local — Push local code to GitHub\n"
         "/update layer2 — Deploy latest code to VPS #1\n"
         "/update personal — Update Personal worker\n"
-        "/update prop — Update Prop worker"
+        "/update prop — Update Prop worker\n"
+        "/update account — MT5 account change checklist"
     )
 
 
@@ -2089,6 +2081,10 @@ async def _cmd_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         text = _update_personal_text()
     elif arg == "prop":
         text = _update_prop_text()
+    elif arg == "account":
+        await update.message.reply_text(_changeaccount_text_personal(), parse_mode="HTML")
+        await update.message.reply_text(_changeaccount_text_prop(), parse_mode="HTML")
+        return
     else:
         text = _update_menu_text()
     await update.message.reply_text(text, parse_mode="HTML")
@@ -2130,7 +2126,6 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/changepropfirm — Update account setup\n"
         "/changeaccount — Change MT5 account credentials\n"
         "/checkaccount — Show connected MT5 account\n"
-        "/accounthelp — MT5 account change checklist\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel active wizard\n\n"
 
@@ -2238,7 +2233,6 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
     tg_app.add_handler(CommandHandler("consistency",    _cmd_consistency))
     tg_app.add_handler(CommandHandler("checkaccount",  _cmd_checkaccount))
-    tg_app.add_handler(CommandHandler("accounthelp",   _cmd_accounthelp))
     tg_app.add_handler(CommandHandler("update",        _cmd_update))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
     tg_app.add_handler(CommandHandler("setwindow",     _cmd_setwindow))
