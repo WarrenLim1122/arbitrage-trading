@@ -62,7 +62,6 @@ logger = logging.getLogger("layer2")
 EMERGENCY_CONFIRM    = 16
 CLOSEPAIR_CONFIRM    = 17
 SETWINDOW_CONFIRM    = 18
-CHANGEACCOUNT_CHOOSE = 19
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
@@ -1878,43 +1877,6 @@ def _changeaccount_text_prop() -> str:
     )
 
 
-async def _cmd_changeaccount(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    if not _auth(update):
-        return ConversationHandler.END
-    await update.message.reply_text(
-        "🔧 <b>Change MT5 Account</b>\n\n"
-        "Which account do you want to change?\n\n"
-        "1 — Personal Signal\n"
-        "2 — Prop Hedge",
-        parse_mode="HTML",
-    )
-    return CHANGEACCOUNT_CHOOSE
-
-
-async def _changeaccount_choose(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    if not _auth(update):
-        return ConversationHandler.END
-    choice = update.message.text.strip()
-    if choice == "1":
-        await update.message.reply_text(_changeaccount_text_personal(), parse_mode="HTML")
-        return ConversationHandler.END
-    if choice == "2":
-        await update.message.reply_text(_changeaccount_text_prop(), parse_mode="HTML")
-        return ConversationHandler.END
-    await update.message.reply_text(
-        "⚠️ Send <code>1</code> for Personal Signal or <code>2</code> for Prop Hedge.",
-        parse_mode="HTML",
-    )
-    return CHANGEACCOUNT_CHOOSE
-
-
-async def _changeaccount_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    if not _auth(update):
-        return ConversationHandler.END
-    await update.message.reply_text("Cancelled.", parse_mode="HTML")
-    return ConversationHandler.END
-
-
 # ── /checkaccount ─────────────────────────────────────────────────────────
 
 async def _cmd_checkaccount(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2124,7 +2086,6 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Configuration</b>\n"
         "/propfirm — Show prop account rules\n"
         "/changepropfirm — Update account setup\n"
-        "/changeaccount — Change MT5 account credentials\n"
         "/checkaccount — Show connected MT5 account\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel active wizard\n\n"
@@ -2200,22 +2161,12 @@ def _run_bot() -> None:
         per_chat=True,
     )
 
-    changeaccount_wizard = ConversationHandler(
-        entry_points=[CommandHandler("changeaccount", _cmd_changeaccount)],
-        states={
-            CHANGEACCOUNT_CHOOSE: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _changeaccount_choose)],
-        },
-        fallbacks=[CommandHandler("cancel", _changeaccount_cancel)],
-        per_chat=True,
-    )
-
     tg_app = Application.builder().token(BOT_TOKEN).build()
     tg_app.add_handler(wizard)
     tg_app.add_handler(p2_wizard)
     tg_app.add_handler(emergency_wizard)
     tg_app.add_handler(closepair_wizard)
     tg_app.add_handler(setwindow_wizard)
-    tg_app.add_handler(changeaccount_wizard)
     tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
