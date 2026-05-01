@@ -144,8 +144,8 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - Lot sizing uses `baseline_equity × 0.67%` — never live equity.
 - Personal lots = `prop_lots × phase_ratio`. Never compute from a separate dollar risk formula.
 - Prop firm config: wizard-only (`/changepropfirm`). Never edit `propfirm_config.json` manually.
-- **`baseline_equity` is immutable** — only written by explicit user commands: `/changepropfirm` wizard (Step 10/10), `/phase1` (only when baseline is 0), `/phase2` wizard. `_update_day_start()` NEVER touches it — only `day_start_equity` and `day_start_date_utc`. Nothing automatic can overwrite it. `/setbaseline` command does NOT exist — was removed; re-run wizard Step 10/10 to correct baseline.
-- **`pers_baseline_equity` is manual-only** — only written by `/setpersonalbaseline <amount>`. `_update_pers_day_start()` only writes `pers_day_start_equity`. Never auto-set from live MT5 balance.
+- **`baseline_equity` is immutable** — only written by explicit user commands: `/changepropfirm` wizard (Step 9/10), `/phase1` (only when baseline is 0), `/phase2` wizard. `_update_day_start()` NEVER touches it — only `day_start_equity` and `day_start_date_utc`. Nothing automatic can overwrite it. `/setbaseline` command does NOT exist — was removed; re-run wizard Step 9/10 to correct prop baseline.
+- **`pers_baseline_equity` is manual-only** — only written by `/changepropfirm` wizard (Step 10/10), `/phase2` wizard, or `/setpersonalbaseline <amount>`. `_update_pers_day_start()` only writes `pers_day_start_equity`. Never auto-set from live MT5 balance.
 - Phase switching: Telegram-only (`/phase1`, `/phase2`).
 - ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open between VPS #1 and VPS #2/#3.
 - TradingView Premium required for webhook delivery.
@@ -165,26 +165,27 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - K1 layered floors from baseline (staircase). K2 hard floor safety net. K3 daily cap from day_start. K4 cumulative profit target. K5 consistency (Phase 2 only).
   - `/phase1` is idempotent — will not overwrite an existing baseline mid-evaluation
   - 120 s close-detection buffer and 120 s mismatch grace — prevents split alerts and false CRITICAL MISMATCH when legs close ~2 min apart
-  - Position Closed alert: title = 🟢 Take Profit / 🔴 Stop Loss based on Personal P&L; sections: Personal Signal (VPS #2), Prop Hedge (VPS #3), After Close, Equity
-  - Trade Opened alert: "✅ Trade Opened" on success, "⚠️ Execution Issue" on failure; sections: Personal Signal (VPS #2), Prop Hedge (VPS #3), Context
-  - `/equity`: Floating P&L row added (from `acct.profit`); Balance label removed; Personal (VPS #2) shown first, Prop (VPS #3) second; Today/Overall P&L per account
-  - `/baseline`: new command — shows live MT5 balance + overall P&L for both accounts
-  - `/setpersonalbaseline <amount>`: only way to set `pers_baseline_equity` — never auto-set
+  - All Telegram alerts use "Personal Signal" and "Prop Hedge" labels — no VPS numbers in user-facing output. Personal Signal always listed first.
+  - Position Closed alert: title = 🟢 Take Profit / 🔴 Stop Loss based on Personal P&L; sections: Personal Signal, Prop Hedge, After Close, Equity
+  - Trade Opened alert: "✅ Trade Opened" on success, "⚠️ Execution Issue" on failure; sections: Personal Signal, Prop Hedge, Context
+  - `/equity`: Floating P&L row added (from `acct.profit`); Personal Signal shown first, Prop Hedge second
+  - `/baseline`: shows live MT5 balance + overall P&L for both accounts
+  - `/setpersonalbaseline <amount>`: sets `pers_baseline_equity` — also set by `/changepropfirm` Step 10/10 and `/phase2` wizard
   - Dynamic trading window: `config/trading_window.json` + `/setwindow` Telegram command. Currently set to 12:00–00:00 SGT.
   - `trade_allowed` monitoring + 5 s position verification
   - News suppression clear notification: grouped 🔴→🟢 Telegram alert on window expiry
   - `/news` shows 🟠 per event; `/blackboard` shows 🔴 per pair, 🟢 when clear
-  - `/changepropfirm` wizard (10 steps, `/back` supported): buffer rules explicit in each prompt:
-    - Step 3/10 (Overall DD): NO auto-buffer — enter firm's exact stated limit
-    - Step 4/10 (Daily DD): system subtracts −1pp — enter firm's raw stated value
-    - Step 9/10 (Consistency): system subtracts −1pp — enter firm's raw stated value
+  - `/changepropfirm` wizard (10 steps, `/back` supported): no firm name step; collects prop baseline (Step 9) and personal baseline (Step 10). Buffer rules:
+    - Step 2/10 (Overall DD): NO auto-buffer — enter firm's exact stated limit
+    - Step 3/10 (Daily DD): system subtracts −1pp — enter firm's raw stated value
+    - Step 8/10 (Consistency): system subtracts −1pp — enter firm's raw stated value
   - `_apply_buffers()` buffers all three: daily DD, consistency (both −1pp), daily cap (25% of target)
   - `phase_configs["1"]` stores raw wizard values; `_propfirm` stores buffered effective values — no double-buffer on Phase 2
   - All hardcoded `29.0` consistency defaults removed — fully dynamic from wizard input
   - `/cancel` outside a wizard replies "No active wizard to cancel." (no silent failure)
   - All SL/TP/entry prices in Telegram alerts use `_fmt_price(symbol, price)` — no more float artifacts
   - `_window_minutes` fixed: `00:00` as start = 0 min, as end = 1440 min (24h window now works correctly)
-  - `/setbaseline` command removed — use `/changepropfirm` Step 10/10 to set prop baseline
+  - `/setbaseline` command removed — use `/changepropfirm` Step 9/10 to set prop baseline
 - Layer 3: Both workers running (VPS #2 personal account 106497299 on 139.180.136.233, VPS #3 prop account 106496748 on 45.76.156.55, both MetaQuotes demo). Hard-coded `h < 12` curfew removed 2026-05-01 — Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`. Equity replies include `profit` (floating P&L) field.
 
 **Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations.
