@@ -97,10 +97,10 @@ _news_closed_events: set[tuple[str, str]] = set()
 _prev_prop_pos: dict[tuple[str, int], dict] = {}
 _prev_pers_pos: dict[tuple[str, int], dict] = {}
 _pos_tracking_initialized: bool = False
-# Buffer: when one side closes before the other, wait up to 30s before alerting.
+# Buffer: when one side closes before the other, wait up to 120s before alerting.
 # Prevents duplicate split alerts and false orphan force-closes.
 _pending_closes: dict[str, dict] = {}  # symbol → {pers_data, prop_data, first_seen}
-_CLOSE_WAIT_SECONDS = 30
+_CLOSE_WAIT_SECONDS = 120
 
 # ── Known open positions (registered on confirmed signal dispatch) ─────────
 # Source of truth for what the bot opened — used to suppress false mismatch alerts
@@ -111,7 +111,7 @@ _known_pos_lock = threading.Lock()
 
 def _handle_mismatch(ticker: str, mismatch_type: str,
                      prop_dir: int | None, pers_dir: int | None) -> None:
-    """Close the orphaned position and alert Telegram. Called after 30 s grace period."""
+    """Close the orphaned position and alert Telegram. Called after 120 s grace period."""
     _dir = {0: "LONG", 1: "SHORT"}
     if mismatch_type == "prop_only":
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "orphan_mismatch")
@@ -143,7 +143,7 @@ def _handle_mismatch(ticker: str, mismatch_type: str,
 
 
 def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) -> None:
-    """Compare open positions on both accounts. Act on any mismatch persisting ≥ 30 s.
+    """Compare open positions on both accounts. Act on any mismatch persisting ≥ 120 s.
 
     Correct state: every ticker on prop has the OPPOSITE direction on personal.
     Mismatch types:
@@ -152,7 +152,7 @@ def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) 
       same_direction — both accounts have same direction (hedge broken)
     """
     now   = datetime.now(timezone.utc)
-    grace = 30  # seconds
+    grace = 120  # seconds — must be ≥ _CLOSE_WAIT_SECONDS to avoid false force-closes
 
     prop_map: dict[str, int] = {p["symbol"]: p["type"] for p in prop_positions}
     pers_map: dict[str, int] = {p["symbol"]: p["type"] for p in pers_positions}
@@ -203,10 +203,10 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
 
     When one side closes before the other (e.g. personal SL hits one poll cycle
     before prop TP), the close is held in _pending_closes for up to
-    _CLOSE_WAIT_SECONDS.  A single combined alert fires only after both legs
-    confirm closed, or after the wait window expires.  This prevents the
+    _CLOSE_WAIT_SECONDS (120 s).  A single combined alert fires only after both
+    legs confirm closed, or after the wait window expires.  This prevents the
     duplicate split-messages and false orphan force-closes seen when both legs
-    of a hedge close within seconds of each other across a poll boundary.
+    of a hedge close within minutes of each other.
     """
     global _prev_prop_pos, _prev_pers_pos, _pos_tracking_initialized, _pending_closes
 
