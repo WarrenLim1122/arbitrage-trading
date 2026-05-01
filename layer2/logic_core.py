@@ -935,33 +935,43 @@ async def _verify_and_notify(
 
     pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
     prop_arrow = "↑ LONG" if prop_signal == "LONG" else "↓ SHORT"
-    ps = "✅" if pers_ok else "❌"
-    rs = "✅" if prop_ok else "❌"
+    both_ok    = prop_ok and pers_ok
 
-    title = f"Trade Confirmed — {ticker}" if (prop_ok and pers_ok) else f"⚠️ EXECUTION FAILURE — {ticker}"
+    def _fmt(p: float) -> str:
+        return f"{p:.{price_digits}f}"
 
-    msg = (
-        f"<b>{title}</b>\n\n"
-        f"<b>Personal (signal):</b> {ps} {pers_arrow}  {pers_lots:.2f} lots\n"
-        f"Entry: {entry:.{price_digits}f}  SL: {pers_sl:.{price_digits}f}  TP: {pers_tp:.{price_digits}f}\n"
-        f"Risk: ${pers_dollar_risk:,.2f}"
-    )
-    if not pers_ok and pers_err:
-        msg += f"\n<i>{pers_err}</i>"
-
-    msg += (
-        f"\n\n<b>Prop (inverse):</b> {rs} {prop_arrow}  {prop_lots:.2f} lots\n"
-        f"Entry: {entry:.{price_digits}f}  SL: {prop_sl:.{price_digits}f}  TP: {prop_tp:.{price_digits}f}\n"
-        f"Risk: ${prop_dollar_risk:,.2f}"
-    )
-    if not prop_ok and prop_err:
-        msg += f"\n<i>{prop_err}</i>"
-
-    msg += f"\n\nPhase {phase}  |  Baseline: ${baseline_equity:,.2f}"
-
-    if not prop_ok or not pers_ok:
-        msg += "\n\n⚠️ <b>ACTION REQUIRED:</b> Check the failed account immediately.\nCheck VPS logs — MT5 algo trading may be disabled."
+    if both_ok:
+        msg = (
+            f"✅ <b>Trade Opened — {ticker}</b>\n\n"
+            f"<b>Personal Signal</b>\n"
+            f"{pers_arrow} · {pers_lots:.2f} lots\n"
+            f"Entry {_fmt(entry)} | SL {_fmt(pers_sl)} | TP {_fmt(pers_tp)}\n"
+            f"Risk: <b>${pers_dollar_risk:,.2f}</b>\n\n"
+            f"<b>Prop Hedge</b>\n"
+            f"{prop_arrow} · {prop_lots:.2f} lots\n"
+            f"Entry {_fmt(entry)} | SL {_fmt(prop_sl)} | TP {_fmt(prop_tp)}\n"
+            f"Risk: <b>${prop_dollar_risk:,.2f}</b>\n\n"
+            f"<b>Context</b>\n"
+            f"Phase {phase} · Baseline ${baseline_equity:,.2f}"
+        )
     else:
+        pers_status = "✅ Confirmed" if pers_ok else "❌ Failed"
+        prop_status = "✅ Confirmed" if prop_ok else "❌ Failed"
+        msg = (
+            f"⚠️ <b>Execution Issue — {ticker}</b>\n\n"
+            f"<b>Personal Signal</b>\n"
+            f"Status: {pers_status}\n"
+            f"{pers_arrow} · {pers_lots:.2f} lots\n"
+            f"Error: {pers_err if pers_err else '—'}\n\n"
+            f"<b>Prop Hedge</b>\n"
+            f"Status: {prop_status}\n"
+            f"{prop_arrow} · {prop_lots:.2f} lots\n"
+            f"Error: {prop_err if prop_err else '—'}\n\n"
+            f"<b>Action Required</b>\n"
+            f"Check MT5 and VPS logs immediately."
+        )
+
+    if both_ok:
         # Both legs confirmed open — register as a known position so the close
         # detector and mismatch checker have a source of truth.
         with _known_pos_lock:
