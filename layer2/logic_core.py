@@ -579,12 +579,10 @@ def _run_equity_check() -> None:
             )
         return
 
-    pers_equity_live:  float | None = None
-    pers_balance_live: float | None = None
+    pers_equity_live: float | None = None
     try:
         _pers_result = _query_equity(ZMQ_REQ_PERS, "")
-        pers_equity_live  = _pers_result["equity"]
-        pers_balance_live = _pers_result["balance"]
+        pers_equity_live = _pers_result["equity"]
         if _pers_down:
             _pers_down = False
             _pers_fail_count = 0
@@ -661,8 +659,8 @@ def _run_equity_check() -> None:
             day_profit = prop_equity - pf.get("day_start_equity", prop_equity)
             _record_day_profit(stored_date, day_profit)
         _update_day_start(prop_equity)
-        if pers_equity_live is not None and pers_balance_live is not None:
-            _update_pers_day_start(pers_equity_live, pers_balance_live)
+        if pers_equity_live is not None:
+            _update_pers_day_start(pers_equity_live)
         return
 
     day_start = pf.get("day_start_equity", 0.0)
@@ -670,12 +668,12 @@ def _run_equity_check() -> None:
 
     if day_start == 0.0:
         _update_day_start(prop_equity)
-        if pers_equity_live is not None and pers_balance_live is not None:
-            _update_pers_day_start(pers_equity_live, pers_balance_live)
+        if pers_equity_live is not None:
+            _update_pers_day_start(pers_equity_live)
         return
 
-    if pf.get("pers_day_start_equity", 0.0) == 0.0 and pers_equity_live is not None and pers_balance_live is not None:
-        _update_pers_day_start(pers_equity_live, pers_balance_live)
+    if pf.get("pers_day_start_equity", 0.0) == 0.0 and pers_equity_live is not None:
+        _update_pers_day_start(pers_equity_live)
 
     if baseline <= 0:
         return

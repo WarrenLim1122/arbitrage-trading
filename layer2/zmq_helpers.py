@@ -208,16 +208,21 @@ def _update_day_start(equity: float) -> None:
     logger.info("Day-start equity set to %.2f", equity)
 
 
-def _update_pers_day_start(equity: float, balance: float) -> None:
-    """Reset personal day-start equity. Also locks pers_baseline_equity from MT5 balance
-    on first call (when it is currently 0) — mirrors how /phase1 works for prop."""
+def _update_pers_day_start(equity: float) -> None:
+    """Reset personal day-start equity at the daily 11:00 SGT rollover.
+    Never touches pers_baseline_equity — that is set only via /setpersonalbaseline."""
     with _pf_lock:
         _propfirm["pers_day_start_equity"] = equity
-        if _propfirm.get("pers_baseline_equity", 0.0) <= 0.0:
-            _propfirm["pers_baseline_equity"] = balance
-            logger.info("Personal baseline locked from MT5 balance: %.2f", balance)
         _save_propfirm(_propfirm)
     logger.info("Personal day-start equity set to %.2f", equity)
+
+
+def _set_personal_baseline(amount: float) -> None:
+    """Persist a user-supplied personal account baseline. Never auto-written by the bot."""
+    with _pf_lock:
+        _propfirm["pers_baseline_equity"] = amount
+        _save_propfirm(_propfirm)
+    logger.info("Personal baseline set to %.2f", amount)
 
 
 def _lock_baseline_from_live() -> tuple[float, str]:

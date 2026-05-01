@@ -38,7 +38,7 @@ from layer2.zmq_helpers import (
     _dispatch_force_close, _dispatch_close_ticker, _dispatch_news_suppress,
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
-    _lock_baseline_from_live, _dispatch_parameters,
+    _lock_baseline_from_live, _dispatch_parameters, _set_personal_baseline,
     ZMQ_REQ_PROP, ZMQ_REQ_PERS, ZMQ_PUSH_PROP, ZMQ_PUSH_PERS,
 )
 
@@ -1145,17 +1145,100 @@ async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         return
     with _pf_lock:
         pf = dict(_propfirm)
-    prop_baseline = pf.get("baseline_equity",     0.0)
-    pers_baseline = pf.get("pers_baseline_equity", 0.0)
+    prop_baseline = pf.get("baseline_equity",      0.0)
+    pers_baseline = pf.get("pers_baseline_equity",  0.0)
     prop_name     = pf.get("propfirm_name", "—")
 
-    prop_str = f"${prop_baseline:,.2f}" if prop_baseline > 0 else "Not set — run /changepropfirm"
-    pers_str = f"${pers_baseline:,.2f}" if pers_baseline > 0 else "Not set yet — initializes on next equity poll"
+    try:
+        prop_eq_data = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        prop_equity  = prop_eq_data["equity"]
+    except Exception:
+        prop_equity  = None
+    try:
+        pers_eq_data = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        pers_equity  = pers_eq_data["equity"]
+    except Exception:
+        pers_equity  = None
 
+    sections = ["📌 <b>Baseline Equity</b>"]
+
+    # Personal section
+    if pers_baseline > 0:
+        pers_eq_str = f"${pers_equity:,.2f}" if pers_equity is not None else "OFFLINE"
+        if pers_equity is not None:
+            pers_pnl = pers_equity - pers_baseline
+            pers_pct = pers_pnl / pers_baseline * 100
+            pnl_str  = f"${pers_pnl:+,.2f} ({pers_pct:+.2f}%)"
+        else:
+            pnl_str = "N/A"
+        sections.append(
+            f"<b>Personal Signal</b>\n"
+            f"Baseline: ${pers_baseline:,.2f}\n"
+            f"Current equity: {pers_eq_str}\n"
+            f"Overall P&amp;L: {pnl_str}"
+        )
+    else:
+        sections.append(
+            f"<b>Personal Signal</b>\n"
+            f"⚠️ Personal baseline not set.\n"
+            f"Run: /setpersonalbaseline 10000"
+        )
+
+    # Prop section
+    if prop_baseline > 0:
+        prop_eq_str = f"${prop_equity:,.2f}" if prop_equity is not None else "OFFLINE"
+        if prop_equity is not None:
+            prop_pnl = prop_equity - prop_baseline
+            prop_pct = prop_pnl / prop_baseline * 100
+            pnl_str  = f"${prop_pnl:+,.2f} ({prop_pct:+.2f}%)"
+        else:
+            pnl_str = "N/A"
+        sections.append(
+            f"<b>Prop Hedge ({prop_name})</b>\n"
+            f"Baseline: ${prop_baseline:,.2f}\n"
+            f"Current equity: {prop_eq_str}\n"
+            f"Overall P&amp;L: {pnl_str}"
+        )
+    else:
+        sections.append(
+            f"<b>Prop Hedge ({prop_name})</b>\n"
+            f"Not set — run /changepropfirm"
+        )
+
+    await update.message.reply_text("\n\n".join(sections), parse_mode="HTML")
+
+
+async def _cmd_set_personal_baseline(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    args = ctx.args
+    if not args:
+        await update.message.reply_text(
+            "Usage: <code>/setpersonalbaseline 10000</code>\n\n"
+            "Provide the initial deposit amount for the personal account.",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        amount = float(args[0].replace(",", ""))
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid amount. Example: <code>/setpersonalbaseline 10000</code>",
+            parse_mode="HTML",
+        )
+        return
+    if amount <= 0:
+        await update.message.reply_text(
+            "Amount must be positive. Example: <code>/setpersonalbaseline 10000</code>",
+            parse_mode="HTML",
+        )
+        return
+    _set_personal_baseline(amount)
     await update.message.reply_text(
-        f"📌 <b>Baseline Equity</b>\n\n"
-        f"<b>Prop ({prop_name}, VPS #2):</b>\n{prop_str}\n\n"
-        f"<b>Personal (VPS #3):</b>\n{pers_str}",
+        f"✅ <b>Personal Baseline Set</b>\n\n"
+        f"Personal baseline: <b>${amount:,.2f}</b>\n\n"
+        f"All personal P&amp;L calculations will now use this as the reference.\n"
+        f"Run /baseline to verify.",
         parse_mode="HTML",
     )
 
@@ -1874,6 +1957,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Configuration</b>\n"
         "/propfirm — Current prop firm settings\n"
         "/changepropfirm — Update prop firm (10-step wizard)\n"
+        "/setpersonalbaseline 10000 — Set personal account baseline equity\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/back — Go back one step in /changepropfirm wizard\n"
         "/cancel — Cancel any active wizard\n\n"
@@ -1965,7 +2049,8 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("equity",        _cmd_equity))
-    tg_app.add_handler(CommandHandler("baseline",      _cmd_baseline))
+    tg_app.add_handler(CommandHandler("baseline",            _cmd_baseline))
+    tg_app.add_handler(CommandHandler("setpersonalbaseline", _cmd_set_personal_baseline))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
