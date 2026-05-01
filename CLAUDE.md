@@ -115,6 +115,8 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - `_is_sgt_curfew()` reads from `_trading_window` dict dynamically — no restart needed after `/setwindow`.
 - Weekends always curfew regardless of window setting.
 - **`00:00` is ambiguous — handled by `is_end` flag in `_window_minutes(t_str, is_end=False)`**: as a start time `00:00` = 0 min; as an end time `00:00` = 1440 min (midnight). Without this, setting a 24-hour window (`00:00–00:00`) would cause permanent curfew because start and end would both resolve to 1440. Always pass `is_end=True` when calling `_window_minutes` for the end time.
+- **Layer 3 has NO time-of-day curfew of its own.** The `/setwindow` window in Layer 2 is the sole gate for execution hours. Layer 3's `_sgt_scheduler` only sets `_dormant = True` on weekends (`weekday >= 5`). Any time-of-day logic in `_sgt_scheduler` must not be re-added — it caused EXECUTION FAILURE spam (Layer 2 dispatched, Layer 3 silently dropped, 5s check found no positions). Fixed 2026-05-01.
+- **`/status` Active vs Curfew are independent**: "Status: 🟢 Active" means the trading engine is armed (not halted). "Curfew: Yes — dormant" means the current time is outside the window. Both can be true simultaneously — Active + Curfew = engine ready but window closed, no trades until window opens.
 
 ---
 
@@ -130,6 +132,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - **Close detection buffer**: when one leg of a hedge closes before the other (e.g. personal SL hits one poll before prop TP), the close is held in `_pending_closes` for up to 30 s. A single combined alert fires only after both legs confirm closed or the buffer expires. This prevents duplicate split alerts and false orphan force-closes.
 - **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
 - **News suppression clear notification**: when a news suppression window expires, a grouped 🔴→🟢 Telegram alert fires (listing all pairs cleared at once) before dispatching `NEWS_CLEAR` to Layer 3. `/news` shows 🟠 per event; `/blackboard` shows 🔴 per suppressed pair.
+- **`dd_floor.json` stale value on VPS #2**: Layer 3 prop worker loads `config/dd_floor.json` at startup. Layer 2 only sends `SET_PARAMETERS` (which updates this file) on explicit events (`/phase1`, `/changepropfirm` wizard). If the worker restarts with a stale/wrong floor, STATIC DD GUARD fires every 30s and blocks all trades until Layer 2 resends. Fix: run `/phase1` in Telegram (idempotent) to trigger a resend. Root cause of the 2026-04-30 incident: previous incorrect baseline entry ($1,234,567) had saved floor=$1,160,492.98. Never enter test/placeholder numbers as `baseline_equity` in the wizard.
 
 ---
 
@@ -148,7 +151,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 ---
 
-## Current State (as of 2026-05-01, session 3)
+## Current State (as of 2026-05-01, session 4)
 
 All four layers deployed and operational. Gate D demo run in progress. Target go-live ~2026-05-03.
 
@@ -159,7 +162,7 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - K1 layered floors from baseline (staircase). K2 hard floor safety net. K3 daily cap from day_start. K4 cumulative profit target. K5 consistency (Phase 2 only).
   - `/phase1` is idempotent — will not overwrite an existing baseline mid-evaluation
   - 30 s close-detection buffer prevents duplicate split alerts and false orphan closes
-  - Dynamic trading window: `config/trading_window.json` + `/setwindow` Telegram command
+  - Dynamic trading window: `config/trading_window.json` + `/setwindow` Telegram command. Currently set to 12:00–00:00 SGT.
   - `trade_allowed` monitoring + 5 s position verification
   - News suppression clear notification: grouped 🔴→🟢 Telegram alert on window expiry
   - `/news` shows 🟠 per event; `/blackboard` shows 🔴 per pair, 🟢 when clear
@@ -174,6 +177,6 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - All SL/TP/entry prices in Telegram alerts use `_fmt_price(symbol, price)` — no more float artifacts
   - `_window_minutes` fixed: `00:00` as start = 0 min, as end = 1440 min (24h window now works correctly)
   - `/setbaseline` command removed — use `/changepropfirm` Step 10/10 to set baseline
-- Layer 3: Both workers running (VPS #2 prop account 5049711515, VPS #3 personal account 106260846, both MetaQuotes demo).
+- Layer 3: Both workers running (VPS #2 prop account 106496748, VPS #3 personal account 106497299, both MetaQuotes demo). Hard-coded `h < 12` curfew removed 2026-05-01 — Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`.
 
 **Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations.
