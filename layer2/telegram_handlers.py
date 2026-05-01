@@ -923,8 +923,8 @@ async def _cmd_stop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     lines: list[str] = ["⚠️ <b>Signal Processing Halted</b>\n", "<b>Open Positions at Halt</b>"]
     total_open = 0
     for label, positions in [
-        ("Personal (VPS #3)", pers_pos),
-        ("Prop (VPS #2)",     prop_pos),
+        ("Personal Signal (VPS #2)", pers_pos),
+        ("Prop Hedge (VPS #3)",      prop_pos),
     ]:
         lines.append(f"<b>{label}:</b>")
         if positions:
@@ -989,8 +989,8 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     curfew_note = "\n<i>SGT curfew active — new signals start from 12:00 SGT.</i>" if _is_sgt_curfew() else ""
     lines: list[str] = [f"🟢 <b>Signal Processing Resumed</b>{curfew_note}\n", "<b>Current Open Positions</b>\n"]
     for label, positions in [
-        ("Personal (VPS #3)", pers_pos),
-        ("Prop (VPS #2)",     prop_pos),
+        ("Personal Signal (VPS #2)", pers_pos),
+        ("Prop Hedge (VPS #3)",      prop_pos),
     ]:
         lines.append(f"<b>{label}:</b>")
         if positions:
@@ -1124,15 +1124,15 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_block = _account_block("Personal Signal", pers, pers_baseline, pers_day_start)
+        pers_block = _account_block("Personal Signal (VPS #2)", pers, pers_baseline, pers_day_start)
     except Exception as exc:
-        pers_block = f"<b>Personal Signal</b>\nOFFLINE — {exc}"
+        pers_block = f"<b>Personal Signal (VPS #2)</b>\nOFFLINE — {exc}"
 
     try:
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_block = _account_block("Prop Hedge", prop, prop_baseline, prop_day_start)
+        prop_block = _account_block("Prop Hedge (VPS #3)", prop, prop_baseline, prop_day_start)
     except Exception as exc:
-        prop_block = f"<b>Prop Hedge</b>\nOFFLINE — {exc}"
+        prop_block = f"<b>Prop Hedge (VPS #3)</b>\nOFFLINE — {exc}"
 
     await update.message.reply_text(
         f"📊 <b>Live Equity Snapshot</b>\n\n{pers_block}\n\n{prop_block}",
@@ -1172,14 +1172,14 @@ async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         else:
             pnl_str = "N/A"
         sections.append(
-            f"<b>Personal Signal</b>\n"
+            f"<b>Personal Signal (VPS #2)</b>\n"
             f"Baseline: ${pers_baseline:,.2f}\n"
             f"Current equity: {pers_eq_str}\n"
             f"Overall P&amp;L: {pnl_str}"
         )
     else:
         sections.append(
-            f"<b>Personal Signal</b>\n"
+            f"<b>Personal Signal (VPS #2)</b>\n"
             f"⚠️ Personal baseline not set.\n"
             f"Run: /setpersonalbaseline 10000"
         )
@@ -1194,14 +1194,14 @@ async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         else:
             pnl_str = "N/A"
         sections.append(
-            f"<b>Prop Hedge ({prop_name})</b>\n"
+            f"<b>Prop Hedge ({prop_name}, VPS #3)</b>\n"
             f"Baseline: ${prop_baseline:,.2f}\n"
             f"Current equity: {prop_eq_str}\n"
             f"Overall P&amp;L: {pnl_str}"
         )
     else:
         sections.append(
-            f"<b>Prop Hedge ({prop_name})</b>\n"
+            f"<b>Prop Hedge ({prop_name}, VPS #3)</b>\n"
             f"Not set — run /changepropfirm"
         )
 
@@ -1266,8 +1266,8 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
 
     total_open = 0
     for label, positions, err in [
-        ("Personal (VPS #3)", pers_pos, pers_err),
-        ("Prop (VPS #2)", prop_pos, prop_err),
+        ("Personal Signal (VPS #2)", pers_pos, pers_err),
+        ("Prop Hedge (VPS #3)",      prop_pos, prop_err),
     ]:
         lines.append(f"<b>{label}:</b>")
         if err:
@@ -1358,8 +1358,8 @@ async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     lines = ["📊 <b>Open Positions</b>\n"]
     for label, positions, err in [
-        ("Personal — signal direction (VPS #3)", pers_pos, pers_err),
-        ("Prop — inverse direction (VPS #2)", prop_pos, prop_err),
+        ("Personal Signal (VPS #2)", pers_pos, pers_err),
+        ("Prop Hedge (VPS #3)",      prop_pos, prop_err),
     ]:
         lines.append(f"<b>{label}:</b>")
         if err:
@@ -1495,8 +1495,8 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"📊 <b>System Health</b>\n\n"
         f"Layer 1 (VPS #1): {l1}\n"
         f"Layer 2 (VPS #1): 🟢 Alive\n"
-        f"Prop Worker (VPS #2): {prop_h}\n"
-        f"Personal Worker (VPS #3): {pers_h}",
+        f"Personal Signal (VPS #2): {pers_h}\n"
+        f"Prop Hedge (VPS #3): {prop_h}",
         parse_mode="HTML",
     )
 
@@ -1598,7 +1598,7 @@ async def _cmd_closepair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
     lines = [f"⚠️ <b>Close Pair — {ticker}</b>\n"]
     total_open = 0
-    for label, url in [("Personal (VPS #3)", ZMQ_REQ_PERS), ("Prop (VPS #2)", ZMQ_REQ_PROP)]:
+    for label, url in [("Personal Signal (VPS #2)", ZMQ_REQ_PERS), ("Prop Hedge (VPS #3)", ZMQ_REQ_PROP)]:
         try:
             positions = await asyncio.to_thread(_query_positions, url)
             pair_pos = [p for p in positions if p["symbol"] in (ticker, broker_symbol)]

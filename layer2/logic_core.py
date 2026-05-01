@@ -117,17 +117,17 @@ def _handle_mismatch(ticker: str, mismatch_type: str,
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "orphan_mismatch")
         msg = (
             f"<b>CRITICAL MISMATCH — {ticker}</b>\n\n"
-            f"Prop has {_dir.get(prop_dir, '?')} but personal has NONE.\n"
-            f"Orphaned prop position force-closed.\n\n"
-            f"Check VPS #2 + VPS #3 immediately."
+            f"Prop Hedge has {_dir.get(prop_dir, '?')} but Personal Signal has NONE.\n"
+            f"Orphaned Prop Hedge position force-closed.\n\n"
+            f"Check VPS #3 (Prop) + VPS #2 (Personal) immediately."
         )
     elif mismatch_type == "pers_only":
         _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "orphan_mismatch")
         msg = (
             f"<b>CRITICAL MISMATCH — {ticker}</b>\n\n"
-            f"Personal has {_dir.get(pers_dir, '?')} but prop has NONE.\n"
-            f"Orphaned personal position force-closed.\n\n"
-            f"Check VPS #2 + VPS #3 immediately."
+            f"Personal Signal has {_dir.get(pers_dir, '?')} but Prop Hedge has NONE.\n"
+            f"Orphaned Personal Signal position force-closed.\n\n"
+            f"Check VPS #2 (Personal) + VPS #3 (Prop) immediately."
         )
     else:  # same_direction
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "direction_mismatch")
@@ -136,7 +136,7 @@ def _handle_mismatch(ticker: str, mismatch_type: str,
             f"<b>CRITICAL DIRECTION MISMATCH — {ticker}</b>\n\n"
             f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge is BROKEN!\n"
             f"Positions closed on BOTH accounts.\n\n"
-            f"Check VPS #2 + VPS #3 immediately."
+            f"Check VPS #2 (Personal) + VPS #3 (Prop) immediately."
         )
     logger.error("MISMATCH HANDLED: %s  type=%s", ticker, mismatch_type)
     _alert_sync(msg)
@@ -303,14 +303,14 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         exit_lvl = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
         exit_tag = f"TP at {exit_lvl}" if pnl >= 0 else f"SL at {exit_lvl}"
         sections.append(
-            f"<b>Personal</b>\n"
+            f"<b>Personal Signal (VPS #2)</b>\n"
             f"{dir_str} {pos['volume']:.2f} lots\n"
             f"Entry: {_fmt_price(symbol, pos['price_open'])}\n"
             f"Exit reason: {exit_tag}\n"
             f"P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
-        sections.append("<b>Personal</b>\n⚠️ Still open / not confirmed")
+        sections.append("<b>Personal Signal (VPS #2)</b>\n⚠️ Still open / not confirmed")
 
     # ── Prop Hedge ───────────────────────────────────────────────────────────
     if prop_pos_data:
@@ -318,13 +318,13 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
         pnl     = pos["profit"]
         sections.append(
-            f"<b>Prop Hedge</b>\n"
+            f"<b>Prop Hedge (VPS #3)</b>\n"
             f"Closed\n"
             f"{dir_str} {pos['volume']:.2f} lots\n"
             f"P&amp;L: ${pnl:+,.2f}"
         )
     else:
-        sections.append("<b>Prop Hedge</b>\n⚠️ Still open / not confirmed")
+        sections.append("<b>Prop Hedge (VPS #3)</b>\n⚠️ Still open / not confirmed")
 
     # ── After Close ──────────────────────────────────────────────────────────
     sections.append(
@@ -541,7 +541,7 @@ def _run_equity_check() -> None:
             _pending_closes.clear()
             _alert_sync(
                 "<b>Worker Prop — Back Online</b>\n\n"
-                "VPS #2 (worker-prop) is responding again."
+                "VPS #3 (worker-prop) is responding again."
             )
         else:
             _prop_fail_count = 0
@@ -552,16 +552,16 @@ def _run_equity_check() -> None:
             _prop_algo_disabled = True
             _alert_sync(
                 "<b>⚠️ Prop MT5 — Algo Trading DISABLED</b>\n\n"
-                "MT5 on VPS #2 has disabled automated trading.\n"
+                "MT5 on VPS #3 (Prop Hedge) has disabled automated trading.\n"
                 "Orders will be silently rejected until you fix this.\n\n"
-                "<b>Fix (VPS #2 noVNC):</b>\n"
+                "<b>Fix (VPS #3 noVNC):</b>\n"
                 "1. Click the <b>Algo Trading</b> button in the MT5 toolbar (make it green)\n"
                 "2. Tools → Options → Expert Advisors → uncheck "
                 "<i>'Disable algorithmic trading when the account has been changed'</i>"
             )
         elif prop_trade_ok and _prop_algo_disabled:
             _prop_algo_disabled = False
-            _alert_sync("<b>✅ Prop MT5 — Algo Trading Restored</b>\n\nVPS #2 algorithmic trading is enabled again.")
+            _alert_sync("<b>✅ Prop MT5 — Algo Trading Restored</b>\n\nVPS #3 algorithmic trading is enabled again.")
 
     except Exception as exc:
         _prop_fail_count += 1
@@ -571,9 +571,9 @@ def _run_equity_check() -> None:
             _prop_down = True
             _alert_sync(
                 "<b>Worker Prop — OFFLINE</b>\n\n"
-                f"VPS #2 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
+                f"VPS #3 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
                 "<b>Action:</b>\n"
-                "1. Open VPS #2 noVNC\n"
+                "1. Open VPS #3 noVNC\n"
                 "2. <code>cd C:/arbitrage</code>\n"
                 "3. <code>uv run python layer3/worker_prop.py</code>"
             )
@@ -590,7 +590,7 @@ def _run_equity_check() -> None:
             _pending_closes.clear()
             _alert_sync(
                 "<b>Worker Personal — Back Online</b>\n\n"
-                "VPS #3 (worker-personal) is responding again."
+                "VPS #2 (worker-personal) is responding again."
             )
         else:
             _pers_fail_count = 0
@@ -600,16 +600,16 @@ def _run_equity_check() -> None:
             _pers_algo_disabled = True
             _alert_sync(
                 "<b>⚠️ Personal MT5 — Algo Trading DISABLED</b>\n\n"
-                "MT5 on VPS #3 has disabled automated trading.\n"
+                "MT5 on VPS #2 (Personal Signal) has disabled automated trading.\n"
                 "Orders will be silently rejected until you fix this.\n\n"
-                "<b>Fix (VPS #3 noVNC):</b>\n"
+                "<b>Fix (VPS #2 noVNC):</b>\n"
                 "1. Click the <b>Algo Trading</b> button in the MT5 toolbar (make it green)\n"
                 "2. Tools → Options → Expert Advisors → uncheck "
                 "<i>'Disable algorithmic trading when the account has been changed'</i>"
             )
         elif pers_trade_ok and _pers_algo_disabled:
             _pers_algo_disabled = False
-            _alert_sync("<b>✅ Personal MT5 — Algo Trading Restored</b>\n\nVPS #3 algorithmic trading is enabled again.")
+            _alert_sync("<b>✅ Personal MT5 — Algo Trading Restored</b>\n\nVPS #2 algorithmic trading is enabled again.")
 
     except Exception as exc:
         _pers_fail_count += 1
@@ -619,9 +619,9 @@ def _run_equity_check() -> None:
             _pers_down = True
             _alert_sync(
                 "<b>Worker Personal — OFFLINE</b>\n\n"
-                f"VPS #3 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
+                f"VPS #2 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
                 "<b>Action:</b>\n"
-                "1. Open VPS #3 noVNC\n"
+                "1. Open VPS #2 noVNC\n"
                 "2. <code>cd C:/arbitrage</code>\n"
                 "3. <code>uv run python layer3/worker_personal.py</code>"
             )
@@ -941,11 +941,11 @@ async def _verify_and_notify(
     if both_ok:
         msg = (
             f"✅ <b>Trade Opened — {ticker}</b>\n\n"
-            f"<b>Personal Signal</b>\n"
+            f"<b>Personal Signal (VPS #2)</b>\n"
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
             f"Entry {_fmt(entry)} | SL {_fmt(pers_sl)} | TP {_fmt(pers_tp)}\n"
             f"Risk: <b>${pers_dollar_risk:,.2f}</b>\n\n"
-            f"<b>Prop Hedge</b>\n"
+            f"<b>Prop Hedge (VPS #3)</b>\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
             f"Entry {_fmt(entry)} | SL {_fmt(prop_sl)} | TP {_fmt(prop_tp)}\n"
             f"Risk: <b>${prop_dollar_risk:,.2f}</b>\n\n"
@@ -957,11 +957,11 @@ async def _verify_and_notify(
         prop_status = "✅ Confirmed" if prop_ok else "❌ Failed"
         msg = (
             f"⚠️ <b>Execution Issue — {ticker}</b>\n\n"
-            f"<b>Personal Signal</b>\n"
+            f"<b>Personal Signal (VPS #2)</b>\n"
             f"Status: {pers_status}\n"
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
             f"Error: {pers_err if pers_err else '—'}\n\n"
-            f"<b>Prop Hedge</b>\n"
+            f"<b>Prop Hedge (VPS #3)</b>\n"
             f"Status: {prop_status}\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
             f"Error: {prop_err if prop_err else '—'}\n\n"
@@ -1075,7 +1075,7 @@ async def receive_signal(request: Request):
     if not prop_info.get("trade_allowed", True):
         msg = (
             f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
-            f"Prop MT5 (VPS #2) algo trading is <b>DISABLED</b>.\n\n"
+            f"Prop MT5 (VPS #3) algo trading is <b>DISABLED</b>.\n\n"
             f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
             f"Tools → Options → Expert Advisors → uncheck "
             f"<i>'Disable algorithmic trading when the account has been changed'</i>"
@@ -1087,7 +1087,7 @@ async def receive_signal(request: Request):
     if not pers_info.get("trade_allowed", True):
         msg = (
             f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
-            f"Personal MT5 (VPS #3) algo trading is <b>DISABLED</b>.\n\n"
+            f"Personal MT5 (VPS #2) algo trading is <b>DISABLED</b>.\n\n"
             f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
             f"Tools → Options → Expert Advisors → uncheck "
             f"<i>'Disable algorithmic trading when the account has been changed'</i>"
