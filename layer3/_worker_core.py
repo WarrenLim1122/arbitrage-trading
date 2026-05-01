@@ -320,23 +320,21 @@ def _sgt_scheduler() -> None:
 
     while True:
         now_sgt  = datetime.now(SGT)
-        h        = now_sgt.hour
         weekday  = now_sgt.weekday()   # 0=Mon … 6=Sun
         today    = now_sgt.date()
 
-        in_curfew  = h < 12            # 00:00–11:59 SGT
         is_weekend = weekday >= 5      # Sat or Sun
 
-        should_be_dormant = in_curfew or is_weekend
+        should_be_dormant = is_weekend
 
         with _dormant_lock:
             was_dormant = _dormant
 
-        # Transition active → dormant: force-close once per calendar day
+        # Transition active → dormant: force-close once per calendar day (weekend entry)
         if not was_dormant and should_be_dormant:
             if _last_curfew_close_date != today:
-                logger.info("SGT: entering curfew/weekend — force-closing all positions")
-                _force_close_all("sgt_curfew")
+                logger.info("SGT: entering weekend — force-closing all positions")
+                _force_close_all("sgt_weekend")
                 _last_curfew_close_date = today
 
         if should_be_dormant and _last_curfew_close_date != today:
