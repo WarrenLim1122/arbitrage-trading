@@ -17,7 +17,7 @@ systemctl status layer2
 ```
 Restart `layer1` instead if only Layer 1 changed; restart both if both changed.
 
-**VPS #2 / VPS #3 — Layer 3 changes (noVNC PowerShell):**
+**VPS #2 (Personal — worker_personal.py) and VPS #3 (Prop — worker_prop.py) — Layer 3 changes (noVNC PowerShell):**
 
 Warren's workflow — always write steps this way:
 1. Close the PowerShell window with the **X button** (kills the worker — Warren cannot type Ctrl+C in noVNC)
@@ -26,9 +26,9 @@ Warren's workflow — always write steps this way:
 ```
 cd C:\arbitrage
 git pull
-uv run python layer3/worker_prop.py
+uv run python layer3/worker_personal.py
 ```
-Use `worker_personal.py` for VPS #3. `uv sync --extra layer3` only if `pyproject.toml` changed.
+Use `worker_prop.py` for VPS #3. `uv sync --extra layer3` only if `pyproject.toml` changed.
 
 ---
 
@@ -46,8 +46,8 @@ TradingView (15m chart — one chart per pair)
         │  [internal HTTP]
   layer2/logic_core.py    (VPS #1, port 8001 — internal)
         │  [ZeroMQ PUSH]
-        ├── layer3/worker_prop.py      (VPS #2, Windows)
-        └── layer3/worker_personal.py  (VPS #3, Windows)
+        ├── layer3/worker_personal.py  (VPS #2, Windows)
+        └── layer3/worker_prop.py      (VPS #3, Windows)
 Telegram Bot API ←→ layer2/logic_core.py
 ```
 
@@ -56,13 +56,13 @@ Telegram Bot API ←→ layer2/logic_core.py
 | VPS | Provider | IP | OS | Purpose |
 |---|---|---|---|---|
 | VPS #1 | DigitalOcean (SGP1) | 152.42.213.98 | Ubuntu 24.04 | Layer 1 + Layer 2 + nginx + TLS |
-| VPS #2 | Vultr | 45.76.156.55 | Windows Server | worker-prop (FundingPips MT5) |
-| VPS #3 | Vultr | 139.180.136.233 | Windows Server | worker-personal (Fusion Markets MT5) |
+| VPS #2 | Vultr | 139.180.136.233 | Windows Server | worker-personal (Fusion Markets MT5) |
+| VPS #3 | Vultr | 45.76.156.55 | Windows Server | worker-prop (FundingPips MT5) |
 
 - **Public endpoint**: https://api.warrenlimzf.com/signal
 - **Telegram bot**: HedgeHog (token in VPS #1 `.env`)
-- **VPS #2 noVNC**: `https://console.vultr.com/subs/vps/novnc/?id=88dfe741-382d-47fe-a19c-199baa534bfc`
-- **VPS #3 noVNC**: `https://console.vultr.com/subs/vps/novnc/?id=6288e88e-1ad6-468a-a584-914bd04590b1`
+- **VPS #2 noVNC**: `https://console.vultr.com/subs/vps/novnc/?id=6288e88e-1ad6-468a-a584-914bd04590b1`
+- **VPS #3 noVNC**: `https://console.vultr.com/subs/vps/novnc/?id=88dfe741-382d-47fe-a19c-199baa534bfc`
 - **Billing**: DigitalOcean end-of-month. Vultr prepaid credit (Visa 7119 auto-charges).
 
 ## Build Status
@@ -132,7 +132,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - **Close detection buffer**: when one leg of a hedge closes before the other (e.g. personal SL hits one poll before prop TP), the close is held in `_pending_closes` for up to 30 s. A single combined alert fires only after both legs confirm closed or the buffer expires. This prevents duplicate split alerts and false orphan force-closes.
 - **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
 - **News suppression clear notification**: when a news suppression window expires, a grouped 🔴→🟢 Telegram alert fires (listing all pairs cleared at once) before dispatching `NEWS_CLEAR` to Layer 3. `/news` shows 🟠 per event; `/blackboard` shows 🔴 per suppressed pair.
-- **`dd_floor.json` stale value on VPS #2**: Layer 3 prop worker loads `config/dd_floor.json` at startup. Layer 2 only sends `SET_PARAMETERS` (which updates this file) on explicit events (`/phase1`, `/changepropfirm` wizard). If the worker restarts with a stale/wrong floor, STATIC DD GUARD fires every 30s and blocks all trades until Layer 2 resends. Fix: run `/phase1` in Telegram (idempotent) to trigger a resend. Root cause of the 2026-04-30 incident: previous incorrect baseline entry ($1,234,567) had saved floor=$1,160,492.98. Never enter test/placeholder numbers as `baseline_equity` in the wizard.
+- **`dd_floor.json` stale value on VPS #3**: Layer 3 prop worker loads `config/dd_floor.json` at startup. Layer 2 only sends `SET_PARAMETERS` (which updates this file) on explicit events (`/phase1`, `/changepropfirm` wizard). If the worker restarts with a stale/wrong floor, STATIC DD GUARD fires every 30s and blocks all trades until Layer 2 resends. Fix: run `/phase1` in Telegram (idempotent) to trigger a resend. Root cause of the 2026-04-30 incident: previous incorrect baseline entry ($1,234,567) had saved floor=$1,160,492.98. Never enter test/placeholder numbers as `baseline_equity` in the wizard.
 
 ---
 
@@ -177,6 +177,6 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - All SL/TP/entry prices in Telegram alerts use `_fmt_price(symbol, price)` — no more float artifacts
   - `_window_minutes` fixed: `00:00` as start = 0 min, as end = 1440 min (24h window now works correctly)
   - `/setbaseline` command removed — use `/changepropfirm` Step 10/10 to set baseline
-- Layer 3: Both workers running (VPS #2 prop account 106496748, VPS #3 personal account 106497299, both MetaQuotes demo). Hard-coded `h < 12` curfew removed 2026-05-01 — Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`.
+- Layer 3: Both workers running (VPS #2 personal account 106497299, VPS #3 prop account 106496748, both MetaQuotes demo). Hard-coded `h < 12` curfew removed 2026-05-01 — Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`.
 
 **Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations.
