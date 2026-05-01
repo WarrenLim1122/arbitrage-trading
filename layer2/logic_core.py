@@ -264,8 +264,8 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     """Build and send the Position Closed Telegram alert for one symbol.
 
     Always does a fresh live re-query of both workers so that the
-    'Open Positions After Close' and 'Live Equity' sections reflect the
-    actual current state rather than the stale snapshot from the last poll.
+    'After Close' and 'Equity' sections reflect the actual current state
+    rather than the stale snapshot from the last poll.
     """
     # Fresh re-query — gives accurate after-close snapshot.
     try:
@@ -277,80 +277,85 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     except Exception:
         curr_pers = []
 
-    parts: list[str] = [f"<b>Position Closed — {symbol}</b>"]
-    pers_pnl: float | None = None
+    def _pos_summary(pos_list: list[dict]) -> str:
+        if not pos_list:
+            return "No open positions"
+        return ", ".join(
+            f"{p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
+            for p in pos_list
+        )
 
+    sections: list[str] = []
+
+    # ── Title — driven by personal P&L ──────────────────────────────────────
     if pers_pos_data:
-        pos = pers_pos_data
-        dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        pnl = pos["profit"]
-        pers_pnl = pnl
-        outcome = "TP ✅" if pnl >= 0 else "SL ❌"
-        parts.append(
-            f"\n<b>Personal (signal, VPS #3):</b>\n"
-            f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
-            f"  Entry: {_fmt_price(symbol, pos['price_open'])}  |  SL: {_fmt_price(symbol, pos['sl'])}  |  TP: {_fmt_price(symbol, pos['tp'])}\n"
-            f"  P&amp;L: <b>${pnl:+,.2f}</b>"
+        pers_pnl = pers_pos_data["profit"]
+        title = f"🟢 <b>Take Profit — {symbol}</b>" if pers_pnl >= 0 else f"🔴 <b>Stop Loss — {symbol}</b>"
+    else:
+        title = f"⚠️ <b>Position Closed — {symbol}</b>"
+    sections.append(title)
+
+    # ── Personal ─────────────────────────────────────────────────────────────
+    if pers_pos_data:
+        pos      = pers_pos_data
+        dir_str  = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
+        pnl      = pos["profit"]
+        exit_lvl = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
+        exit_tag = f"TP at {exit_lvl}" if pnl >= 0 else f"SL at {exit_lvl}"
+        sections.append(
+            f"<b>Personal</b>\n"
+            f"{dir_str} {pos['volume']:.2f} lots\n"
+            f"Entry: {_fmt_price(symbol, pos['price_open'])}\n"
+            f"Exit reason: {exit_tag}\n"
+            f"P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
-        parts.append("\n<b>Personal (VPS #3):</b> still open (unexpected)")
+        sections.append("<b>Personal</b>\n⚠️ Still open / not confirmed")
 
+    # ── Prop Hedge ───────────────────────────────────────────────────────────
     if prop_pos_data:
-        pos = prop_pos_data
+        pos     = prop_pos_data
         dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        pnl = pos["profit"]
-        outcome = "TP ✅" if pnl >= 0 else "SL ❌"
-        parts.append(
-            f"\n<b>Prop (inverse, VPS #2):</b>\n"
-            f"  {symbol} {dir_str}  {pos['volume']:.2f} lots  —  {outcome}\n"
-            f"  Entry: {_fmt_price(symbol, pos['price_open'])}  |  SL: {_fmt_price(symbol, pos['sl'])}  |  TP: {_fmt_price(symbol, pos['tp'])}\n"
-            f"  P&amp;L: <b>${pnl:+,.2f}</b>"
+        pnl     = pos["profit"]
+        sections.append(
+            f"<b>Prop Hedge</b>\n"
+            f"Closed\n"
+            f"{dir_str} {pos['volume']:.2f} lots\n"
+            f"P&amp;L: ${pnl:+,.2f}"
         )
     else:
-        parts.append("\n<b>Prop (VPS #2):</b> still open (unexpected)")
+        sections.append("<b>Prop Hedge</b>\n⚠️ Still open / not confirmed")
 
-    if pers_pnl is not None:
-        signal_result = "TP HIT ✅" if pers_pnl >= 0 else "SL HIT ❌"
-        parts.append(f"\nOutcome: <b>{signal_result}</b>")
+    # ── After Close ──────────────────────────────────────────────────────────
+    sections.append(
+        f"<b>After Close</b>\n"
+        f"Personal: {_pos_summary(curr_pers)}\n"
+        f"Prop: {_pos_summary(curr_prop)}"
+    )
 
-    parts.append("\n<b>Open Positions After Close</b>")
-    for label, pos_list in [
-        ("Personal (VPS #3)", curr_pers),
-        ("Prop (VPS #2)",     curr_prop),
-    ]:
-        if pos_list:
-            parts.append(f"<b>{label}:</b>")
-            for p in pos_list:
-                d = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
-                parts.append(
-                    f"  {p['symbol']} {d} {p['volume']:.2f} lots"
-                    f"  |  P&amp;L: ${p['profit']:+,.2f}"
-                )
-        else:
-            parts.append(f"<b>{label}:</b> No open positions")
-
-    parts.append("\n<b>Live Equity</b>")
+    # ── Equity ───────────────────────────────────────────────────────────────
     try:
-        eq = _query_equity(ZMQ_REQ_PROP, "")
-        parts.append(
-            f"Prop (VPS #2): Balance: ${eq['balance']:,.2f}  |  Equity: ${eq['equity']:,.2f}"
-        )
+        prop_eq = _query_equity(ZMQ_REQ_PROP, "")["equity"]
+        prop_eq_str = f"${prop_eq:,.2f}"
     except Exception:
-        parts.append("Prop (VPS #2): OFFLINE")
+        prop_eq_str = "OFFLINE"
     try:
-        eq = _query_equity(ZMQ_REQ_PERS, "")
-        parts.append(
-            f"Personal (VPS #3): Balance: ${eq['balance']:,.2f}  |  Equity: ${eq['equity']:,.2f}"
-        )
+        pers_eq = _query_equity(ZMQ_REQ_PERS, "")["equity"]
+        pers_eq_str = f"${pers_eq:,.2f}"
     except Exception:
-        parts.append("Personal (VPS #3): OFFLINE")
+        pers_eq_str = "OFFLINE"
+    sections.append(
+        f"<b>Equity</b>\n"
+        f"Prop: {prop_eq_str}\n"
+        f"Personal: {pers_eq_str}"
+    )
 
     # Clear from known-open-positions tracker.
     with _known_pos_lock:
         _known_open_positions.pop(symbol, None)
 
     logger.info("Close detection: alert sent for %s", symbol)
-    _alert_sync("\n".join(parts))
+    _alert_sync("\n\n".join(sections))
 
 
 def _run_news_preclose_check() -> None:
