@@ -364,16 +364,16 @@ def _fmt_price(symbol: str, price: float) -> str:
 
 # Ordered field definitions used to display and collect Phase 2 settings.
 # Each entry: (1-based index, config_key, display_name, input_type)
+# propfirm_name removed — stored silently as "Prop Account"; never shown to user.
 _P2_FIELD_DEFS = [
-    (1, "propfirm_name",             "Propfirm name",              "str"),
-    (2, "profit_target_pct",         "Profit target %",            "float_pos"),
-    (3, "max_drawdown_overall_pct",  "Max DD overall %",           "float_pos"),
-    (4, "max_drawdown_daily_pct",    "Max DD daily %",             "float_pos"),
-    (5, "drawdown_is_static",        "Drawdown type",              "static_dynamic"),
-    (6, "raw_spread_account",        "Raw spread account",         "yes_no"),
-    (7, "profit_sharing_pct",        "Profit sharing %",           "float_pos"),
-    (8, "min_profit_days",           "Min profit days",            "int_nn"),
-    (9, "consistency_threshold_pct", "Consistency threshold %",    "float_pos"),
+    (1, "profit_target_pct",         "Profit target %",            "float_pos"),
+    (2, "max_drawdown_overall_pct",  "Max DD overall %",           "float_pos"),
+    (3, "max_drawdown_daily_pct",    "Max DD daily %",             "float_pos"),
+    (4, "drawdown_is_static",        "Drawdown type",              "static_dynamic"),
+    (5, "raw_spread_account",        "Raw spread account",         "yes_no"),
+    (6, "profit_sharing_pct",        "Profit sharing %",           "float_pos"),
+    (7, "min_profit_days",           "Min profit days",            "int_nn"),
+    (8, "consistency_threshold_pct", "Consistency threshold %",    "float_pos"),
 ]
 _P2_FIELD_BY_IDX: dict[int, tuple] = {d[0]: d for d in _P2_FIELD_DEFS}
 

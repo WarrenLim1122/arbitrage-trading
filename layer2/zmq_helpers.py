@@ -181,7 +181,7 @@ def _query_positions(zmq_url: str) -> list[dict]:
 def _snapshot_positions_str() -> str:
     """Query both accounts and return a formatted positions summary (sync, for kill alerts)."""
     lines = []
-    for label, url in [("Personal", ZMQ_REQ_PERS), ("Prop", ZMQ_REQ_PROP)]:
+    for label, url in [("Personal Signal", ZMQ_REQ_PERS), ("Prop Hedge", ZMQ_REQ_PROP)]:
         try:
             positions = _query_positions(url)
             if positions:

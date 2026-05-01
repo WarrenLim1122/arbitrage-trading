@@ -116,27 +116,27 @@ def _handle_mismatch(ticker: str, mismatch_type: str,
     if mismatch_type == "prop_only":
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "orphan_mismatch")
         msg = (
-            f"<b>CRITICAL MISMATCH — {ticker}</b>\n\n"
-            f"Prop Hedge has {_dir.get(prop_dir, '?')} but Personal Signal has NONE.\n"
+            f"⚠️ <b>Critical Mismatch — {ticker}</b>\n\n"
+            f"Prop Hedge has {_dir.get(prop_dir, '?')} but Personal Signal has no position.\n"
             f"Orphaned Prop Hedge position force-closed.\n\n"
-            f"Check VPS #3 (Prop) + VPS #2 (Personal) immediately."
+            f"Check MT5 on both accounts immediately."
         )
     elif mismatch_type == "pers_only":
         _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "orphan_mismatch")
         msg = (
-            f"<b>CRITICAL MISMATCH — {ticker}</b>\n\n"
-            f"Personal Signal has {_dir.get(pers_dir, '?')} but Prop Hedge has NONE.\n"
+            f"⚠️ <b>Critical Mismatch — {ticker}</b>\n\n"
+            f"Personal Signal has {_dir.get(pers_dir, '?')} but Prop Hedge has no position.\n"
             f"Orphaned Personal Signal position force-closed.\n\n"
-            f"Check VPS #2 (Personal) + VPS #3 (Prop) immediately."
+            f"Check MT5 on both accounts immediately."
         )
     else:  # same_direction
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "direction_mismatch")
         _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "direction_mismatch")
         msg = (
-            f"<b>CRITICAL DIRECTION MISMATCH — {ticker}</b>\n\n"
-            f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge is BROKEN!\n"
-            f"Positions closed on BOTH accounts.\n\n"
-            f"Check VPS #2 (Personal) + VPS #3 (Prop) immediately."
+            f"⚠️ <b>Critical Direction Mismatch — {ticker}</b>\n\n"
+            f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge is broken.\n"
+            f"Positions closed on both accounts.\n\n"
+            f"Check MT5 on both accounts immediately."
         )
     logger.error("MISMATCH HANDLED: %s  type=%s", ticker, mismatch_type)
     _alert_sync(msg)
@@ -303,14 +303,13 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         exit_lvl = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
         exit_tag = f"TP at {exit_lvl}" if pnl >= 0 else f"SL at {exit_lvl}"
         sections.append(
-            f"<b>Personal Signal (VPS #2)</b>\n"
-            f"{dir_str} {pos['volume']:.2f} lots\n"
-            f"Entry: {_fmt_price(symbol, pos['price_open'])}\n"
-            f"Exit reason: {exit_tag}\n"
+            f"<b>Personal Signal</b>\n"
+            f"{dir_str} · {pos['volume']:.2f} lots\n"
+            f"Entry {_fmt_price(symbol, pos['price_open'])} | {exit_tag}\n"
             f"P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
-        sections.append("<b>Personal Signal (VPS #2)</b>\n⚠️ Still open / not confirmed")
+        sections.append("<b>Personal Signal</b>\n⚠️ Still open / not confirmed")
 
     # ── Prop Hedge ───────────────────────────────────────────────────────────
     if prop_pos_data:
@@ -318,36 +317,35 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
         pnl     = pos["profit"]
         sections.append(
-            f"<b>Prop Hedge (VPS #3)</b>\n"
-            f"Closed\n"
-            f"{dir_str} {pos['volume']:.2f} lots\n"
+            f"<b>Prop Hedge</b>\n"
+            f"{dir_str} · {pos['volume']:.2f} lots\n"
             f"P&amp;L: ${pnl:+,.2f}"
         )
     else:
-        sections.append("<b>Prop Hedge (VPS #3)</b>\n⚠️ Still open / not confirmed")
+        sections.append("<b>Prop Hedge</b>\n⚠️ Still open / not confirmed")
 
     # ── After Close ──────────────────────────────────────────────────────────
     sections.append(
         f"<b>After Close</b>\n"
-        f"Personal: {_pos_summary(curr_pers)}\n"
-        f"Prop: {_pos_summary(curr_prop)}"
+        f"Personal Signal: {_pos_summary(curr_pers)}\n"
+        f"Prop Hedge: {_pos_summary(curr_prop)}"
     )
 
     # ── Equity ───────────────────────────────────────────────────────────────
-    try:
-        prop_eq = _query_equity(ZMQ_REQ_PROP, "")["equity"]
-        prop_eq_str = f"${prop_eq:,.2f}"
-    except Exception:
-        prop_eq_str = "OFFLINE"
     try:
         pers_eq = _query_equity(ZMQ_REQ_PERS, "")["equity"]
         pers_eq_str = f"${pers_eq:,.2f}"
     except Exception:
         pers_eq_str = "OFFLINE"
+    try:
+        prop_eq = _query_equity(ZMQ_REQ_PROP, "")["equity"]
+        prop_eq_str = f"${prop_eq:,.2f}"
+    except Exception:
+        prop_eq_str = "OFFLINE"
     sections.append(
         f"<b>Equity</b>\n"
-        f"Prop: {prop_eq_str}\n"
-        f"Personal: {pers_eq_str}"
+        f"Personal Signal: {pers_eq_str}\n"
+        f"Prop Hedge: {prop_eq_str}"
     )
 
     # Clear from known-open-positions tracker.
@@ -521,9 +519,9 @@ def _run_equity_check() -> None:
             with _window_lock:
                 _win_start = _trading_window["current_window"].get("start", "12:00")
             _alert_sync(
-                f"<b>SGT Curfew — All positions closed</b>\n\n"
+                f"🌙 <b>Curfew — All positions closed</b>\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"Resumes {_win_start} SGT on next weekday."
+                f"Resumes {_win_start} SGT next weekday."
             )
             _last_curfew_close_date = today
         _pos_tracking_initialized = False
@@ -539,10 +537,7 @@ def _run_equity_check() -> None:
             _prop_fail_count = 0
             _pos_tracking_initialized = False
             _pending_closes.clear()
-            _alert_sync(
-                "<b>Worker Prop — Back Online</b>\n\n"
-                "VPS #3 (worker-prop) is responding again."
-            )
+            _alert_sync("✅ <b>Prop Hedge — Worker Back Online</b>")
         else:
             _prop_fail_count = 0
 
@@ -551,17 +546,16 @@ def _run_equity_check() -> None:
         if not prop_trade_ok and not _prop_algo_disabled:
             _prop_algo_disabled = True
             _alert_sync(
-                "<b>⚠️ Prop MT5 — Algo Trading DISABLED</b>\n\n"
-                "MT5 on VPS #3 (Prop Hedge) has disabled automated trading.\n"
-                "Orders will be silently rejected until you fix this.\n\n"
-                "<b>Fix (VPS #3 noVNC):</b>\n"
-                "1. Click the <b>Algo Trading</b> button in the MT5 toolbar (make it green)\n"
+                "⚠️ <b>Prop Hedge — Algo Trading DISABLED</b>\n\n"
+                "MT5 algo trading is off. Orders will be silently rejected.\n\n"
+                "<b>Fix</b>\n"
+                "1. MT5 toolbar → Algo Trading button (make it green)\n"
                 "2. Tools → Options → Expert Advisors → uncheck "
                 "<i>'Disable algorithmic trading when the account has been changed'</i>"
             )
         elif prop_trade_ok and _prop_algo_disabled:
             _prop_algo_disabled = False
-            _alert_sync("<b>✅ Prop MT5 — Algo Trading Restored</b>\n\nVPS #3 algorithmic trading is enabled again.")
+            _alert_sync("✅ <b>Prop Hedge — Algo Trading Restored</b>")
 
     except Exception as exc:
         _prop_fail_count += 1
@@ -570,12 +564,11 @@ def _run_equity_check() -> None:
         if _prop_fail_count >= _WORKER_DOWN_THRESHOLD and not _prop_down:
             _prop_down = True
             _alert_sync(
-                "<b>Worker Prop — OFFLINE</b>\n\n"
-                f"VPS #3 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
-                "<b>Action:</b>\n"
+                "⚠️ <b>Prop Hedge — Worker OFFLINE</b>\n\n"
+                f"No response for ~{_WORKER_DOWN_THRESHOLD * 30}s. Positions may still be open.\n\n"
+                "<b>Action</b>\n"
                 "1. Open VPS #3 noVNC\n"
-                "2. <code>cd C:/arbitrage</code>\n"
-                "3. <code>uv run python layer3/worker_prop.py</code>"
+                "2. <code>cd C:/arbitrage &amp;&amp; uv run python layer3/worker_prop.py</code>"
             )
         return
 
@@ -588,10 +581,7 @@ def _run_equity_check() -> None:
             _pers_fail_count = 0
             _pos_tracking_initialized = False
             _pending_closes.clear()
-            _alert_sync(
-                "<b>Worker Personal — Back Online</b>\n\n"
-                "VPS #2 (worker-personal) is responding again."
-            )
+            _alert_sync("✅ <b>Personal Signal — Worker Back Online</b>")
         else:
             _pers_fail_count = 0
 
@@ -599,17 +589,16 @@ def _run_equity_check() -> None:
         if not pers_trade_ok and not _pers_algo_disabled:
             _pers_algo_disabled = True
             _alert_sync(
-                "<b>⚠️ Personal MT5 — Algo Trading DISABLED</b>\n\n"
-                "MT5 on VPS #2 (Personal Signal) has disabled automated trading.\n"
-                "Orders will be silently rejected until you fix this.\n\n"
-                "<b>Fix (VPS #2 noVNC):</b>\n"
-                "1. Click the <b>Algo Trading</b> button in the MT5 toolbar (make it green)\n"
+                "⚠️ <b>Personal Signal — Algo Trading DISABLED</b>\n\n"
+                "MT5 algo trading is off. Orders will be silently rejected.\n\n"
+                "<b>Fix</b>\n"
+                "1. MT5 toolbar → Algo Trading button (make it green)\n"
                 "2. Tools → Options → Expert Advisors → uncheck "
                 "<i>'Disable algorithmic trading when the account has been changed'</i>"
             )
         elif pers_trade_ok and _pers_algo_disabled:
             _pers_algo_disabled = False
-            _alert_sync("<b>✅ Personal MT5 — Algo Trading Restored</b>\n\nVPS #2 algorithmic trading is enabled again.")
+            _alert_sync("✅ <b>Personal Signal — Algo Trading Restored</b>")
 
     except Exception as exc:
         _pers_fail_count += 1
@@ -618,12 +607,11 @@ def _run_equity_check() -> None:
         if _pers_fail_count >= _WORKER_DOWN_THRESHOLD and not _pers_down:
             _pers_down = True
             _alert_sync(
-                "<b>Worker Personal — OFFLINE</b>\n\n"
-                f"VPS #2 not responding for ~{_WORKER_DOWN_THRESHOLD * 30}s.\n\n"
-                "<b>Action:</b>\n"
+                "⚠️ <b>Personal Signal — Worker OFFLINE</b>\n\n"
+                f"No response for ~{_WORKER_DOWN_THRESHOLD * 30}s. Positions may still be open.\n\n"
+                "<b>Action</b>\n"
                 "1. Open VPS #2 noVNC\n"
-                "2. <code>cd C:/arbitrage</code>\n"
-                "3. <code>uv run python layer3/worker_personal.py</code>"
+                "2. <code>cd C:/arbitrage &amp;&amp; uv run python layer3/worker_personal.py</code>"
             )
         # personal failure doesn't block kill-condition checks — prop equity already fetched
 
@@ -694,13 +682,13 @@ def _run_equity_check() -> None:
         pos_str = _snapshot_positions_str()
         _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
         msg = (
-            f"<b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
-            f"Equity: <b>${prop_equity:,.2f}</b>  |  Overall floor: ${overall_floor:,.2f}\n"
-            f"Baseline: ${baseline:,.2f}  |  Overall DD: {dd_overall_pct:.1f}%\n\n"
-            f"<b>Positions closed:</b>\n{pos_str}\n\n"
-            f"All positions force-closed. Prop firm account blown. <b>Permanent halt.</b>\n\n"
+            f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
+            f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${overall_floor:,.2f}\n"
+            f"Overall DD: {dd_overall_pct:.1f}%  |  Baseline: ${baseline:,.2f}\n\n"
+            f"<b>Positions at close:</b>\n{pos_str}\n\n"
+            f"All positions force-closed. Permanent halt.\n\n"
             f"<b>Next steps:</b>\n"
-            f"Buy a new prop firm challenge, then run /changepropfirm → /phase1 → /resume"
+            f"/changepropfirm → /phase1 → /resume to start a new challenge."
         )
         logger.warning("KILL2: equity=%.2f floor=%.2f", prop_equity, overall_floor)
         _alert_sync(msg)
@@ -720,16 +708,14 @@ def _run_equity_check() -> None:
             next_floor = baseline - (new_k1_layer + 1) * layer_loss_amt
             _dispatch_force_close("daily_loss_limit", halt=True)
             msg = (
-                f"<b>KILL 1 — Loss Layer {new_k1_layer}/{max_loss_layers} Broken</b>\n\n"
-                f"Active floor ${active_floor:,.2f} breached.\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Baseline: ${baseline:,.2f}\n\n"
-                f"<b>New active floor: ${next_floor:,.2f}</b> (Layer {new_k1_layer + 1}/{max_loss_layers})\n"
-                f"Overall DD floor: ${overall_floor:,.2f}\n\n"
-                f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                f"🔴 <b>KILL 1 — Loss Floor {new_k1_layer}/{max_loss_layers} Breached</b>\n\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${active_floor:,.2f}\n\n"
+                f"<b>Positions at close:</b>\n{pos_str}\n\n"
                 f"All positions force-closed. System halted.\n\n"
-                f"<b>Next steps:</b>\n"
-                f"/resume — resume trading (new floor is now active)\n"
-                f"/changepropfirm — switch to a new prop firm account"
+                f"New active floor: ${next_floor:,.2f} (Layer {new_k1_layer + 1}/{max_loss_layers})\n"
+                f"Overall DD floor: ${overall_floor:,.2f}\n\n"
+                f"/resume to continue trading (new floor active)\n"
+                f"/changepropfirm to switch to a new challenge"
             )
             logger.warning("KILL1: equity=%.2f floor=%.2f layer=%d/%d",
                            prop_equity, active_floor, new_k1_layer, max_loss_layers)
@@ -746,13 +732,12 @@ def _run_equity_check() -> None:
             pos_str = _snapshot_positions_str()
             _dispatch_force_close("daily_profit_cap", halt=True)
             msg = (
-                f"<b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
-                f"Daily cap level: ${daily_cap_level:,.2f}  (day-start ${day_start:,.2f} + ${layer_cap_amt:,.2f})\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Baseline: ${baseline:,.2f}\n\n"
-                f"<b>Positions closed:</b>\n{pos_str}\n\n"
-                f"All positions force-closed. Daily profit cap enforced.\n\n"
-                f"<b>Next steps:</b>\n"
-                f"/resume — resume trading next session"
+                f"🟡 <b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Cap level: ${daily_cap_level:,.2f}\n"
+                f"Day-start: ${day_start:,.2f}  |  Cap: +${layer_cap_amt:,.2f}\n\n"
+                f"<b>Positions at close:</b>\n{pos_str}\n\n"
+                f"All positions force-closed. System halted for today.\n\n"
+                f"/resume to continue trading next session."
             )
             logger.warning("KILL3: equity=%.2f cap_level=%.2f day_start=%.2f",
                            prop_equity, daily_cap_level, day_start)
@@ -768,25 +753,23 @@ def _run_equity_check() -> None:
             _dispatch_force_close("profit_target", halt=True, permanent=True)
             if phase == 1:
                 msg = (
-                    f"<b>KILL 4 — Evaluation PASSED! Phase 1 Complete.</b>\n\n"
-                    f"Overall profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}%\n"
+                    f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
+                    f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
                     f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. System halted.\n\n"
-                    f"<b>Ready to move to funded phase?</b>\n"
-                    f"/phase2 — configure and start Phase 2\n"
-                    f"/changepropfirm — start a new challenge instead"
+                    f"/phase2 to configure and start the funded phase\n"
+                    f"/changepropfirm to start a new challenge instead"
                 )
             else:
                 msg = (
-                    f"<b>KILL 4 — Phase {phase} Target Reached!</b>\n\n"
-                    f"Overall profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}%\n"
+                    f"🏆 <b>KILL 4 — Phase {phase} Profit Target Reached</b>\n\n"
+                    f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
                     f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. System halted.\n\n"
-                    f"<b>Options:</b>\n"
-                    f"/phase2 — start a new challenge (wizard will ask for settings)\n"
-                    f"/stop — end trading on this account"
+                    f"/phase2 to start a new cycle\n"
+                    f"/stop to end trading on this account"
                 )
             logger.warning(msg)
             _alert_sync(msg)
@@ -809,20 +792,17 @@ def _run_equity_check() -> None:
             )
 
             if rule_met:
-                firm = pf.get("propfirm_name", "prop firm")
                 overall_pct = total / baseline * 100 if baseline > 0 else 0.0
                 pos_str = _snapshot_positions_str()
                 _dispatch_force_close("consistency_rule", halt=True, permanent=True)
                 msg = (
-                    f"<b>KILL 5 — Consistency Rule Met</b>\n\n"
+                    f"🏆 <b>KILL 5 — Consistency Rule Met</b>\n\n"
                     f"<pre>{table_str}</pre>\n\n"
-                    f"<b>Overall profit: {overall_pct:.1f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
-                    f"<b>Positions closed:</b>\n{pos_str}\n\n"
+                    f"Overall profit: <b>{overall_pct:.1f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
+                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. Trading halted.\n\n"
-                    f"<b>Action required:</b>\n"
-                    f"Log in to <b>{firm}</b> and submit your\n"
-                    f"profit share withdrawal claim now.\n\n"
-                    f"Send /phase2 + /resume to start a new cycle."
+                    f"Log in to your prop account and submit the profit share withdrawal claim.\n\n"
+                    f"/phase2 + /resume to start a new cycle."
                 )
                 logger.warning("KILL 5 — consistency rule met: %.1f%% < %.1f%%", ratio_pct, cons_threshold)
                 _alert_sync(msg)
@@ -941,11 +921,11 @@ async def _verify_and_notify(
     if both_ok:
         msg = (
             f"✅ <b>Trade Opened — {ticker}</b>\n\n"
-            f"<b>Personal Signal (VPS #2)</b>\n"
+            f"<b>Personal Signal</b>\n"
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
             f"Entry {_fmt(entry)} | SL {_fmt(pers_sl)} | TP {_fmt(pers_tp)}\n"
             f"Risk: <b>${pers_dollar_risk:,.2f}</b>\n\n"
-            f"<b>Prop Hedge (VPS #3)</b>\n"
+            f"<b>Prop Hedge</b>\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
             f"Entry {_fmt(entry)} | SL {_fmt(prop_sl)} | TP {_fmt(prop_tp)}\n"
             f"Risk: <b>${prop_dollar_risk:,.2f}</b>\n\n"
@@ -957,16 +937,16 @@ async def _verify_and_notify(
         prop_status = "✅ Confirmed" if prop_ok else "❌ Failed"
         msg = (
             f"⚠️ <b>Execution Issue — {ticker}</b>\n\n"
-            f"<b>Personal Signal (VPS #2)</b>\n"
+            f"<b>Personal Signal</b>\n"
             f"Status: {pers_status}\n"
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
             f"Error: {pers_err if pers_err else '—'}\n\n"
-            f"<b>Prop Hedge (VPS #3)</b>\n"
+            f"<b>Prop Hedge</b>\n"
             f"Status: {prop_status}\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
             f"Error: {prop_err if prop_err else '—'}\n\n"
             f"<b>Action Required</b>\n"
-            f"Check MT5 and VPS logs immediately."
+            f"Check MT5 on both accounts immediately."
         )
 
     if both_ok:
@@ -1036,9 +1016,10 @@ async def receive_signal(request: Request):
     if open_count >= max_pos:
         logger.info("MAX_POS  %s %s — %d/%d open", payload.signal, payload.ticker, open_count, max_pos)
         await _telegram_alert(
-            f"🚫 <b>Signal skipped — {payload.ticker}</b>\n"
-            f"Already at max open positions ({open_count}/{max_pos}).\n"
-            f"Signal: {payload.signal}  |  /maxpositions N to increase the limit."
+            f"🚫 <b>Signal Skipped — {payload.ticker}</b>\n\n"
+            f"Max open positions reached ({open_count}/{max_pos}).\n"
+            f"Signal: {payload.signal}\n\n"
+            f"/setmaxpos N to increase the limit."
         )
         return JSONResponse({
             "status": "rejected",
@@ -1074,10 +1055,11 @@ async def receive_signal(request: Request):
     # This prevents a silent EXECUTION FAILURE caused by Layer 3 rejecting the order.
     if not prop_info.get("trade_allowed", True):
         msg = (
-            f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
-            f"Prop MT5 (VPS #3) algo trading is <b>DISABLED</b>.\n\n"
-            f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
-            f"Tools → Options → Expert Advisors → uncheck "
+            f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n"
+            f"Prop Hedge algo trading is <b>DISABLED</b>.\n\n"
+            f"<b>Fix</b>\n"
+            f"1. MT5 toolbar → Algo Trading button (make it green)\n"
+            f"2. Tools → Options → Expert Advisors → uncheck "
             f"<i>'Disable algorithmic trading when the account has been changed'</i>"
         )
         logger.error("Prop trade_allowed=False — blocking %s %s", payload.signal, payload.ticker)
@@ -1086,10 +1068,11 @@ async def receive_signal(request: Request):
 
     if not pers_info.get("trade_allowed", True):
         msg = (
-            f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
-            f"Personal MT5 (VPS #2) algo trading is <b>DISABLED</b>.\n\n"
-            f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
-            f"Tools → Options → Expert Advisors → uncheck "
+            f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n"
+            f"Personal Signal algo trading is <b>DISABLED</b>.\n\n"
+            f"<b>Fix</b>\n"
+            f"1. MT5 toolbar → Algo Trading button (make it green)\n"
+            f"2. Tools → Options → Expert Advisors → uncheck "
             f"<i>'Disable algorithmic trading when the account has been changed'</i>"
         )
         logger.error("Personal trade_allowed=False — blocking %s %s", payload.signal, payload.ticker)
