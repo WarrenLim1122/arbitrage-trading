@@ -1086,52 +1086,56 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     with _pf_lock:
         pf = dict(_propfirm)
-    baseline      = pf.get("baseline_equity",       0.0)
-    day_start     = pf.get("day_start_equity",       0.0)
-    pers_baseline = pf.get("pers_baseline_equity",   0.0)
-    pers_day_start= pf.get("pers_day_start_equity",  0.0)
+    prop_baseline  = pf.get("baseline_equity",      0.0)
+    prop_day_start = pf.get("day_start_equity",      0.0)
+    pers_baseline  = pf.get("pers_baseline_equity",  0.0)
+    pers_day_start = pf.get("pers_day_start_equity", 0.0)
 
-    try:
-        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        eq = prop["equity"]
-        daily_pnl   = eq - day_start if day_start > 0 else 0.0
-        overall_pnl = eq - baseline  if baseline  > 0 else 0.0
-        daily_pct   = daily_pnl   / baseline * 100 if baseline > 0 else 0.0
-        overall_pct = overall_pnl / baseline * 100 if baseline > 0 else 0.0
-        d_arrow = "↑" if daily_pnl   >= 0 else "↓"
-        o_arrow = "↑" if overall_pnl >= 0 else "↓"
-        prop_text = (
-            f"Equity: ${eq:,.2f}\n"
-            f"{d_arrow} Today: ${daily_pnl:+,.2f} ({daily_pct:+.2f}%)"
-            f"  {o_arrow} Overall: ${overall_pnl:+,.2f} ({overall_pct:+.2f}%)"
-        )
-    except Exception as exc:
-        prop_text = f"OFFLINE — {exc}"
+    def _account_block(
+        label: str,
+        data: dict,
+        baseline: float,
+        day_start: float,
+    ) -> str:
+        bal     = data["balance"]
+        eq      = data["equity"]
+        profit  = data.get("profit", eq - bal)
+
+        lines = [
+            f"<b>{label}</b>",
+            f"Balance / Equity: ${bal:,.2f} / ${eq:,.2f}",
+            f"Floating P&amp;L: ${profit:+,.2f}",
+        ]
+
+        if day_start > 0 and baseline > 0:
+            daily_pnl   = eq - day_start
+            overall_pnl = eq - baseline
+            daily_pct   = daily_pnl   / baseline * 100
+            overall_pct = overall_pnl / baseline * 100
+            d_arrow = "↑" if daily_pnl   >= 0 else "↓"
+            o_arrow = "↑" if overall_pnl >= 0 else "↓"
+            lines.append(f"Today: {d_arrow} ${daily_pnl:+,.2f} ({daily_pct:+.2f}%)")
+            lines.append(f"Overall: {o_arrow} ${overall_pnl:+,.2f} ({overall_pct:+.2f}%)")
+        elif day_start == 0:
+            lines.append("Today: N/A — day-start not tracked yet")
+            lines.append("Overall: N/A — baseline not tracked yet")
+
+        return "\n".join(lines)
 
     try:
         pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_eq = pers["equity"]
-        pers_daily_pnl   = pers_eq - pers_day_start if pers_day_start > 0 else 0.0
-        pers_overall_pnl = pers_eq - pers_baseline  if pers_baseline  > 0 else 0.0
-        pers_daily_pct   = pers_daily_pnl   / pers_baseline * 100 if pers_baseline > 0 else 0.0
-        pers_overall_pct = pers_overall_pnl / pers_baseline * 100 if pers_baseline > 0 else 0.0
-        pd_arrow = "↑" if pers_daily_pnl   >= 0 else "↓"
-        po_arrow = "↑" if pers_overall_pnl >= 0 else "↓"
-        if pers_day_start > 0 and pers_baseline > 0:
-            pers_text = (
-                f"Equity: ${pers_eq:,.2f}\n"
-                f"{pd_arrow} Today: ${pers_daily_pnl:+,.2f} ({pers_daily_pct:+.2f}%)"
-                f"  {po_arrow} Overall: ${pers_overall_pnl:+,.2f} ({pers_overall_pct:+.2f}%)"
-            )
-        else:
-            pers_text = f"Equity: ${pers_eq:,.2f}"
+        pers_block = _account_block("Personal Signal", pers, pers_baseline, pers_day_start)
     except Exception as exc:
-        pers_text = f"OFFLINE — {exc}"
+        pers_block = f"<b>Personal Signal</b>\nOFFLINE — {exc}"
+
+    try:
+        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        prop_block = _account_block("Prop Hedge", prop, prop_baseline, prop_day_start)
+    except Exception as exc:
+        prop_block = f"<b>Prop Hedge</b>\nOFFLINE — {exc}"
 
     await update.message.reply_text(
-        f"📊 <b>Live Equity Snapshot</b>\n\n"
-        f"<b>Prop (VPS #2):</b>\n{prop_text}\n\n"
-        f"<b>Personal (VPS #3):</b>\n{pers_text}",
+        f"📊 <b>Live Equity Snapshot</b>\n\n{pers_block}\n\n{prop_block}",
         parse_mode="HTML",
     )
 

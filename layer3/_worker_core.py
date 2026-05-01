@@ -515,11 +515,20 @@ def _build_positions_reply() -> dict:
 def _build_equity_reply(ticker: str) -> dict:
     try:
         with _mt5_lock:
-            acct = mt5.account_info()
-            term = mt5.terminal_info()
-        balance       = acct.balance if acct else 0.0
-        equity        = acct.equity  if acct else 0.0
+            acct      = mt5.account_info()
+            term      = mt5.terminal_info()
+            positions = mt5.positions_get() or []
+        balance       = acct.balance      if acct else 0.0
+        equity        = acct.equity       if acct else 0.0
+        profit        = acct.profit       if acct else 0.0
         trade_allowed = bool(term.trade_allowed) if term else True
+
+        if positions and balance == equity:
+            logger.warning(
+                "Balance and equity are identical (%.2f) while %d position(s) open — "
+                "verify MT5 account_info().equity",
+                balance, len(positions),
+            )
 
         point = contract_size = tick_size = tick_value = 0.0
         digits = 5
@@ -532,6 +541,7 @@ def _build_equity_reply(ticker: str) -> dict:
         return {
             "balance":            balance,
             "equity":             equity,
+            "profit":             profit,
             "trade_allowed":      trade_allowed,
             "point":              point,
             "contract_size":      contract_size,
@@ -543,7 +553,7 @@ def _build_equity_reply(ticker: str) -> dict:
         logger.error("equity reply error: %s", exc)
         return {
             "error": str(exc),
-            "balance": 0.0, "equity": 0.0,
+            "balance": 0.0, "equity": 0.0, "profit": 0.0,
             "trade_allowed": True,
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,

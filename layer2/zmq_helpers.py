@@ -37,6 +37,7 @@ def _query_equity(zmq_url: str, ticker: str) -> dict:
         return {
             "balance":            float(reply.get("balance",            0.0)),
             "equity":             float(reply.get("equity",             0.0)),
+            "profit":             float(reply.get("profit",             0.0)),
             "trade_allowed":      bool(reply.get("trade_allowed",       True)),
             "point":              float(reply.get("point",              0.0)),
             "contract_size":      float(reply.get("contract_size",      0.0)),
