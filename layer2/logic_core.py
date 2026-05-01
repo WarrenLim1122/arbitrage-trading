@@ -61,7 +61,7 @@ from layer2.zmq_helpers import (
     _dispatch_force_close, _dispatch_close_ticker, _dispatch_news_suppress,
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
-    _update_day_start, _push_ticket,
+    _update_day_start, _update_pers_day_start, _push_ticket,
 )
 from layer2 import telegram_handlers
 
@@ -574,8 +574,12 @@ def _run_equity_check() -> None:
             )
         return
 
+    pers_equity_live:  float | None = None
+    pers_balance_live: float | None = None
     try:
         _pers_result = _query_equity(ZMQ_REQ_PERS, "")
+        pers_equity_live  = _pers_result["equity"]
+        pers_balance_live = _pers_result["balance"]
         if _pers_down:
             _pers_down = False
             _pers_fail_count = 0
@@ -652,6 +656,8 @@ def _run_equity_check() -> None:
             day_profit = prop_equity - pf.get("day_start_equity", prop_equity)
             _record_day_profit(stored_date, day_profit)
         _update_day_start(prop_equity)
+        if pers_equity_live is not None and pers_balance_live is not None:
+            _update_pers_day_start(pers_equity_live, pers_balance_live)
         return
 
     day_start = pf.get("day_start_equity", 0.0)
@@ -659,7 +665,12 @@ def _run_equity_check() -> None:
 
     if day_start == 0.0:
         _update_day_start(prop_equity)
+        if pers_equity_live is not None and pers_balance_live is not None:
+            _update_pers_day_start(pers_equity_live, pers_balance_live)
         return
+
+    if pf.get("pers_day_start_equity", 0.0) == 0.0 and pers_equity_live is not None and pers_balance_live is not None:
+        _update_pers_day_start(pers_equity_live, pers_balance_live)
 
     if baseline <= 0:
         return

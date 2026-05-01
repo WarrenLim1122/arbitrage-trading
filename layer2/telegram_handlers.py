@@ -1086,8 +1086,10 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     with _pf_lock:
         pf = dict(_propfirm)
-    baseline  = pf.get("baseline_equity",  0.0)
-    day_start = pf.get("day_start_equity", 0.0)
+    baseline      = pf.get("baseline_equity",       0.0)
+    day_start     = pf.get("day_start_equity",       0.0)
+    pers_baseline = pf.get("pers_baseline_equity",   0.0)
+    pers_day_start= pf.get("pers_day_start_equity",  0.0)
 
     try:
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
@@ -1099,21 +1101,57 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         d_arrow = "↑" if daily_pnl   >= 0 else "↓"
         o_arrow = "↑" if overall_pnl >= 0 else "↓"
         prop_text = (
-            f"Balance: ${prop['balance']:,.2f} | Equity: ${eq:,.2f}\n"
+            f"Equity: ${eq:,.2f}\n"
             f"{d_arrow} Today: ${daily_pnl:+,.2f} ({daily_pct:+.2f}%)"
             f"  {o_arrow} Overall: ${overall_pnl:+,.2f} ({overall_pct:+.2f}%)"
         )
     except Exception as exc:
         prop_text = f"OFFLINE — {exc}"
+
     try:
         pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_text = f"Balance: ${pers['balance']:,.2f} | Equity: ${pers['equity']:,.2f}"
+        pers_eq = pers["equity"]
+        pers_daily_pnl   = pers_eq - pers_day_start if pers_day_start > 0 else 0.0
+        pers_overall_pnl = pers_eq - pers_baseline  if pers_baseline  > 0 else 0.0
+        pers_daily_pct   = pers_daily_pnl   / pers_baseline * 100 if pers_baseline > 0 else 0.0
+        pers_overall_pct = pers_overall_pnl / pers_baseline * 100 if pers_baseline > 0 else 0.0
+        pd_arrow = "↑" if pers_daily_pnl   >= 0 else "↓"
+        po_arrow = "↑" if pers_overall_pnl >= 0 else "↓"
+        if pers_day_start > 0 and pers_baseline > 0:
+            pers_text = (
+                f"Equity: ${pers_eq:,.2f}\n"
+                f"{pd_arrow} Today: ${pers_daily_pnl:+,.2f} ({pers_daily_pct:+.2f}%)"
+                f"  {po_arrow} Overall: ${pers_overall_pnl:+,.2f} ({pers_overall_pct:+.2f}%)"
+            )
+        else:
+            pers_text = f"Equity: ${pers_eq:,.2f}"
     except Exception as exc:
         pers_text = f"OFFLINE — {exc}"
+
     await update.message.reply_text(
         f"📊 <b>Live Equity Snapshot</b>\n\n"
         f"<b>Prop (VPS #2):</b>\n{prop_text}\n\n"
         f"<b>Personal (VPS #3):</b>\n{pers_text}",
+        parse_mode="HTML",
+    )
+
+
+async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    with _pf_lock:
+        pf = dict(_propfirm)
+    prop_baseline = pf.get("baseline_equity",     0.0)
+    pers_baseline = pf.get("pers_baseline_equity", 0.0)
+    prop_name     = pf.get("propfirm_name", "—")
+
+    prop_str = f"${prop_baseline:,.2f}" if prop_baseline > 0 else "Not set — run /changepropfirm"
+    pers_str = f"${pers_baseline:,.2f}" if pers_baseline > 0 else "Not set yet — initializes on next equity poll"
+
+    await update.message.reply_text(
+        f"📌 <b>Baseline Equity</b>\n\n"
+        f"<b>Prop ({prop_name}, VPS #2):</b>\n{prop_str}\n\n"
+        f"<b>Personal (VPS #3):</b>\n{pers_str}",
         parse_mode="HTML",
     )
 
@@ -1808,7 +1846,8 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/health — Connectivity across all 4 layers\n"
         "/status — Phase, active flag, last signal time\n"
         "/positions — Open trades on both accounts\n"
-        "/equity — Live balance and equity\n"
+        "/equity — Live equity, today and overall P&amp;L for both accounts\n"
+        "/baseline — Show baseline equity for prop and personal\n"
         "/pnl — Daily and overall P&amp;L vs cap and DD limits\n\n"
 
         "<b>Trading Control</b>\n"
@@ -1922,6 +1961,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("equity",        _cmd_equity))
+    tg_app.add_handler(CommandHandler("baseline",      _cmd_baseline))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))

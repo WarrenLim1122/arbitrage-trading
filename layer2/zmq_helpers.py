@@ -207,6 +207,18 @@ def _update_day_start(equity: float) -> None:
     logger.info("Day-start equity set to %.2f", equity)
 
 
+def _update_pers_day_start(equity: float, balance: float) -> None:
+    """Reset personal day-start equity. Also locks pers_baseline_equity from MT5 balance
+    on first call (when it is currently 0) — mirrors how /phase1 works for prop."""
+    with _pf_lock:
+        _propfirm["pers_day_start_equity"] = equity
+        if _propfirm.get("pers_baseline_equity", 0.0) <= 0.0:
+            _propfirm["pers_baseline_equity"] = balance
+            logger.info("Personal baseline locked from MT5 balance: %.2f", balance)
+        _save_propfirm(_propfirm)
+    logger.info("Personal day-start equity set to %.2f", equity)
+
+
 def _lock_baseline_from_live() -> tuple[float, str]:
     """Query live MT5 balance and lock it as baseline_equity + day_start_equity.
 
