@@ -62,6 +62,7 @@ from layer2.zmq_helpers import (
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
     _update_day_start, _update_pers_day_start, _push_ticket,
+    _cache_live_logins,
 )
 from layer2 import telegram_handlers
 
@@ -277,6 +278,14 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     except Exception:
         curr_pers = []
 
+    # Read cached login IDs for display.
+    with _pf_lock:
+        pf_snap = dict(_propfirm)
+    prop_login = pf_snap.get("live_prop_login", 0)
+    pers_login = pf_snap.get("live_pers_login", 0)
+    prop_login_str = str(prop_login) if prop_login else "—"
+    pers_login_str = str(pers_login) if pers_login else "—"
+
     def _pos_summary(pos_list: list[dict]) -> str:
         if not pos_list:
             return "No open positions"
@@ -303,14 +312,21 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         exit_lvl = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
         exit_tag = f"TP at {exit_lvl}" if pnl >= 0 else f"SL at {exit_lvl}"
         sections.append(
-            f"<b>Personal Signal (VPS #2)</b>\n"
+            f"<b>Personal Signal</b>\n"
+            f"MT5: {pers_login_str}\n"
+            f"Worker: VPS #2 / worker_personal\n"
             f"{dir_str} {pos['volume']:.2f} lots\n"
             f"Entry: {_fmt_price(symbol, pos['price_open'])}\n"
             f"Exit reason: {exit_tag}\n"
             f"P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
-        sections.append("<b>Personal Signal (VPS #2)</b>\n⚠️ Still open / not confirmed")
+        sections.append(
+            f"<b>Personal Signal</b>\n"
+            f"MT5: {pers_login_str}\n"
+            f"Worker: VPS #2 / worker_personal\n"
+            f"⚠️ Still open / not confirmed"
+        )
 
     # ── Prop Hedge ───────────────────────────────────────────────────────────
     if prop_pos_data:
@@ -318,13 +334,20 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
         pnl     = pos["profit"]
         sections.append(
-            f"<b>Prop Hedge (VPS #3)</b>\n"
+            f"<b>Prop Hedge</b>\n"
+            f"MT5: {prop_login_str}\n"
+            f"Worker: VPS #3 / worker_prop\n"
             f"Closed\n"
             f"{dir_str} {pos['volume']:.2f} lots\n"
             f"P&amp;L: ${pnl:+,.2f}"
         )
     else:
-        sections.append("<b>Prop Hedge (VPS #3)</b>\n⚠️ Still open / not confirmed")
+        sections.append(
+            f"<b>Prop Hedge</b>\n"
+            f"MT5: {prop_login_str}\n"
+            f"Worker: VPS #3 / worker_prop\n"
+            f"⚠️ Still open / not confirmed"
+        )
 
     # ── After Close ──────────────────────────────────────────────────────────
     sections.append(
@@ -580,9 +603,11 @@ def _run_equity_check() -> None:
         return
 
     pers_equity_live: float | None = None
+    pers_login_live: int = 0
     try:
         _pers_result = _query_equity(ZMQ_REQ_PERS, "")
         pers_equity_live = _pers_result["equity"]
+        pers_login_live  = _pers_result.get("login", 0)
         if _pers_down:
             _pers_down = False
             _pers_fail_count = 0
@@ -626,6 +651,16 @@ def _run_equity_check() -> None:
                 "3. <code>uv run python layer3/worker_personal.py</code>"
             )
         # personal failure doesn't block kill-condition checks — prop equity already fetched
+
+    # Cache live login IDs for display in Telegram alerts (both workers responded)
+    if not _prop_down and not _pers_down:
+        try:
+            _cache_live_logins(
+                int(_eq_result.get("login", 0)),
+                pers_login_live if pers_login_live else 0,
+            )
+        except Exception as exc:
+            logger.debug("_cache_live_logins failed: %s", exc)
 
     # Position mismatch + close detection — runs every cycle when both workers are online
     if not _prop_down and not _pers_down:
@@ -904,6 +939,8 @@ async def _verify_and_notify(
     baseline_equity: float,
     price_digits: int,
     entry: float,
+    prop_login: int = 0,
+    pers_login: int = 0,
 ) -> None:
     """Wait 8 s for orders to fill, then query both workers with retry logic before sending
     Telegram confirmation. Retries up to 3× (3 s apart) to avoid false failures from
@@ -941,11 +978,15 @@ async def _verify_and_notify(
     if both_ok:
         msg = (
             f"✅ <b>Trade Opened — {ticker}</b>\n\n"
-            f"<b>Personal Signal (VPS #2)</b>\n"
+            f"<b>Personal Signal</b>\n"
+            f"MT5: {pers_login if pers_login else '—'}\n"
+            f"Worker: VPS #2 / worker_personal\n"
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
             f"Entry {_fmt(entry)} | SL {_fmt(pers_sl)} | TP {_fmt(pers_tp)}\n"
             f"Risk: <b>${pers_dollar_risk:,.2f}</b>\n\n"
-            f"<b>Prop Hedge (VPS #3)</b>\n"
+            f"<b>Prop Hedge</b>\n"
+            f"MT5: {prop_login if prop_login else '—'}\n"
+            f"Worker: VPS #3 / worker_prop\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
             f"Entry {_fmt(entry)} | SL {_fmt(prop_sl)} | TP {_fmt(prop_tp)}\n"
             f"Risk: <b>${prop_dollar_risk:,.2f}</b>\n\n"
@@ -957,11 +998,15 @@ async def _verify_and_notify(
         prop_status = "✅ Confirmed" if prop_ok else "❌ Failed"
         msg = (
             f"⚠️ <b>Execution Issue — {ticker}</b>\n\n"
-            f"<b>Personal Signal (VPS #2)</b>\n"
+            f"<b>Personal Signal</b>\n"
+            f"MT5: {pers_login if pers_login else '—'}\n"
+            f"Worker: VPS #2 / worker_personal\n"
             f"Status: {pers_status}\n"
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
             f"Error: {pers_err if pers_err else '—'}\n\n"
-            f"<b>Prop Hedge (VPS #3)</b>\n"
+            f"<b>Prop Hedge</b>\n"
+            f"MT5: {prop_login if prop_login else '—'}\n"
+            f"Worker: VPS #3 / worker_prop\n"
             f"Status: {prop_status}\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
             f"Error: {prop_err if prop_err else '—'}\n\n"
@@ -1070,12 +1115,45 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
 
+    # Gate: block signal if live account IDs don't match expected IDs (if set).
+    with _pf_lock:
+        pf_snap = dict(_propfirm)
+    expected_prop = int(pf_snap.get("expected_prop_login", 0))
+    expected_pers = int(pf_snap.get("expected_pers_login", 0))
+    live_prop = int(prop_info.get("login", 0))
+    live_pers = int(pers_info.get("login", 0))
+    if expected_prop > 0 and live_prop > 0 and live_prop != expected_prop:
+        msg = (
+            f"⚠️ <b>Prop Account Mismatch — {payload.ticker} blocked</b>\n\n"
+            f"Expected: MT5 {expected_prop}\n"
+            f"Live: MT5 {live_prop}\n\n"
+            f"<b>Action Required</b>\n"
+            f"Check the prop MT5 login before allowing new trades.\n"
+            f"Run /setpropaccount {live_prop} if this is correct."
+        )
+        logger.error("Prop account mismatch: expected=%d live=%d", expected_prop, live_prop)
+        await _telegram_alert(msg)
+        raise HTTPException(status_code=503, detail="prop account mismatch")
+    if expected_pers > 0 and live_pers > 0 and live_pers != expected_pers:
+        msg = (
+            f"⚠️ <b>Personal Account Mismatch — {payload.ticker} blocked</b>\n\n"
+            f"Expected: MT5 {expected_pers}\n"
+            f"Live: MT5 {live_pers}\n\n"
+            f"<b>Action Required</b>\n"
+            f"Check the personal MT5 login before allowing new trades.\n"
+            f"Run /setpersonalaccount {live_pers} if this is correct."
+        )
+        logger.error("Personal account mismatch: expected=%d live=%d", expected_pers, live_pers)
+        await _telegram_alert(msg)
+        raise HTTPException(status_code=503, detail="personal account mismatch")
+
     # Gate: reject immediately if MT5 algo trading is disabled on either worker.
     # This prevents a silent EXECUTION FAILURE caused by Layer 3 rejecting the order.
     if not prop_info.get("trade_allowed", True):
+        prop_login_str = str(int(prop_info.get("login", 0))) if prop_info.get("login", 0) else "unknown"
         msg = (
             f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
-            f"Prop MT5 (VPS #3) algo trading is <b>DISABLED</b>.\n\n"
+            f"Prop MT5 {prop_login_str} (VPS #3) algo trading is <b>DISABLED</b>.\n\n"
             f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
             f"Tools → Options → Expert Advisors → uncheck "
             f"<i>'Disable algorithmic trading when the account has been changed'</i>"
@@ -1085,9 +1163,10 @@ async def receive_signal(request: Request):
         raise HTTPException(status_code=503, detail="prop trade_allowed=False")
 
     if not pers_info.get("trade_allowed", True):
+        pers_login_str = str(int(pers_info.get("login", 0))) if pers_info.get("login", 0) else "unknown"
         msg = (
             f"🚫 <b>Signal blocked — {payload.ticker}</b>\n"
-            f"Personal MT5 (VPS #2) algo trading is <b>DISABLED</b>.\n\n"
+            f"Personal MT5 {pers_login_str} (VPS #2) algo trading is <b>DISABLED</b>.\n\n"
             f"Fix: MT5 toolbar → Algo Trading button (make it green), then\n"
             f"Tools → Options → Expert Advisors → uncheck "
             f"<i>'Disable algorithmic trading when the account has been changed'</i>"
@@ -1221,6 +1300,8 @@ async def receive_signal(request: Request):
         baseline_equity=baseline_equity,
         price_digits=price_digits,
         entry=payload.entry,
+        prop_login=int(prop_info.get("login", 0)),
+        pers_login=int(pers_info.get("login", 0)),
     ))
 
     with _state_lock:

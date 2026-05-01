@@ -39,6 +39,8 @@ def _query_equity(zmq_url: str, ticker: str) -> dict:
             "equity":             float(reply.get("equity",             0.0)),
             "profit":             float(reply.get("profit",             0.0)),
             "trade_allowed":      bool(reply.get("trade_allowed",       True)),
+            "login":              int(reply.get("login",                0)),
+            "server":             str(reply.get("server",               "")),
             "point":              float(reply.get("point",              0.0)),
             "contract_size":      float(reply.get("contract_size",      0.0)),
             "trade_tick_size":    float(reply.get("trade_tick_size",    0.0)),
@@ -215,6 +217,14 @@ def _update_pers_day_start(equity: float) -> None:
         _propfirm["pers_day_start_equity"] = equity
         _save_propfirm(_propfirm)
     logger.info("Personal day-start equity set to %.2f", equity)
+
+
+def _cache_live_logins(prop_login: int, pers_login: int) -> None:
+    """Cache the last seen MT5 login IDs for display in Telegram alerts."""
+    with _pf_lock:
+        _propfirm["live_prop_login"] = prop_login
+        _propfirm["live_pers_login"] = pers_login
+        _save_propfirm(_propfirm)
 
 
 def _set_personal_baseline(amount: float) -> None:

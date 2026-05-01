@@ -44,6 +44,11 @@ from layer2.zmq_helpers import (
 
 logger = logging.getLogger("layer2")
 
+
+def _login_str(login: int) -> str:
+    return str(login) if login else "—"
+
+
 # ── Telegram wizard — /changepropfirm ────────────────────────────────────
 
 (PF_NAME, PF_PROFIT_TARGET, PF_MAX_DD_OVERALL, PF_MAX_DD_DAILY,
@@ -1093,16 +1098,20 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     def _account_block(
         label: str,
+        worker: str,
         data: dict,
         baseline: float,
         day_start: float,
     ) -> str:
+        login   = data.get("login", 0)
         bal     = data["balance"]
         eq      = data["equity"]
         profit  = data.get("profit", eq - bal)
 
         lines = [
             f"<b>{label}</b>",
+            f"MT5: {_login_str(login)}",
+            f"Worker: {worker}",
             f"Balance / Equity: ${bal:,.2f} / ${eq:,.2f}",
             f"Floating P&amp;L: ${profit:+,.2f}",
         ]
@@ -1124,15 +1133,15 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_block = _account_block("Personal Signal (VPS #2)", pers, pers_baseline, pers_day_start)
+        pers_block = _account_block("Personal Signal", "VPS #2 / worker_personal", pers, pers_baseline, pers_day_start)
     except Exception as exc:
-        pers_block = f"<b>Personal Signal (VPS #2)</b>\nOFFLINE — {exc}"
+        pers_block = f"<b>Personal Signal</b>\nMT5: —\nWorker: VPS #2 / worker_personal\nOFFLINE — {exc}"
 
     try:
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_block = _account_block("Prop Hedge (VPS #3)", prop, prop_baseline, prop_day_start)
+        prop_block = _account_block("Prop Hedge", "VPS #3 / worker_prop", prop, prop_baseline, prop_day_start)
     except Exception as exc:
-        prop_block = f"<b>Prop Hedge (VPS #3)</b>\nOFFLINE — {exc}"
+        prop_block = f"<b>Prop Hedge</b>\nMT5: —\nWorker: VPS #3 / worker_prop\nOFFLINE — {exc}"
 
     await update.message.reply_text(
         f"📊 <b>Live Equity Snapshot</b>\n\n{pers_block}\n\n{prop_block}",
@@ -1152,13 +1161,17 @@ async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
     try:
         prop_eq_data = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         prop_equity  = prop_eq_data["equity"]
+        prop_login   = prop_eq_data.get("login", 0)
     except Exception:
         prop_equity  = None
+        prop_login   = pf.get("live_prop_login", 0)
     try:
         pers_eq_data = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
         pers_equity  = pers_eq_data["equity"]
+        pers_login   = pers_eq_data.get("login", 0)
     except Exception:
         pers_equity  = None
+        pers_login   = pf.get("live_pers_login", 0)
 
     sections = ["📌 <b>Baseline Equity</b>"]
 
@@ -1172,14 +1185,18 @@ async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         else:
             pnl_str = "N/A"
         sections.append(
-            f"<b>Personal Signal (VPS #2)</b>\n"
+            f"<b>Personal Signal</b>\n"
+            f"MT5: {_login_str(pers_login)}\n"
+            f"Worker: VPS #2 / worker_personal\n"
             f"Baseline: ${pers_baseline:,.2f}\n"
             f"Current equity: {pers_eq_str}\n"
             f"Overall P&amp;L: {pnl_str}"
         )
     else:
         sections.append(
-            f"<b>Personal Signal (VPS #2)</b>\n"
+            f"<b>Personal Signal</b>\n"
+            f"MT5: {_login_str(pers_login)}\n"
+            f"Worker: VPS #2 / worker_personal\n"
             f"⚠️ Personal baseline not set.\n"
             f"Run: /setpersonalbaseline 10000"
         )
@@ -1194,14 +1211,18 @@ async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         else:
             pnl_str = "N/A"
         sections.append(
-            f"<b>Prop Hedge ({prop_name}, VPS #3)</b>\n"
+            f"<b>Prop Hedge ({prop_name})</b>\n"
+            f"MT5: {_login_str(prop_login)}\n"
+            f"Worker: VPS #3 / worker_prop\n"
             f"Baseline: ${prop_baseline:,.2f}\n"
             f"Current equity: {prop_eq_str}\n"
             f"Overall P&amp;L: {pnl_str}"
         )
     else:
         sections.append(
-            f"<b>Prop Hedge ({prop_name}, VPS #3)</b>\n"
+            f"<b>Prop Hedge ({prop_name})</b>\n"
+            f"MT5: {_login_str(prop_login)}\n"
+            f"Worker: VPS #3 / worker_prop\n"
             f"Not set — run /changepropfirm"
         )
 
@@ -1343,6 +1364,12 @@ async def _emergency_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
 async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
+
+    with _pf_lock:
+        pf_snap = dict(_propfirm)
+    prop_login = pf_snap.get("live_prop_login", 0)
+    pers_login = pf_snap.get("live_pers_login", 0)
+
     try:
         prop_pos = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
         prop_err = None
@@ -1357,11 +1384,15 @@ async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         pers_err = str(exc)
 
     lines = ["📊 <b>Open Positions</b>\n"]
-    for label, positions, err in [
-        ("Personal Signal (VPS #2)", pers_pos, pers_err),
-        ("Prop Hedge (VPS #3)",      prop_pos, prop_err),
+    for label, worker, login, positions, err in [
+        ("Personal Signal", "VPS #2 / worker_personal", pers_login, pers_pos, pers_err),
+        ("Prop Hedge",      "VPS #3 / worker_prop",     prop_login, prop_pos, prop_err),
     ]:
-        lines.append(f"<b>{label}:</b>")
+        lines.append(
+            f"<b>{label}</b>\n"
+            f"MT5: {_login_str(login)}\n"
+            f"Worker: {worker}"
+        )
         if err:
             lines.append(f"OFFLINE — {err}")
         elif not positions:
@@ -1920,6 +1951,110 @@ async def _cmd_cancel_noop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("No active wizard to cancel.", parse_mode="HTML")
 
 
+async def _cmd_set_prop_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: /setpropaccount 12345678", parse_mode="HTML")
+        return
+    try:
+        login = int(args[0])
+        assert login > 0
+    except Exception:
+        await update.message.reply_text("Invalid login. Example: /setpropaccount 12345678", parse_mode="HTML")
+        return
+    with _pf_lock:
+        _propfirm["expected_prop_login"] = login
+        _save_propfirm(_propfirm)
+    await update.message.reply_text(
+        f"✅ <b>Prop Account Set</b>\n\nExpected prop MT5: <b>{login}</b>\n\nRun /accountcheck to verify.",
+        parse_mode="HTML",
+    )
+
+
+async def _cmd_set_personal_account(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    args = ctx.args
+    if not args:
+        await update.message.reply_text("Usage: /setpersonalaccount 12345678", parse_mode="HTML")
+        return
+    try:
+        login = int(args[0])
+        assert login > 0
+    except Exception:
+        await update.message.reply_text("Invalid login. Example: /setpersonalaccount 12345678", parse_mode="HTML")
+        return
+    with _pf_lock:
+        _propfirm["expected_pers_login"] = login
+        _save_propfirm(_propfirm)
+    await update.message.reply_text(
+        f"✅ <b>Personal Account Set</b>\n\nExpected personal MT5: <b>{login}</b>\n\nRun /accountcheck to verify.",
+        parse_mode="HTML",
+    )
+
+
+async def _cmd_account_check(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    with _pf_lock:
+        pf = dict(_propfirm)
+    expected_prop = int(pf.get("expected_prop_login", 0))
+    expected_pers = int(pf.get("expected_pers_login", 0))
+
+    live_prop = None
+    prop_server = ""
+    try:
+        prop_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        live_prop = int(prop_eq.get("login", 0))
+        prop_server = prop_eq.get("server", "")
+    except Exception:
+        pass
+
+    live_pers = None
+    pers_server = ""
+    try:
+        pers_eq = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        live_pers = int(pers_eq.get("login", 0))
+        pers_server = pers_eq.get("server", "")
+    except Exception:
+        pass
+
+    def _status(expected: int, live) -> str:
+        if live is None:
+            return "⚠️ worker offline"
+        if expected == 0:
+            return "not set — run /setpersonalaccount or /setpropaccount"
+        return "✅ matched" if live == expected else f"❌ MISMATCH (live: {live})"
+
+    sections = ["<b>Account Check</b>"]
+
+    pers_live_str = str(live_pers) if live_pers is not None else "OFFLINE"
+    pers_exp_str  = str(expected_pers) if expected_pers else "not set"
+    sections.append(
+        f"<b>Personal Signal</b>\n"
+        f"Expected: MT5 {pers_exp_str}\n"
+        f"Live: MT5 {pers_live_str}"
+        + (f" ({pers_server})" if pers_server else "") + "\n"
+        f"Worker: VPS #2 / worker_personal\n"
+        f"Status: {_status(expected_pers, live_pers)}"
+    )
+
+    prop_live_str = str(live_prop) if live_prop is not None else "OFFLINE"
+    prop_exp_str  = str(expected_prop) if expected_prop else "not set"
+    sections.append(
+        f"<b>Prop Hedge</b>\n"
+        f"Expected: MT5 {prop_exp_str}\n"
+        f"Live: MT5 {prop_live_str}"
+        + (f" ({prop_server})" if prop_server else "") + "\n"
+        f"Worker: VPS #3 / worker_prop\n"
+        f"Status: {_status(expected_prop, live_prop)}"
+    )
+
+    await update.message.reply_text("\n\n".join(sections), parse_mode="HTML")
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -1935,7 +2070,8 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/positions — Open trades on both accounts\n"
         "/equity — Live equity, today and overall P&amp;L for both accounts\n"
         "/baseline — Show baseline equity for prop and personal\n"
-        "/pnl — Daily and overall P&amp;L vs cap and DD limits\n\n"
+        "/pnl — Daily and overall P&amp;L vs cap and DD limits\n"
+        "/accountcheck — Verify live MT5 account IDs match expected accounts\n\n"
 
         "<b>Trading Control</b>\n"
         "/resume — Resume signal processing after halt\n"
@@ -1959,6 +2095,8 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/changepropfirm — Update prop firm (10-step wizard)\n"
         "/setpersonalbaseline 10000 — Set personal account baseline equity\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
+        "/setpropaccount 12345678 — Set expected prop MT5 account ID\n"
+        "/setpersonalaccount 12345678 — Set expected personal MT5 account ID\n"
         "/back — Go back one step in /changepropfirm wizard\n"
         "/cancel — Cancel any active wizard\n\n"
 
@@ -2060,10 +2198,13 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))
     tg_app.add_handler(CommandHandler("setmaxpos",     _cmd_setmaxpos))
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
-    tg_app.add_handler(CommandHandler("consistency",   _cmd_consistency))
-    tg_app.add_handler(CommandHandler("help",          _cmd_help))
-    tg_app.add_handler(CommandHandler("setwindow",     _cmd_setwindow))
-    tg_app.add_handler(CommandHandler("cancel",        _cmd_cancel_noop))  # fallback when no wizard active
+    tg_app.add_handler(CommandHandler("consistency",        _cmd_consistency))
+    tg_app.add_handler(CommandHandler("help",              _cmd_help))
+    tg_app.add_handler(CommandHandler("setwindow",         _cmd_setwindow))
+    tg_app.add_handler(CommandHandler("accountcheck",      _cmd_account_check))
+    tg_app.add_handler(CommandHandler("setpropaccount",    _cmd_set_prop_account))
+    tg_app.add_handler(CommandHandler("setpersonalaccount", _cmd_set_personal_account))
+    tg_app.add_handler(CommandHandler("cancel",            _cmd_cancel_noop))  # fallback when no wizard active
 
     async def _poll():
         await tg_app.initialize()
