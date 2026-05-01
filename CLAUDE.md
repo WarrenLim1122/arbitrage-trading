@@ -5,30 +5,17 @@ Guidance for Claude Code. For full technical details — layer deep-dives, risk 
 ## Workflow Rules
 
 - **Auto-push to GitHub after every code change.** Warren has given standing permission for all pushes to `main`. Never wait to be reminded — commit and push immediately after making any file edits.
-- **Always include full deployment steps** in responses after a push: exact SSH command, `git pull`, and restart commands for every affected VPS, ready to copy-paste.
+- **After a push, tell Warren which Telegram `/update` commands to run** — do not repeat full deployment steps in responses. Routine deployment instructions now live inside the Telegram `/update` command:
+  - Layer 1/2 changes → `/update layer2`
+  - Layer 3 Personal changes → `/update personal`
+  - Layer 3 Prop changes → `/update prop`
+  - `uv sync --extra layer3` only if `pyproject.toml` changed (mention this explicitly if relevant).
 
-### Deployment steps after every push
+### Deployment guidance for Claude
 
-**VPS #1 — Layer 1 or 2 changes:**
-```bash
-ssh root@152.42.213.98
-cd /root/arbitrage-trading && git pull && sudo systemctl restart layer2
-systemctl status layer2
-```
-Restart `layer1` instead if only Layer 1 changed; restart both if both changed.
-
-**VPS #2 (Personal — worker_personal.py) and VPS #3 (Prop — worker_prop.py) — Layer 3 changes (noVNC PowerShell):**
-
-Warren's workflow — always write steps this way:
-1. Close the PowerShell window with the **X button** (kills the worker — Warren cannot type Ctrl+C in noVNC)
-2. Open a new PowerShell window
-3. Run one at a time:
-```
-cd C:\arbitrage
-git pull
-uv run python layer3/worker_personal.py
-```
-Use `worker_prop.py` for VPS #3. `uv sync --extra layer3` only if `pyproject.toml` changed.
+When Warren asks how to update or deploy:
+- If the issue is covered by `/update`, tell him which subcommand to run.
+- If not covered, debug the situation first. After resolving, ask if this should be added to `/update` for future reference.
 
 ---
 

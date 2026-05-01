@@ -59,9 +59,10 @@ logger = logging.getLogger("layer2")
 (P2_SAME_OR_DIFF, P2_WHICH_FIELDS, P2_COLLECTING,
  P2_INITIAL_BALANCE, P2_PERS_BALANCE, P2_CONFIRM) = range(10, 16)
 
-EMERGENCY_CONFIRM  = 16
-CLOSEPAIR_CONFIRM  = 17
-SETWINDOW_CONFIRM  = 18
+EMERGENCY_CONFIRM    = 16
+CLOSEPAIR_CONFIRM    = 17
+SETWINDOW_CONFIRM    = 18
+CHANGEACCOUNT_CHOOSE = 19
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
@@ -1829,6 +1830,270 @@ async def _cmd_cancel_noop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("No active wizard to cancel.", parse_mode="HTML")
 
 
+# ── /changeaccount wizard ─────────────────────────────────────────────────
+
+def _changeaccount_text_personal() -> str:
+    return (
+        "🔧 <b>Change Personal Signal MT5 Account</b>\n\n"
+        "1. Open PowerShell on the Personal worker VPS\n\n"
+        "2. Stop the current worker with Ctrl+C\n"
+        "   If that does not work, close the PowerShell window\n\n"
+        "3. Open the env file:\n"
+        "<code>notepad C:\\arbitrage\\.env</code>\n\n"
+        "4. Update:\n"
+        "<code>MT5_LOGIN=your_login</code>\n"
+        "<code>MT5_PASSWORD=your_password</code>\n"
+        "<code>MT5_SERVER=your_server</code>\n\n"
+        "5. Save the file\n\n"
+        "6. Restart the worker:\n"
+        "<code>cd C:\\arbitrage</code>\n"
+        "<code>uv run python layer3/worker_personal.py</code>\n\n"
+        "7. Confirm logs show:\n"
+        "<code>layer3.personal — MT5 connected — account=...</code>\n"
+        "<code>layer3.personal — REP socket bound on tcp://0.0.0.0:5556</code>\n"
+        "<code>layer3.personal — PULL socket bound on tcp://0.0.0.0:5555</code>"
+    )
+
+
+def _changeaccount_text_prop() -> str:
+    return (
+        "🔧 <b>Change Prop Hedge MT5 Account</b>\n\n"
+        "1. Open PowerShell on the Prop worker VPS\n\n"
+        "2. Stop the current worker with Ctrl+C\n"
+        "   If that does not work, close the PowerShell window\n\n"
+        "3. Open the env file:\n"
+        "<code>notepad C:\\arbitrage\\.env</code>\n\n"
+        "4. Update:\n"
+        "<code>MT5_LOGIN=your_login</code>\n"
+        "<code>MT5_PASSWORD=your_password</code>\n"
+        "<code>MT5_SERVER=your_server</code>\n\n"
+        "5. Save the file\n\n"
+        "6. Restart the worker:\n"
+        "<code>cd C:\\arbitrage</code>\n"
+        "<code>uv run python layer3/worker_prop.py</code>\n\n"
+        "7. Confirm logs show:\n"
+        "<code>layer3.prop — MT5 connected — account=...</code>\n"
+        "<code>layer3.prop — REP socket bound on tcp://0.0.0.0:5556</code>\n"
+        "<code>layer3.prop — PULL socket bound on tcp://0.0.0.0:5555</code>"
+    )
+
+
+async def _cmd_changeaccount(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "🔧 <b>Change MT5 Account</b>\n\n"
+        "Which account do you want to change?\n\n"
+        "1 — Personal Signal\n"
+        "2 — Prop Hedge",
+        parse_mode="HTML",
+    )
+    return CHANGEACCOUNT_CHOOSE
+
+
+async def _changeaccount_choose(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    choice = update.message.text.strip()
+    if choice == "1":
+        await update.message.reply_text(_changeaccount_text_personal(), parse_mode="HTML")
+        return ConversationHandler.END
+    if choice == "2":
+        await update.message.reply_text(_changeaccount_text_prop(), parse_mode="HTML")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "⚠️ Send <code>1</code> for Personal Signal or <code>2</code> for Prop Hedge.",
+        parse_mode="HTML",
+    )
+    return CHANGEACCOUNT_CHOOSE
+
+
+async def _changeaccount_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    await update.message.reply_text("Cancelled.", parse_mode="HTML")
+    return ConversationHandler.END
+
+
+# ── /checkaccount ─────────────────────────────────────────────────────────
+
+async def _cmd_checkaccount(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+
+    def _fmt_block(label: str, data: dict) -> str:
+        login  = data.get("account_login")
+        server = data.get("account_server")
+        return (
+            f"<b>{label}</b>\n"
+            f"Status: connected\n"
+            f"Login: {login if login is not None else '—'}\n"
+            f"Server: {server if server else '—'}"
+        )
+
+    try:
+        pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        pers_block = _fmt_block("Personal Signal", pers)
+    except Exception:
+        pers_block = (
+            "<b>Personal Signal</b>\n"
+            "Status: offline\n"
+            "Action: restart the worker manually on the Personal VPS"
+        )
+
+    try:
+        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        prop_block = _fmt_block("Prop Hedge", prop)
+    except Exception:
+        prop_block = (
+            "<b>Prop Hedge</b>\n"
+            "Status: offline\n"
+            "Action: restart the worker manually on the Prop VPS"
+        )
+
+    await update.message.reply_text(
+        f"<b>Account Check</b>\n\n{pers_block}\n\n{prop_block}",
+        parse_mode="HTML",
+    )
+
+
+# ── /accounthelp ─────────────────────────────────────────────────────────
+
+async def _cmd_accounthelp(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    await update.message.reply_text(_changeaccount_text_personal(), parse_mode="HTML")
+    await update.message.reply_text(_changeaccount_text_prop(), parse_mode="HTML")
+
+
+# ── /update ───────────────────────────────────────────────────────────────
+
+def _update_menu_text() -> str:
+    return (
+        "🛠️ <b>Update Guide</b>\n\n"
+        "Choose what you want to update:\n\n"
+        "/update local — Push local code to GitHub\n"
+        "/update layer2 — Deploy latest code to VPS #1\n"
+        "/update personal — Update Personal worker\n"
+        "/update prop — Update Prop worker"
+    )
+
+
+def _update_local_text() -> str:
+    return (
+        "🛠️ <b>Update Local Code → GitHub</b>\n\n"
+        "Run on Mac terminal:\n\n"
+        "<code>cd ~/arbitrage-trading</code>\n"
+        "Go into the local project folder.\n\n"
+        "<code>git status</code>\n"
+        "Check which files changed before adding anything.\n\n"
+        "<code>git add layer2/telegram_handlers.py</code>\n"
+        "Stage the specific file you changed. Replace the path if you changed a different file.\n\n"
+        "<code>git commit -m \"Describe your change\"</code>\n"
+        "Save the staged changes as a Git commit.\n\n"
+        "<code>git push origin main</code>\n"
+        "Push the committed change to GitHub.\n\n"
+        "<code>git status</code>\n"
+        "Confirm your local repo is clean and up to date.\n\n"
+        "<b>Good result</b>\n"
+        "You want to see:\n"
+        "<code>Your branch is up to date with 'origin/main'</code>\n\n"
+        "<b>Note</b>\n"
+        "Always run <code>git status</code> first so you only add files you actually changed."
+    )
+
+
+def _update_layer2_text() -> str:
+    return (
+        "🛠️ <b>Deploy Layer 2 — VPS #1</b>\n\n"
+        "Run on Mac terminal:\n\n"
+        "<code>ssh root@152.42.213.98</code>\n"
+        "Log in to the Linux VPS that runs Layer 1 / Layer 2.\n\n"
+        "Then on VPS #1:\n\n"
+        "<code>cd /root/arbitrage-trading</code>\n"
+        "Go into the deployed project folder.\n\n"
+        "<code>git pull</code>\n"
+        "Pull the latest code from GitHub.\n\n"
+        "<code>sudo systemctl restart layer2</code>\n"
+        "Restart the Layer 2 Telegram/risk service.\n\n"
+        "<code>systemctl status layer2</code>\n"
+        "Check whether Layer 2 restarted successfully.\n\n"
+        "<code>journalctl -u layer2 -f</code>\n"
+        "Watch live Layer 2 logs for startup errors or normal activity.\n\n"
+        "<b>Good result</b>\n"
+        "Look for normal Telegram bot startup and no Python errors."
+    )
+
+
+def _update_personal_text() -> str:
+    return (
+        "🛠️ <b>Update Personal Worker</b>\n\n"
+        "On Personal worker VPS:\n\n"
+        "<code>Ctrl+C</code>\n"
+        "Stop the currently running worker in PowerShell. If this does not work, close the PowerShell window.\n\n"
+        "<code>cd C:\\arbitrage</code>\n"
+        "Go into the Windows worker project folder.\n\n"
+        "<code>git pull</code>\n"
+        "Pull the latest code from GitHub.\n\n"
+        "<code>uv run python layer3/worker_personal.py</code>\n"
+        "Restart the Personal Signal MT5 worker.\n\n"
+        "<b>Good result</b>\n"
+        "You should see:\n\n"
+        "<code>layer3.personal — MT5 connected — account=...</code>\n"
+        "Confirms the worker connected to MT5.\n\n"
+        "<code>layer3.personal — REP socket bound on tcp://0.0.0.0:5556</code>\n"
+        "Confirms Layer 2 can request data from this worker.\n\n"
+        "<code>layer3.personal — PULL socket bound on tcp://0.0.0.0:5555</code>\n"
+        "Confirms this worker can receive trade tickets.\n\n"
+        "<b>Important</b>\n"
+        "Closing the noVNC browser tab does not stop the VPS.\n"
+        "Do not close PowerShell after the worker is running."
+    )
+
+
+def _update_prop_text() -> str:
+    return (
+        "🛠️ <b>Update Prop Worker</b>\n\n"
+        "On Prop worker VPS:\n\n"
+        "<code>Ctrl+C</code>\n"
+        "Stop the currently running worker in PowerShell. If this does not work, close the PowerShell window.\n\n"
+        "<code>cd C:\\arbitrage</code>\n"
+        "Go into the Windows worker project folder.\n\n"
+        "<code>git pull</code>\n"
+        "Pull the latest code from GitHub.\n\n"
+        "<code>uv run python layer3/worker_prop.py</code>\n"
+        "Restart the Prop Hedge MT5 worker.\n\n"
+        "<b>Good result</b>\n"
+        "You should see:\n\n"
+        "<code>layer3.prop — MT5 connected — account=...</code>\n"
+        "Confirms the worker connected to MT5.\n\n"
+        "<code>layer3.prop — REP socket bound on tcp://0.0.0.0:5556</code>\n"
+        "Confirms Layer 2 can request data from this worker.\n\n"
+        "<code>layer3.prop — PULL socket bound on tcp://0.0.0.0:5555</code>\n"
+        "Confirms this worker can receive trade tickets.\n\n"
+        "<b>Important</b>\n"
+        "Closing the noVNC browser tab does not stop the VPS.\n"
+        "Do not close PowerShell after the worker is running."
+    )
+
+
+async def _cmd_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _auth(update):
+        return
+    arg = (ctx.args[0].lower() if ctx.args else "").strip()
+    if arg == "local":
+        text = _update_local_text()
+    elif arg == "layer2":
+        text = _update_layer2_text()
+    elif arg == "personal":
+        text = _update_personal_text()
+    elif arg == "prop":
+        text = _update_prop_text()
+    else:
+        text = _update_menu_text()
+    await update.message.reply_text(text, parse_mode="HTML")
+
+
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -1863,12 +2128,16 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Configuration</b>\n"
         "/propfirm — Show prop account rules\n"
         "/changepropfirm — Update account setup\n"
+        "/changeaccount — Change MT5 account credentials\n"
+        "/checkaccount — Show connected MT5 account\n"
+        "/accounthelp — MT5 account change checklist\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel active wizard\n\n"
 
         "<b>System</b>\n"
         "/status — Operational system state\n"
-        "/health — Connectivity check",
+        "/health — Connectivity check\n"
+        "/update — Maintenance and deployment guide",
         parse_mode="HTML",
     )
 
@@ -1936,12 +2205,22 @@ def _run_bot() -> None:
         per_chat=True,
     )
 
+    changeaccount_wizard = ConversationHandler(
+        entry_points=[CommandHandler("changeaccount", _cmd_changeaccount)],
+        states={
+            CHANGEACCOUNT_CHOOSE: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _changeaccount_choose)],
+        },
+        fallbacks=[CommandHandler("cancel", _changeaccount_cancel)],
+        per_chat=True,
+    )
+
     tg_app = Application.builder().token(BOT_TOKEN).build()
     tg_app.add_handler(wizard)
     tg_app.add_handler(p2_wizard)
     tg_app.add_handler(emergency_wizard)
     tg_app.add_handler(closepair_wizard)
     tg_app.add_handler(setwindow_wizard)
+    tg_app.add_handler(changeaccount_wizard)
     tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
@@ -1957,7 +2236,10 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))
     tg_app.add_handler(CommandHandler("setmaxpos",     _cmd_setmaxpos))
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
-    tg_app.add_handler(CommandHandler("consistency",   _cmd_consistency))
+    tg_app.add_handler(CommandHandler("consistency",    _cmd_consistency))
+    tg_app.add_handler(CommandHandler("checkaccount",  _cmd_checkaccount))
+    tg_app.add_handler(CommandHandler("accounthelp",   _cmd_accounthelp))
+    tg_app.add_handler(CommandHandler("update",        _cmd_update))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
     tg_app.add_handler(CommandHandler("setwindow",     _cmd_setwindow))
     tg_app.add_handler(CommandHandler("cancel",        _cmd_cancel_noop))  # fallback when no wizard active

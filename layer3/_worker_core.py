@@ -548,6 +548,9 @@ def _build_equity_reply(ticker: str) -> dict:
             "trade_tick_size":    tick_size,
             "trade_tick_value":   tick_value,
             "digits":             digits,
+            "account_login":      acct.login  if acct else None,
+            "account_server":     acct.server if acct else None,
+            "account_name":       acct.name   if acct else None,
         }
     except Exception as exc:
         logger.error("equity reply error: %s", exc)
@@ -557,6 +560,7 @@ def _build_equity_reply(ticker: str) -> dict:
             "trade_allowed": True,
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,
+            "account_login": None, "account_server": None, "account_name": None,
         }
 
 
