@@ -522,8 +522,6 @@ def _build_equity_reply(ticker: str) -> dict:
         equity        = acct.equity       if acct else 0.0
         profit        = acct.profit       if acct else 0.0
         trade_allowed = bool(term.trade_allowed) if term else True
-        login         = int(acct.login)   if acct else 0
-        server        = acct.server       if acct else ""
 
         if positions and balance == equity:
             logger.warning(
@@ -545,8 +543,6 @@ def _build_equity_reply(ticker: str) -> dict:
             "equity":             equity,
             "profit":             profit,
             "trade_allowed":      trade_allowed,
-            "login":              login,
-            "server":             server,
             "point":              point,
             "contract_size":      contract_size,
             "trade_tick_size":    tick_size,
@@ -559,7 +555,6 @@ def _build_equity_reply(ticker: str) -> dict:
             "error": str(exc),
             "balance": 0.0, "equity": 0.0, "profit": 0.0,
             "trade_allowed": True,
-            "login": 0, "server": "",
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,
         }
