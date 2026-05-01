@@ -131,8 +131,6 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 - **Close detection buffer**: when one leg of a hedge closes before the other (e.g. personal SL hits one poll before prop TP), the close is held in `_pending_closes` for up to 120 s. A single combined alert fires only after both legs confirm closed or the buffer expires. This prevents duplicate split alerts and false orphan force-closes. Root cause of the session 5 split-alert incident: legs were ~2 min apart; 30 s buffer was too short.
 - **Mismatch grace period**: position mismatches must persist ≥120 s (`grace = 120`) before CRITICAL MISMATCH fires. Matches the close buffer so a normal staggered close doesn't trigger a false mismatch alert.
-- **MT5 account identity**: every equity reply from Layer 3 includes `login` (int) and `server` (str) from `mt5.account_info()`. Layer 2 caches the last-seen logins in `_propfirm` as `live_prop_login` / `live_pers_login`. All account-specific Telegram alerts (trade opened, trade closed, /equity, /positions, /baseline, mismatch, worker offline) display `MT5: {login}` and `Worker: VPS #N / worker_xxx`. Do not remove these fields — they are the sole runtime indicator of which MT5 account is actually connected.
-- **Account mismatch gate**: before executing any signal, Layer 2 compares live MT5 logins against `expected_prop_login` / `expected_pers_login` (stored in `_propfirm`). If set and mismatched, the signal is rejected with HTTP 503 and a Telegram alert. Set expected logins via `/setpropaccount <login>` and `/setpersonalaccount <login>`. Check with `/accountcheck`.
 - **Personal account baseline** (`pers_baseline_equity`) is manual-only — set via `/setpersonalbaseline <amount>`. `_update_pers_day_start()` only writes `pers_day_start_equity`; it never touches the baseline. The baseline was previously auto-set from the live MT5 balance ($10,042.75 instead of the correct $10,000) — that bug is fixed. Never auto-write `pers_baseline_equity`.
 - **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
 - **News suppression clear notification**: when a news suppression window expires, a grouped 🔴→🟢 Telegram alert fires (listing all pairs cleared at once) before dispatching `NEWS_CLEAR` to Layer 3. `/news` shows 🟠 per event; `/blackboard` shows 🔴 per suppressed pair.
@@ -172,10 +170,6 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - `/equity`: Floating P&L row added (from `acct.profit`); Balance label removed; Personal (VPS #2) shown first, Prop (VPS #3) second; Today/Overall P&L per account
   - `/baseline`: new command — shows live MT5 balance + overall P&L for both accounts
   - `/setpersonalbaseline <amount>`: only way to set `pers_baseline_equity` — never auto-set
-  - `/setpropaccount <login>` / `/setpersonalaccount <login>`: register expected MT5 login IDs
-  - `/accountcheck`: live query both workers, compare expected vs actual login IDs, show server name
-  - Account mismatch gate: signal execution blocked (HTTP 503 + Telegram alert) if live MT5 login ≠ expected
-  - All account-specific alerts show `MT5: {login}` and `Worker: VPS #N / worker_xxx`
   - Dynamic trading window: `config/trading_window.json` + `/setwindow` Telegram command. Currently set to 12:00–00:00 SGT.
   - `trade_allowed` monitoring + 5 s position verification
   - News suppression clear notification: grouped 🔴→🟢 Telegram alert on window expiry
@@ -191,6 +185,6 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - All SL/TP/entry prices in Telegram alerts use `_fmt_price(symbol, price)` — no more float artifacts
   - `_window_minutes` fixed: `00:00` as start = 0 min, as end = 1440 min (24h window now works correctly)
   - `/setbaseline` command removed — use `/changepropfirm` Step 10/10 to set prop baseline
-- Layer 3: Both workers running (VPS #2 personal account 106497299 on 139.180.136.233, VPS #3 prop account 106496748 on 45.76.156.55, both MetaQuotes demo). Hard-coded `h < 12` curfew removed 2026-05-01 — Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`. Equity replies include `login`, `server`, and `profit` (floating P&L) fields.
+- Layer 3: Both workers running (VPS #2 personal account 106497299 on 139.180.136.233, VPS #3 prop account 106496748 on 45.76.156.55, both MetaQuotes demo). Hard-coded `h < 12` curfew removed 2026-05-01 — Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`. Equity replies include `profit` (floating P&L) field.
 
-**Next action**: Wait for signals 12:00–00:00 SGT weekdays. Run `/setpropaccount` and `/setpersonalaccount` to arm the mismatch gate. Check Telegram for trade confirmations.
+**Next action**: Wait for signals 12:00–00:00 SGT weekdays. Check Telegram for trade confirmations.
