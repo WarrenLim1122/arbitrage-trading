@@ -38,7 +38,7 @@ from layer2.zmq_helpers import (
     _dispatch_force_close, _dispatch_close_ticker, _dispatch_news_suppress,
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
-    _lock_baseline_from_live, _dispatch_parameters, _set_personal_baseline,
+    _lock_baseline_from_live, _dispatch_parameters,
     ZMQ_REQ_PROP, ZMQ_REQ_PERS, ZMQ_PUSH_PROP, ZMQ_PUSH_PERS,
 )
 
@@ -1095,128 +1095,42 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
 
-    def _account_block(label: str, data: dict) -> str:
-        bal    = data["balance"]
-        eq     = data["equity"]
-        profit = data.get("profit", eq - bal)
-        return (
-            f"<b>{label}</b>\n"
-            f"Balance:      ${bal:,.2f}\n"
-            f"Equity:       ${eq:,.2f}\n"
-            f"Floating P&amp;L: ${profit:+,.2f}"
-        )
+    with _pf_lock:
+        pf = dict(_propfirm)
+    pers_baseline = pf.get("pers_baseline_equity", 0.0)
+    prop_baseline = pf.get("baseline_equity",       0.0)
+
+    def _account_block(label: str, data: dict, baseline: float) -> str:
+        bal     = data["balance"]
+        eq      = data["equity"]
+        floating = data.get("profit", eq - bal)
+        lines = [
+            f"<b>{label}</b>",
+            f"Baseline: ${baseline:,.2f}" if baseline > 0 else "Baseline: Not set — run /changepropfirm",
+            f"Balance: ${bal:,.2f}",
+            f"Equity: ${eq:,.2f}",
+            f"Floating: ${floating:+,.2f}",
+        ]
+        if baseline > 0:
+            overall = eq - baseline
+            overall_pct = overall / baseline * 100
+            lines.append(f"Overall: ${overall:+,.2f} ({overall_pct:+.2f}%)")
+        return "\n".join(lines)
 
     try:
-        pers     = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_block = _account_block("Personal Signal", pers)
+        pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        pers_block = _account_block("Personal Signal", pers, pers_baseline)
     except Exception as exc:
         pers_block = f"<b>Personal Signal</b>\nOffline — {exc}"
 
     try:
-        prop     = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_block = _account_block("Prop Hedge", prop)
+        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+        prop_block = _account_block("Prop Hedge", prop, prop_baseline)
     except Exception as exc:
         prop_block = f"<b>Prop Hedge</b>\nOffline — {exc}"
 
     await update.message.reply_text(
-        f"📊 <b>Live Equity</b>\n\n{pers_block}\n\n{prop_block}",
-        parse_mode="HTML",
-    )
-
-
-async def _cmd_baseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _auth(update):
-        return
-    with _pf_lock:
-        pf = dict(_propfirm)
-    prop_baseline = pf.get("baseline_equity",     0.0)
-    pers_baseline = pf.get("pers_baseline_equity", 0.0)
-
-    try:
-        prop_eq_data = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_equity  = prop_eq_data["equity"]
-    except Exception:
-        prop_equity  = None
-    try:
-        pers_eq_data = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_equity  = pers_eq_data["equity"]
-    except Exception:
-        pers_equity  = None
-
-    sections = ["📌 <b>Baseline Equity</b>"]
-
-    if pers_baseline > 0:
-        if pers_equity is not None:
-            pers_pnl = pers_equity - pers_baseline
-            pers_pct = pers_pnl / pers_baseline * 100
-            pnl_str  = f"${pers_pnl:+,.2f} ({pers_pct:+.2f}%)"
-            eq_str   = f"${pers_equity:,.2f}"
-        else:
-            pnl_str = "N/A"
-            eq_str  = "Offline"
-        sections.append(
-            f"<b>Personal Signal</b>\n"
-            f"Baseline:      ${pers_baseline:,.2f}\n"
-            f"Current equity: {eq_str}\n"
-            f"Overall P&amp;L: {pnl_str}"
-        )
-    else:
-        sections.append(
-            f"<b>Personal Signal</b>\n"
-            f"Baseline: not set\n"
-            f"Run: /setpersonalbaseline 10000"
-        )
-
-    if prop_baseline > 0:
-        if prop_equity is not None:
-            prop_pnl = prop_equity - prop_baseline
-            prop_pct = prop_pnl / prop_baseline * 100
-            pnl_str  = f"${prop_pnl:+,.2f} ({prop_pct:+.2f}%)"
-            eq_str   = f"${prop_equity:,.2f}"
-        else:
-            pnl_str = "N/A"
-            eq_str  = "Offline"
-        sections.append(
-            f"<b>Prop Hedge</b>\n"
-            f"Baseline:      ${prop_baseline:,.2f}\n"
-            f"Current equity: {eq_str}\n"
-            f"Overall P&amp;L: {pnl_str}"
-        )
-    else:
-        sections.append(
-            f"<b>Prop Hedge</b>\n"
-            f"Not set — run /changepropfirm"
-        )
-
-    await update.message.reply_text("\n\n".join(sections), parse_mode="HTML")
-
-
-async def _cmd_set_personal_baseline(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _auth(update):
-        return
-    args = ctx.args
-    if not args:
-        await update.message.reply_text(
-            "⚠️ <b>Invalid Input</b>\n\n"
-            "Format:\n/setpersonalbaseline 10000",
-            parse_mode="HTML",
-        )
-        return
-    try:
-        amount = float(args[0].replace(",", ""))
-        assert amount > 0
-    except Exception:
-        await update.message.reply_text(
-            "⚠️ <b>Invalid Input</b>\n\n"
-            "Format:\n/setpersonalbaseline 10000",
-            parse_mode="HTML",
-        )
-        return
-    _set_personal_baseline(amount)
-    await update.message.reply_text(
-        f"✅ <b>Personal Baseline Updated</b>\n\n"
-        f"Personal baseline: ${amount:,.2f}\n\n"
-        f"Run /baseline to verify.",
+        f"📊 <b>Account Equity Snapshot</b>\n\n{pers_block}\n\n{prop_block}",
         parse_mode="HTML",
     )
 
@@ -1932,8 +1846,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
         "<b>Positions &amp; Risk</b>\n"
         "/positions — Show open positions\n"
-        "/equity — Show live balance/equity\n"
-        "/baseline — Show baseline comparison\n"
+        "/equity — Account equity snapshot\n"
         "/pnl — Show P&amp;L risk dashboard\n"
         "/maxpos — Show position limit\n"
         "/setmaxpos 2 — Set position limit\n\n"
@@ -1950,7 +1863,6 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Configuration</b>\n"
         "/propfirm — Show prop account rules\n"
         "/changepropfirm — Update account setup\n"
-        "/setpersonalbaseline 10000 — Update personal baseline\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel active wizard\n\n"
 
@@ -2035,9 +1947,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
-    tg_app.add_handler(CommandHandler("equity",        _cmd_equity))
-    tg_app.add_handler(CommandHandler("baseline",            _cmd_baseline))
-    tg_app.add_handler(CommandHandler("setpersonalbaseline", _cmd_set_personal_baseline))
+    tg_app.add_handler(CommandHandler("equity",         _cmd_equity))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
