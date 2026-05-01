@@ -62,6 +62,7 @@ logger = logging.getLogger("layer2")
 EMERGENCY_CONFIRM    = 16
 CLOSEPAIR_CONFIRM    = 17
 SETWINDOW_CONFIRM    = 18
+UPDATE_LAYER3_CHOOSE = 19
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
@@ -1927,8 +1928,7 @@ def _update_menu_text() -> str:
         "Choose what you want to update:\n\n"
         "/update local — Push local code to GitHub\n"
         "/update layer2 — Deploy latest code to VPS #1\n"
-        "/update personal — Update Personal worker\n"
-        "/update prop — Update Prop worker\n"
+        "/update layer3 — Update a Layer 3 worker\n"
         "/update account — MT5 account change checklist"
     )
 
@@ -2031,25 +2031,53 @@ def _update_prop_text() -> str:
     )
 
 
-async def _cmd_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def _cmd_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
-        return
+        return ConversationHandler.END
     arg = (ctx.args[0].lower() if ctx.args else "").strip()
     if arg == "local":
-        text = _update_local_text()
+        await update.message.reply_text(_update_local_text(), parse_mode="HTML")
     elif arg == "layer2":
-        text = _update_layer2_text()
-    elif arg == "personal":
-        text = _update_personal_text()
-    elif arg == "prop":
-        text = _update_prop_text()
+        await update.message.reply_text(_update_layer2_text(), parse_mode="HTML")
+    elif arg == "layer3":
+        await update.message.reply_text(
+            "🛠️ <b>Update Layer 3 Worker</b>\n\n"
+            "Which worker?\n\n"
+            "1 — Personal Signal\n"
+            "2 — Prop Hedge",
+            parse_mode="HTML",
+        )
+        return UPDATE_LAYER3_CHOOSE
     elif arg == "account":
         await update.message.reply_text(_changeaccount_text_personal(), parse_mode="HTML")
         await update.message.reply_text(_changeaccount_text_prop(), parse_mode="HTML")
-        return
     else:
-        text = _update_menu_text()
-    await update.message.reply_text(text, parse_mode="HTML")
+        await update.message.reply_text(_update_menu_text(), parse_mode="HTML")
+    return ConversationHandler.END
+
+
+async def _update_layer3_choose(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    choice = update.message.text.strip()
+    if choice == "1":
+        await update.message.reply_text(_update_personal_text(), parse_mode="HTML")
+        return ConversationHandler.END
+    if choice == "2":
+        await update.message.reply_text(_update_prop_text(), parse_mode="HTML")
+        return ConversationHandler.END
+    await update.message.reply_text(
+        "⚠️ Send <code>1</code> for Personal Signal or <code>2</code> for Prop Hedge.",
+        parse_mode="HTML",
+    )
+    return UPDATE_LAYER3_CHOOSE
+
+
+async def _update_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _auth(update):
+        return ConversationHandler.END
+    await update.message.reply_text("Cancelled.", parse_mode="HTML")
+    return ConversationHandler.END
 
 
 async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2183,8 +2211,16 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("setmaxpos",     _cmd_setmaxpos))
     tg_app.add_handler(CommandHandler("maxpos",        _cmd_maxpos))
     tg_app.add_handler(CommandHandler("consistency",    _cmd_consistency))
+    update_wizard = ConversationHandler(
+        entry_points=[CommandHandler("update", _cmd_update)],
+        states={
+            UPDATE_LAYER3_CHOOSE: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _update_layer3_choose)],
+        },
+        fallbacks=[CommandHandler("cancel", _update_cancel)],
+        per_chat=True,
+    )
+    tg_app.add_handler(update_wizard)
     tg_app.add_handler(CommandHandler("checkaccount",  _cmd_checkaccount))
-    tg_app.add_handler(CommandHandler("update",        _cmd_update))
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
     tg_app.add_handler(CommandHandler("setwindow",     _cmd_setwindow))
     tg_app.add_handler(CommandHandler("cancel",        _cmd_cancel_noop))  # fallback when no wizard active
