@@ -154,10 +154,12 @@ Mirrors `strategy.position_size == 0` logic.
 | Command | Description |
 |---|---|
 | `/emergency` | Force-close ALL positions on both accounts immediately + halt |
-| `/changepropfirm` | 10-step wizard — collects raw limits, applies buffers, saves config. Step 10 asks for initial account balance (baseline). |
+| `/changepropfirm` | 10-step wizard — collects raw limits, applies buffers, saves config. No firm name step. Step 9 = prop baseline (`baseline_equity`), Step 10 = personal baseline (`pers_baseline_equity`). |
 | `/consistency` | Phase 2 daily profit breakdown and consistency rule status |
 | `/propfirm` | Display current prop firm config |
-| `/equity` | Live balance + equity from both MT5 accounts |
+| `/equity` | Baseline, Balance, Equity, Floating P&L, and Overall P&L per account (Personal Signal first, Prop Hedge second) |
+| `/checkaccount` | Query Layer 3 workers via ZMQ REQ — shows MT5 login + server for each account (no password transmitted) |
+| `/update` | Deployment guide: `local` (push to GitHub), `layer2` (deploy VPS #1), `layer3` (update a Layer 3 worker — prompts 1=Personal or 2=Prop), `account` (MT5 change checklist) |
 | `/positions` | All open positions on both accounts |
 | `/pnl` | Today's P&L vs daily cap and drawdown limits |
 | `/health` | Ping all 4 layers |
@@ -179,8 +181,8 @@ Mirrors `strategy.position_size == 0` logic.
 ### Trade Notification + 5-Second Verification (deployed 2026-04-27)
 
 After dispatch, Layer 2 waits 5 seconds, queries actual positions from both workers, then sends one Telegram message:
-- **"Trade Confirmed — TICKER"** with ✅ on both accounts.
-- **"⚠️ EXECUTION FAILURE — TICKER"** with ❌ and exact error per account + "ACTION REQUIRED" prompt.
+- **"✅ Trade Opened — TICKER"** with per-account status (Personal Signal, Prop Hedge).
+- **"⚠️ Execution Issue — TICKER"** with per-account error and "Check MT5 on both accounts immediately."
 
 This replaces the old pattern of sending "Trade Fired" before confirming actual execution.
 
@@ -218,8 +220,8 @@ Evaluates all kill conditions against prop firm account only. Daily P&L measured
 
 | Type | Condition | Action |
 |---|---|---|
-| prop_only | Ticker on prop, missing on personal ≥30s | Close orphan on prop |
-| pers_only | Ticker on personal, missing on prop ≥30s | Close orphan on personal |
+| prop_only | Ticker on prop, missing on personal ≥120s | Close orphan on prop |
+| pers_only | Ticker on personal, missing on prop ≥120s | Close orphan on personal |
 | same_direction | Both accounts same direction | Close on BOTH + alert |
 
 ### SGT Curfew Gate
@@ -264,11 +266,11 @@ Shared logic in `_worker_core.py`. `worker_prop.py` and `worker_personal.py` set
 - REP thread (daemon): answers equity + contract data + `trade_allowed` queries from Layer 2
 - SGT scheduler thread (daemon): manages `_dormant` flag, force-closes at curfew
 
-**REP socket reply includes `trade_allowed`** (added 2026-04-27) — Layer 2 uses this for algo-trading monitoring.
+**REP socket reply includes `trade_allowed`, `account_login`, `account_server`, `account_name`** — Layer 2 uses these for algo-trading monitoring and `/checkaccount`.
 
 ### Layer 3 SGT Schedule
 
-- Dormant: 00:00–08:59 SGT weekdays + all day Saturday/Sunday.
+- Dormant: weekends only (Saturday/Sunday all day). No weekday time-of-day restriction — Layer 2 `/setwindow` is the sole gate for execution hours. Hard-coded `h < 12` weekday curfew was removed 2026-05-01.
 - PULL loop drops execution tickets while dormant; FORCE_CLOSE always bypasses.
 
 ### Order Execution
@@ -306,7 +308,7 @@ Env vars: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `ZMQ_PULL_ADDR`, `ZMQ_REP_A
 `config/propfirm_config.json` schema:
 ```json
 {
-  "propfirm_name":             "FundingPips",
+  "propfirm_name":             "Prop Account",
   "profit_target_pct":         10.0,
   "max_drawdown_overall_pct":  5.0,
   "max_drawdown_daily_pct":    2.0,
@@ -321,7 +323,8 @@ Env vars: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `ZMQ_PULL_ADDR`, `ZMQ_REP_A
   "day_start_date_utc":        "2026-04-25"
 }
 ```
-`baseline_equity` = user-entered initial account balance from wizard Step 10/10. **Never fetched from live MT5.** Immutable for the life of the evaluation — only `/changepropfirm`, `/setbaseline <amount>`, or `/phase1` (when 0) can change it.
+`baseline_equity` = prop firm initial account balance entered in wizard Step 9/10. **Never fetched from live MT5.** Immutable for the life of the evaluation — only `/changepropfirm` wizard or `/phase1` (when 0) can change it. `/setbaseline` command does not exist.
+`pers_baseline_equity` = personal account balance entered in wizard Step 10/10. Set only by `/changepropfirm` or `/phase2` wizard — never auto-set.
 `day_start_equity` = live prop MT5 balance at wizard completion; resets daily at 11:00 SGT rollover via `_update_day_start()`. `_update_day_start()` never touches `baseline_equity`.
 
 ---
@@ -420,8 +423,8 @@ Gate D — demo run (started 2026-04-25, target ≥7 days):
   [ ] XAUUSD pip value verified — lots ~10× smaller than equivalent forex
   [ ] News filter tested: ≥3 high-impact suppressions logged correctly
   [ ] Latency audit: receipt_ms → fill_ms < 500ms on all orders
-  [ ] "Trade Confirmed ✅✅" Telegram fires on every dispatch
-  [ ] "⚠️ EXECUTION FAILURE" fires and shows correct error when a worker is down
+  [ ] "✅ Trade Opened" Telegram fires on every dispatch
+  [ ] "⚠️ Execution Issue" fires and shows correct error when a worker is down
   [ ] /equity returns live balance from both workers
   [ ] /emergency closes all positions on both accounts immediately
   [ ] Kill 1 (daily loss): drain demo equity past daily DD → FORCE_CLOSE + alert
@@ -438,7 +441,7 @@ Gate D — demo run (started 2026-04-25, target ≥7 days):
 
 1. Log into MT5 on VPS #2 — switch to real **FundingPips** credentials
 2. Log into MT5 on VPS #3 — switch to real **Fusion Markets** credentials
-3. Send `/changepropfirm` — re-run wizard with real FundingPips limits. At Step 10/10 enter the prop firm's stated initial account balance (e.g. `100000`) — this becomes the static `baseline_equity` for all kill calculations
+3. Send `/changepropfirm` — re-run wizard with real FundingPips limits. At Step 9/10 enter the prop firm's initial account balance (e.g. `100000`) — this becomes `baseline_equity`. At Step 10/10 enter the personal account starting balance — this becomes `pers_baseline_equity`.
 4. Send `/phase1` then `/resume`
 5. Verify first live signal dispatches correctly and appears in both MT5 accounts
 

@@ -7,8 +7,7 @@ Guidance for Claude Code. For full technical details — layer deep-dives, risk 
 - **Auto-push to GitHub after every code change.** Warren has given standing permission for all pushes to `main`. Never wait to be reminded — commit and push immediately after making any file edits.
 - **After a push, tell Warren which Telegram `/update` commands to run** — do not repeat full deployment steps in responses. Routine deployment instructions now live inside the Telegram `/update` command:
   - Layer 1/2 changes → `/update layer2`
-  - Layer 3 Personal changes → `/update personal`
-  - Layer 3 Prop changes → `/update prop`
+  - Layer 3 changes → `/update layer3` (choose 1 for Personal, 2 for Prop)
   - `uv sync --extra layer3` only if `pyproject.toml` changed (mention this explicitly if relevant).
 
 ### Deployment guidance for Claude
@@ -118,7 +117,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 - **Close detection buffer**: when one leg of a hedge closes before the other (e.g. personal SL hits one poll before prop TP), the close is held in `_pending_closes` for up to 120 s. A single combined alert fires only after both legs confirm closed or the buffer expires. This prevents duplicate split alerts and false orphan force-closes. Root cause of the session 5 split-alert incident: legs were ~2 min apart; 30 s buffer was too short.
 - **Mismatch grace period**: position mismatches must persist ≥120 s (`grace = 120`) before CRITICAL MISMATCH fires. Matches the close buffer so a normal staggered close doesn't trigger a false mismatch alert.
-- **Personal account baseline** (`pers_baseline_equity`) is manual-only — set via `/setpersonalbaseline <amount>`. `_update_pers_day_start()` only writes `pers_day_start_equity`; it never touches the baseline. The baseline was previously auto-set from the live MT5 balance ($10,042.75 instead of the correct $10,000) — that bug is fixed. Never auto-write `pers_baseline_equity`.
+- **Personal account baseline** (`pers_baseline_equity`) is set only by `/changepropfirm` wizard (Step 10/10) or `/phase2` wizard. `_update_pers_day_start()` only writes `pers_day_start_equity`; it never touches the baseline. The baseline was previously auto-set from the live MT5 balance ($10,042.75 instead of the correct $10,000) — that bug is fixed. Never auto-write `pers_baseline_equity`.
 - **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
 - **News suppression clear notification**: when a news suppression window expires, a grouped 🔴→🟢 Telegram alert fires (listing all pairs cleared at once) before dispatching `NEWS_CLEAR` to Layer 3. `/news` shows 🟠 per event; `/blackboard` shows 🔴 per suppressed pair.
 - **`dd_floor.json` stale value on VPS #3**: Layer 3 prop worker loads `config/dd_floor.json` at startup. Layer 2 only sends `SET_PARAMETERS` (which updates this file) on explicit events (`/phase1`, `/changepropfirm` wizard). If the worker restarts with a stale/wrong floor, STATIC DD GUARD fires every 30s and blocks all trades until Layer 2 resends. Fix: run `/phase1` in Telegram (idempotent) to trigger a resend. Root cause of the 2026-04-30 incident: previous incorrect baseline entry ($1,234,567) had saved floor=$1,160,492.98. Never enter test/placeholder numbers as `baseline_equity` in the wizard.
@@ -132,7 +131,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - Personal lots = `prop_lots × phase_ratio`. Never compute from a separate dollar risk formula.
 - Prop firm config: wizard-only (`/changepropfirm`). Never edit `propfirm_config.json` manually.
 - **`baseline_equity` is immutable** — only written by explicit user commands: `/changepropfirm` wizard (Step 9/10), `/phase1` (only when baseline is 0), `/phase2` wizard. `_update_day_start()` NEVER touches it — only `day_start_equity` and `day_start_date_utc`. Nothing automatic can overwrite it. `/setbaseline` command does NOT exist — was removed; re-run wizard Step 9/10 to correct prop baseline.
-- **`pers_baseline_equity` is manual-only** — only written by `/changepropfirm` wizard (Step 10/10), `/phase2` wizard, or `/setpersonalbaseline <amount>`. `_update_pers_day_start()` only writes `pers_day_start_equity`. Never auto-set from live MT5 balance.
+- **`pers_baseline_equity` is manual-only** — only written by `/changepropfirm` wizard (Step 10/10) or `/phase2` wizard. `_update_pers_day_start()` only writes `pers_day_start_equity`. Never auto-set from live MT5 balance.
 - Phase switching: Telegram-only (`/phase1`, `/phase2`).
 - ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open between VPS #1 and VPS #2/#3.
 - TradingView Premium required for webhook delivery.
@@ -141,7 +140,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 ---
 
-## Current State (as of 2026-05-01, session 5)
+## Current State (as of 2026-05-01, session 6)
 
 All four layers deployed and operational. Gate D demo run in progress. Target go-live ~2026-05-03.
 
@@ -155,9 +154,9 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
   - All Telegram alerts use "Personal Signal" and "Prop Hedge" labels — no VPS numbers in user-facing output. Personal Signal always listed first.
   - Position Closed alert: title = 🟢 Take Profit / 🔴 Stop Loss based on Personal P&L; sections: Personal Signal, Prop Hedge, After Close, Equity
   - Trade Opened alert: "✅ Trade Opened" on success, "⚠️ Execution Issue" on failure; sections: Personal Signal, Prop Hedge, Context
-  - `/equity`: Floating P&L row added (from `acct.profit`); Personal Signal shown first, Prop Hedge second
-  - `/baseline`: shows live MT5 balance + overall P&L for both accounts
-  - `/setpersonalbaseline <amount>`: sets `pers_baseline_equity` — also set by `/changepropfirm` Step 10/10 and `/phase2` wizard
+  - `/equity`: redesigned — Baseline, Balance, Equity, Floating P&L, and Overall P&L per account; Personal Signal first, Prop Hedge second. Replaces `/baseline` (removed).
+  - `/checkaccount`: queries both Layer 3 workers via ZMQ REQ and shows MT5 login + server for each account (no password transmitted)
+  - `/update`: deployment guide subcommands — `local` (push to GitHub), `layer2` (deploy VPS #1), `layer3` (update a Layer 3 worker — prompts 1=Personal or 2=Prop), `account` (MT5 account change checklist)
   - Dynamic trading window: `config/trading_window.json` + `/setwindow` Telegram command. Currently set to 12:00–00:00 SGT.
   - `trade_allowed` monitoring + 5 s position verification
   - News suppression clear notification: grouped 🔴→🟢 Telegram alert on window expiry
