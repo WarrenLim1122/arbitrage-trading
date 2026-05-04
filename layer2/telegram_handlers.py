@@ -980,6 +980,8 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     with _state_lock:
         _phase_state["active"] = True
+        _phase_state.pop("daily_halted", None)
+        _phase_state.pop("daily_halted_date", None)
         _save_phase(_phase_state)
 
     try:

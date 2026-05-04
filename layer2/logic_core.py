@@ -626,8 +626,22 @@ def _run_equity_check() -> None:
             logger.warning("Mismatch check error: %s", exc)
 
     with _state_lock:
-        active = _phase_state.get("active", False)
-        phase  = int(_phase_state.get("phase", 1))
+        active     = _phase_state.get("active", False)
+        phase      = int(_phase_state.get("phase", 1))
+        p_halt     = _phase_state.get("permanently_halted", False)
+        d_halt     = _phase_state.get("daily_halted", False)
+        d_halt_day = _phase_state.get("daily_halted_date", "")
+
+    # Auto-resume K1/K3 daily halts when a new session begins
+    if not active and d_halt and not p_halt and not curfew:
+        if d_halt_day != _propfirm_day(now_sgt):
+            with _state_lock:
+                _phase_state["active"] = True
+                _phase_state.pop("daily_halted", None)
+                _phase_state.pop("daily_halted_date", None)
+                _save_phase(_phase_state)
+            active = True
+            _alert_sync("🟢 <b>New Session — Auto-Resumed</b>\n\nDaily halt cleared. System is armed and accepting signals.")
 
     if not active:
         return
@@ -707,14 +721,18 @@ def _run_equity_check() -> None:
             pos_str = _snapshot_positions_str()
             next_floor = baseline - (new_k1_layer + 1) * layer_loss_amt
             _dispatch_force_close("daily_loss_limit", halt=True)
+            with _state_lock:
+                _phase_state["daily_halted"] = True
+                _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
+                _save_phase(_phase_state)
             msg = (
                 f"🔴 <b>KILL 1 — Loss Floor {new_k1_layer}/{max_loss_layers} Breached</b>\n\n"
                 f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${active_floor:,.2f}\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"All positions force-closed. System halted.\n\n"
+                f"All positions force-closed. System halted for today.\n\n"
                 f"New active floor: ${next_floor:,.2f} (Layer {new_k1_layer + 1}/{max_loss_layers})\n"
                 f"Overall DD floor: ${overall_floor:,.2f}\n\n"
-                f"/resume to continue trading (new floor active)\n"
+                f"System auto-resumes at next session (12:00 SGT).\n"
                 f"/changepropfirm to switch to a new challenge"
             )
             logger.warning("KILL1: equity=%.2f floor=%.2f layer=%d/%d",
@@ -731,13 +749,17 @@ def _run_equity_check() -> None:
         if prop_equity >= daily_cap_level:
             pos_str = _snapshot_positions_str()
             _dispatch_force_close("daily_profit_cap", halt=True)
+            with _state_lock:
+                _phase_state["daily_halted"] = True
+                _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
+                _save_phase(_phase_state)
             msg = (
                 f"🟡 <b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
                 f"Equity: <b>${prop_equity:,.2f}</b>  |  Cap level: ${daily_cap_level:,.2f}\n"
                 f"Day-start: ${day_start:,.2f}  |  Cap: +${layer_cap_amt:,.2f}\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
                 f"All positions force-closed. System halted for today.\n\n"
-                f"/resume to continue trading next session."
+                f"System auto-resumes at next session (12:00 SGT)."
             )
             logger.warning("KILL3: equity=%.2f cap_level=%.2f day_start=%.2f",
                            prop_equity, daily_cap_level, day_start)
