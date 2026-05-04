@@ -80,11 +80,11 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 | Kill | Trigger condition | Formula |
 |---|---|---|
-| K1 — Daily loss | `(day_start − equity) / baseline × 100 ≥ max_drawdown_daily_pct` | Always −$2,000 if DD=2% and baseline=$100k |
-| K2 — Overall loss | `(baseline − equity) / baseline × 100 ≥ max_drawdown_overall_pct` | Fixed floor, e.g. $94,000 if DD=6% |
-| K3 — Daily profit cap | `(equity − day_start) / baseline × 100 ≥ daily_profit_cap_pct` | Always +$2,500 if cap=2.5% and baseline=$100k |
-| K4 — Profit target | `equity ≥ baseline × (1 + profit_target_pct / 100)` | Fixed ceiling |
-| K5 — Consistency | largest day / total profit < consistency_threshold_pct (Phase 2 only) | e.g. firm says 30% → stored as 29% → fires when largest day < 29% |
+| K1 — Daily loss | `(day_start − equity) / baseline × 100 ≥ max_drawdown_daily_pct` | Always −$2,000 if DD=2% and baseline=$100k. **Auto-resumes next session.** |
+| K2 — Overall loss | `(baseline − equity) / baseline × 100 ≥ max_drawdown_overall_pct` | Fixed floor, e.g. $94,000 if DD=6%. Permanent halt. |
+| K3 — Daily profit cap | `(equity − day_start) / baseline × 100 ≥ daily_profit_cap_pct` | Always +$2,500 if cap=2.5% and baseline=$100k. **Auto-resumes next session.** |
+| K4 — Profit target | `equity ≥ baseline × (1 + profit_target_pct / 100)` | Fixed ceiling. Permanent halt. |
+| K5 — Consistency | largest day / total profit < consistency_threshold_pct (Phase 2 only) | e.g. firm says 30% → stored as 29% → fires when largest day < 29%. Permanent halt. |
 
 `daily_profit_cap_pct` is auto-set to `profit_target_pct × 0.25` (25% of target, enforcing before the 30% consistency threshold).
 `max_drawdown_daily_pct` enforced after −1pp buffer (e.g. firm says 3% → bot triggers at 2%).
@@ -149,6 +149,7 @@ All four layers deployed and operational. Gate D demo run in progress. Target go
 - Layer 2: Full feature set deployed:
   - Kill 1/2/3/4/5 use static `baseline_equity` divisor — all thresholds are fixed dollar amounts
   - K1 layered floors from baseline (staircase). K2 hard floor safety net. K3 daily cap from day_start. K4 cumulative profit target. K5 consistency (Phase 2 only).
+  - **K1 and K3 are daily halts — auto-resume at next session open (12:00 SGT) via `daily_halted` + `daily_halted_date` flags.** K2/K4/K5 are permanent halts requiring manual action. `/resume` still works as a manual override for K1/K3 and also clears the daily halt flags.
   - `/phase1` is idempotent — will not overwrite an existing baseline mid-evaluation
   - 120 s close-detection buffer and 120 s mismatch grace — prevents split alerts and false CRITICAL MISMATCH when legs close ~2 min apart
   - All Telegram alerts use "Personal Signal" and "Prop Hedge" labels — no VPS numbers in user-facing output. Personal Signal always listed first.
