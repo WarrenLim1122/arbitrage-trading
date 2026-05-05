@@ -17,6 +17,11 @@ layer3 = [
     "MetaTrader5>=5.0.45",
     "tzdata>=2024.1",
     "python-dotenv>=1.0.0",
+    # Trade journaling + Python-generated screenshots
+    "firebase-admin>=6.5.0",
+    "matplotlib>=3.9.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
 ]
 dev = [
     "pytest>=8.3.0",

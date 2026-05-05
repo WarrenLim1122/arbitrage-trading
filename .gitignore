@@ -1,4 +1,5 @@
 .env
+.env.local
 .venv/
 __pycache__/
 *.pyc
@@ -7,3 +8,13 @@ logs/*.log
 .uv/
 dist/
 *.egg-info/
+
+# Firebase secrets — never commit
+secrets/
+serviceAccountKey.json
+firebase-service-account.json
+*.service-account.json
+
+# Journal runtime files
+journal_retry_queue.jsonl
+generated_screenshots/

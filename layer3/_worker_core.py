@@ -44,6 +44,8 @@ PULL_ADDR    = os.getenv("ZMQ_PULL_ADDR", "tcp://0.0.0.0:5555")
 REP_ADDR     = os.getenv("ZMQ_REP_ADDR",  "tcp://0.0.0.0:5556")
 MT5_MAGIC    = int(os.getenv("MT5_MAGIC", "20250001"))
 
+JOURNAL_ENABLED = os.getenv("FIREBASE_JOURNAL_ENABLED", "false").lower() == "true"
+
 MAX_RETRIES      = 3
 RETRY_DELAY      = 0.5
 DEVIATION_POINTS = 20
@@ -99,6 +101,10 @@ LIMIT_ONLY_EXECUTION = os.getenv("LIMIT_ONLY_EXECUTION", "true").lower() == "tru
 
 _execution_results: dict[str, dict] = {}
 _exec_results_lock = threading.Lock()
+
+# Position close watcher — tracks open positions to detect TP/SL closes
+_known_positions: dict[int, dict] = {}
+_known_positions_lock = threading.Lock()
 
 
 def _load_dd_params() -> None:
@@ -693,6 +699,86 @@ def _static_dd_guard_loop() -> None:
             logger.error("Static DD guard error: %s", exc)
 
 
+# ── Position close watcher — triggers journal on TP/SL close ─────────────────
+
+def _position_close_watcher() -> None:
+    """
+    Background thread: poll MT5 positions every 5 s, detect closes, trigger journal.
+
+    Only positions opened with the correct MT5_MAGIC number are journaled.
+    Execution-critical path is not touched — this runs in its own daemon thread.
+    """
+    while True:
+        time.sleep(5)
+        try:
+            with _mt5_lock:
+                current = mt5.positions_get() or []
+
+            current_tickets = {p.ticket for p in current}
+
+            # Update snapshot for new/modified positions
+            with _known_positions_lock:
+                for pos in current:
+                    if pos.ticket not in _known_positions:
+                        _known_positions[pos.ticket] = {
+                            "ticket":     pos.ticket,
+                            "symbol":     pos.symbol,
+                            "type":       pos.type,       # 0=LONG 1=SHORT
+                            "volume":     pos.volume,
+                            "price_open": pos.price_open,
+                            "sl":         pos.sl,
+                            "tp":         pos.tp,
+                            "magic":      pos.magic,
+                            "open_time":  datetime.fromtimestamp(pos.time, tz=timezone.utc),
+                        }
+                    else:
+                        # Keep SL/TP current in case they were modified
+                        _known_positions[pos.ticket]["sl"] = pos.sl
+                        _known_positions[pos.ticket]["tp"] = pos.tp
+
+                closed_tickets = set(_known_positions.keys()) - current_tickets
+
+            for ticket in closed_tickets:
+                with _known_positions_lock:
+                    snapshot = _known_positions.pop(ticket, None)
+                if not snapshot:
+                    continue
+                if snapshot.get("magic") != MT5_MAGIC:
+                    logger.debug(
+                        "Position %d closed (magic=%d ≠ %d) — journal skipped",
+                        ticket, snapshot.get("magic", 0), MT5_MAGIC,
+                    )
+                    continue
+                logger.info(
+                    "Position closed: ticket=%d  %s — triggering journal",
+                    ticket, snapshot.get("symbol"),
+                )
+                threading.Thread(
+                    target=_journal_closed_position,
+                    args=(ticket, snapshot),
+                    daemon=True,
+                    name=f"journal-{ticket}",
+                ).start()
+
+        except Exception as exc:
+            logger.error("Position close watcher error: %s", exc)
+
+
+def _journal_closed_position(ticket: int, snapshot: dict) -> None:
+    """Wraps the journaling pipeline — safe to call from a daemon thread."""
+    try:
+        from .journal.journaling_worker import handle_closed_position
+        handle_closed_position(
+            mt5_lock=_mt5_lock,
+            mt5_account_id=str(MT5_LOGIN),
+            worker_name=WORKER_NAME,
+            position_ticket=ticket,
+            pos_snapshot=snapshot,
+        )
+    except Exception as exc:
+        logger.error("Journal error (ticket=%d): %s", ticket, exc)
+
+
 # ── Socket bind with retry (handles Address in use after abrupt restart) ─────
 
 def _bind_with_retry(sock: zmq.Socket, addr: str, max_attempts: int = 5, delay: float = 3.0) -> None:
@@ -948,4 +1034,14 @@ def main() -> None:
     if WORKER_NAME == "prop":
         threading.Thread(target=_static_dd_guard_loop, daemon=True, name="dd-guard").start()
         logger.info("Static DD guard started (prop worker only)")
+    if JOURNAL_ENABLED:
+        from .journal.retry_queue import start_retry_worker
+        threading.Thread(
+            target=_position_close_watcher, daemon=True, name="pos-close-watcher"
+        ).start()
+        start_retry_worker()
+        logger.info(
+            "Journal modules started (dry_run=%s)",
+            os.getenv("FIREBASE_JOURNAL_DRY_RUN", "true"),
+        )
     _pull_loop(ctx)  # blocks in main thread
