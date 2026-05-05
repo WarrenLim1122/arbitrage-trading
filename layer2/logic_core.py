@@ -62,6 +62,7 @@ from layer2.zmq_helpers import (
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
     _update_day_start, _update_pers_day_start, _push_ticket,
+    _query_order_status,
 )
 from layer2 import telegram_handlers
 
@@ -892,6 +893,8 @@ async def _query_positions_with_retry(zmq_url: str, max_attempts: int = 3) -> tu
 async def _verify_and_notify(
     *,
     ticker: str,
+    prop_signal_id: str,
+    pers_signal_id: str,
     prop_signal: str,
     prop_lots: float,
     prop_sl: float,
@@ -907,79 +910,163 @@ async def _verify_and_notify(
     price_digits: int,
     entry: float,
 ) -> None:
-    """Wait 8 s for orders to fill, then query both workers with retry logic before sending
-    Telegram confirmation. Retries up to 3× (3 s apart) to avoid false failures from
-    transient REP socket timeouts when the equity monitor cycle overlaps."""
-    await asyncio.sleep(8)
-
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
-    prop_dir = 0 if prop_signal == "LONG" else 1   # MT5 position type: 0=BUY 1=SELL
-    pers_dir = 0 if pers_signal == "LONG" else 1
-
-    prop_ok = False
-    pers_ok = False
-    prop_err = ""
-    pers_err = ""
-
-    prop_positions, prop_err = await _query_positions_with_retry(ZMQ_REQ_PROP)
-    if not prop_err:
-        prop_ok = any(p["symbol"] == broker_symbol and p["type"] == prop_dir for p in prop_positions)
-        if not prop_ok:
-            prop_err = "no matching position found on prop account"
-
-    pers_positions, pers_err = await _query_positions_with_retry(ZMQ_REQ_PERS)
-    if not pers_err:
-        pers_ok = any(p["symbol"] == broker_symbol and p["type"] == pers_dir for p in pers_positions)
-        if not pers_ok:
-            pers_err = "no matching position found on personal account"
-
     pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
     prop_arrow = "↑ LONG" if prop_signal == "LONG" else "↓ SHORT"
-    both_ok    = prop_ok and pers_ok
 
-    def _fmt(p: float) -> str:
-        return f"{p:.{price_digits}f}"
+    def _fp(price: float) -> str:
+        return _fmt_price(ticker, price)
 
-    if both_ok:
+    TERMINAL = {"FILLED", "REJECTED", "CANCELLED", "EXPIRED", "UNSUPPORTED_LIMIT_SETUP", "ERROR"}
+
+    # Initial wait for Layer 3 to receive and process the ticket
+    await asyncio.sleep(5)
+
+    prop_status = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PROP, prop_signal_id)
+    pers_status = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PERS, pers_signal_id)
+    prop_state  = prop_status.get("status", "UNKNOWN")
+    pers_state  = pers_status.get("status", "UNKNOWN")
+
+    # Immediate terminal states (UNSUPPORTED / ERROR / REJECTED before any pending placed)
+    if prop_state in ("UNSUPPORTED_LIMIT_SETUP", "ERROR", "REJECTED") or \
+       pers_state in ("UNSUPPORTED_LIMIT_SETUP", "ERROR", "REJECTED"):
+        def _side_reason(s: dict, label: str) -> str:
+            st = s.get("status", "UNKNOWN")
+            err = s.get("error") or s.get("broker_comment") or ""
+            return f"<b>{label}</b>\nStatus: {st}\n{err}" if err else f"<b>{label}</b>\nStatus: {st}"
+        msg = (
+            f"🚫 <b>Signal Not Placed — {ticker}</b>\n\n"
+            f"{_side_reason(pers_status, 'Personal Signal')}\n\n"
+            f"{_side_reason(prop_status, 'Prop Hedge')}\n\n"
+            f"<b>Signal</b>\n"
+            f"{pers_arrow} · Entry {_fp(entry)} | SL {_fp(pers_sl)} | TP {_fp(pers_tp)}"
+        )
+        await _telegram_alert(msg)
+        return
+
+    # Both PENDING_PLACED → send interim notification (clearly not a fill)
+    if prop_state == "PENDING_PLACED" and pers_state == "PENDING_PLACED":
+        prop_ticket_num = prop_status.get("mt5_order_ticket", "?")
+        pers_ticket_num = pers_status.get("mt5_order_ticket", "?")
+        prop_type_str   = prop_status.get("mt5_order_type", "LIMIT")
+        pers_type_str   = pers_status.get("mt5_order_type", "LIMIT")
+        pending_msg = (
+            f"⏳ <b>Pending Limit Orders — {ticker}</b>\n\n"
+            f"<b>Personal Signal</b>\n"
+            f"{pers_arrow} · {pers_lots:.2f} lots ({pers_type_str})\n"
+            f"Limit @ {_fp(entry)} | SL {_fp(pers_sl)} | TP {_fp(pers_tp)}\n"
+            f"Ticket: {pers_ticket_num}\n\n"
+            f"<b>Prop Hedge</b>\n"
+            f"{prop_arrow} · {prop_lots:.2f} lots ({prop_type_str})\n"
+            f"Limit @ {_fp(entry)} | SL {_fp(prop_sl)} | TP {_fp(prop_tp)}\n"
+            f"Ticket: {prop_ticket_num}\n\n"
+            f"Waiting for price to reach entry level..."
+        )
+        await _telegram_alert(pending_msg)
+
+    # Poll until both reach a terminal state
+    _prop_final: dict | None = prop_status if prop_state in TERMINAL else None
+    _pers_final: dict | None = pers_status if pers_state in TERMINAL else None
+
+    POLL_INTERVAL = 30   # seconds
+    MAX_POLLS     = 960  # 8 hours maximum
+
+    for _ in range(MAX_POLLS):
+        if _prop_final is not None and _pers_final is not None:
+            break
+        await asyncio.sleep(POLL_INTERVAL)
+
+        # Stop polling if curfew or halt (orders will be/have been FORCE_CLOSE'd)
+        if _is_sgt_curfew():
+            break
+        with _state_lock:
+            if not _phase_state.get("active", True):
+                break
+
+        if _prop_final is None:
+            s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PROP, prop_signal_id)
+            if s.get("status") in TERMINAL:
+                _prop_final = s
+        if _pers_final is None:
+            s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PERS, pers_signal_id)
+            if s.get("status") in TERMINAL:
+                _pers_final = s
+
+    prop_filled = _prop_final is not None and _prop_final.get("status") == "FILLED"
+    pers_filled = _pers_final is not None and _pers_final.get("status") == "FILLED"
+
+    if prop_filled and pers_filled:
+        # Register as known open position (used by close detector and mismatch checker)
+        prop_dir = 0 if prop_signal == "LONG" else 1
+        pers_dir = 0 if pers_signal == "LONG" else 1
+        with _known_pos_lock:
+            _known_open_positions[broker_symbol] = {"prop_dir": prop_dir, "pers_dir": pers_dir}
+
+        def _disc_line(label: str, req: float, actual: float, disc: float) -> str:
+            diff_str = f"{disc:.{price_digits}f}"
+            if disc == 0.0:
+                return f"{label}: {_fp(actual)}"
+            return f"{label}: {_fp(actual)} (req {_fp(req)}, diff {diff_str})"
+
+        pf = _prop_final
+        ef = _pers_final
+
+        pers_entry_disc = ef.get("entry_discrepancy", 0.0)
+        prop_entry_disc = pf.get("entry_discrepancy", 0.0)
+
         msg = (
             f"✅ <b>Trade Opened — {ticker}</b>\n\n"
             f"<b>Personal Signal</b>\n"
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
-            f"Entry {_fmt(entry)} | SL {_fmt(pers_sl)} | TP {_fmt(pers_tp)}\n"
-            f"Risk: <b>${pers_dollar_risk:,.2f}</b>\n\n"
+            f"{_disc_line('Entry', entry, ef.get('actual_fill_price', entry), pers_entry_disc)}\n"
+            f"SL: {_fp(ef.get('actual_sl', pers_sl))} | TP: {_fp(ef.get('actual_tp', pers_tp))}\n"
+            f"Risk: <b>${pers_dollar_risk:,.2f}</b> | Ticket: {ef.get('mt5_order_ticket', '?')}\n\n"
             f"<b>Prop Hedge</b>\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
-            f"Entry {_fmt(entry)} | SL {_fmt(prop_sl)} | TP {_fmt(prop_tp)}\n"
-            f"Risk: <b>${prop_dollar_risk:,.2f}</b>\n\n"
+            f"{_disc_line('Entry', entry, pf.get('actual_fill_price', entry), prop_entry_disc)}\n"
+            f"SL: {_fp(pf.get('actual_sl', prop_sl))} | TP: {_fp(pf.get('actual_tp', prop_tp))}\n"
+            f"Risk: <b>${prop_dollar_risk:,.2f}</b> | Ticket: {pf.get('mt5_order_ticket', '?')}\n\n"
             f"<b>Context</b>\n"
             f"Phase {phase} · Baseline ${baseline_equity:,.2f}"
         )
-    else:
-        pers_status = "✅ Confirmed" if pers_ok else "❌ Failed"
-        prop_status = "✅ Confirmed" if prop_ok else "❌ Failed"
-        msg = (
-            f"⚠️ <b>Execution Issue — {ticker}</b>\n\n"
-            f"<b>Personal Signal</b>\n"
-            f"Status: {pers_status}\n"
-            f"{pers_arrow} · {pers_lots:.2f} lots\n"
-            f"Error: {pers_err if pers_err else '—'}\n\n"
-            f"<b>Prop Hedge</b>\n"
-            f"Status: {prop_status}\n"
-            f"{prop_arrow} · {prop_lots:.2f} lots\n"
-            f"Error: {prop_err if prop_err else '—'}\n\n"
-            f"<b>Action Required</b>\n"
-            f"Check MT5 on both accounts immediately."
-        )
+        await _telegram_alert(msg)
+        return
 
-    if both_ok:
-        # Both legs confirmed open — register as a known position so the close
-        # detector and mismatch checker have a source of truth.
-        with _known_pos_lock:
-            _known_open_positions[broker_symbol] = {
-                "prop_dir": prop_dir,
-                "pers_dir": pers_dir,
-            }
+    # One or both not filled — build appropriate alert
+    def _side_summary(s: dict | None, label: str, arrow: str, lots_: float,
+                      sl_: float, tp_: float) -> str:
+        if s is None:
+            return f"<b>{label}</b>\n⚠️ No confirmation received"
+        st = s.get("status", "UNKNOWN")
+        ticket_num = s.get("mt5_order_ticket")
+        reason = s.get("broker_comment") or s.get("error") or ""
+        if st == "FILLED":
+            return (
+                f"<b>{label}</b>\n"
+                f"✅ Filled @ {_fp(s.get('actual_fill_price', entry))}"
+                f"{f'  |  Ticket: {ticket_num}' if ticket_num else ''}"
+            )
+        elif st == "UNSUPPORTED_LIMIT_SETUP":
+            return f"<b>{label}</b>\n🚫 {st}\n{reason}"
+        else:
+            line = f"<b>{label}</b>\n❌ {st}"
+            if ticket_num:
+                line += f"  |  Ticket: {ticket_num}"
+            if reason:
+                line += f"\n{reason}"
+            return line
 
+    pers_summary = _side_summary(_pers_final, "Personal Signal", pers_arrow, pers_lots, pers_sl, pers_tp)
+    prop_summary = _side_summary(_prop_final, "Prop Hedge",      prop_arrow, prop_lots, prop_sl, prop_tp)
+
+    msg = (
+        f"⚠️ <b>Order Not Filled — {ticker}</b>\n\n"
+        f"{pers_summary}\n\n"
+        f"{prop_summary}\n\n"
+        f"<b>Signal details</b>\n"
+        f"{pers_arrow} · Entry {_fp(entry)} | SL {_fp(pers_sl)} | TP {_fp(pers_tp)}\n"
+        f"Lots: Personal {pers_lots:.2f} / Prop {prop_lots:.2f}"
+    )
     await _telegram_alert(msg)
 
 
@@ -1171,7 +1258,9 @@ async def receive_signal(request: Request):
     )
 
     # Personal follows signal direction; prop is inverse
+    _base_id = f"{payload.ticker}_{payload.timestamp_ms}"
     prop_ticket = {
+        "signal_id":    f"{_base_id}_prop",
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
@@ -1182,6 +1271,7 @@ async def receive_signal(request: Request):
         "lots":         prop_lots,
     }
     pers_ticket = {
+        "signal_id":    f"{_base_id}_pers",
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
@@ -1212,6 +1302,8 @@ async def receive_signal(request: Request):
 
     asyncio.create_task(_verify_and_notify(
         ticker=payload.ticker,
+        prop_signal_id=prop_ticket["signal_id"],
+        pers_signal_id=pers_ticket["signal_id"],
         prop_signal=prop_ticket["signal"],
         prop_lots=prop_lots,
         prop_sl=prop_sl,

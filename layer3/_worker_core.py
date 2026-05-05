@@ -25,7 +25,7 @@ import logging
 import os
 import threading
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -94,6 +94,11 @@ _news_suppressed: dict[str, float] = {}
 # Static drawdown floor — sent from Layer 2 via SET_PARAMETERS, persisted locally
 _dd_params: dict = {"dd_floor": 0.0}
 DD_PARAMS_PATH = Path(__file__).parent.parent / "config" / "dd_floor.json"
+
+LIMIT_ONLY_EXECUTION = os.getenv("LIMIT_ONLY_EXECUTION", "true").lower() == "true"
+
+_execution_results: dict[str, dict] = {}
+_exec_results_lock = threading.Lock()
 
 
 def _load_dd_params() -> None:
@@ -216,6 +221,22 @@ def _get_filling_mode(resolved: str) -> int:
 
 def _force_close_all(reason: str) -> None:
     _ensure_connected()
+    # Cancel any pending orders (FORCE_CLOSE should abort waiting limit orders too)
+    with _mt5_lock:
+        pending = mt5.orders_get() or []
+    for order in pending:
+        if order.magic != MT5_MAGIC:
+            continue
+        req = {"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket}
+        with _mt5_lock:
+            res = mt5.order_send(req)
+        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info("FORCE_CLOSE(%s): cancelled pending order %d %s",
+                        reason, order.ticket, order.symbol)
+        else:
+            rc = res.retcode if res else "None"
+            logger.error("FORCE_CLOSE(%s): failed to cancel pending %d retcode=%s",
+                         reason, order.ticket, rc)
     with _mt5_lock:
         positions = mt5.positions_get()
     if not positions:
@@ -349,23 +370,108 @@ def _sgt_scheduler() -> None:
 
 # ── Order execution ───────────────────────────────────────────────────────
 
+def _monitor_pending_order(
+    signal_id: str, resolved: str, order_ticket: int,
+    req_entry: float, req_sl: float, req_tp: float,
+) -> None:
+    """Background thread: poll until pending order reaches a terminal state."""
+    MAX_WAIT = 14_400  # 4 hours
+    start = time.time()
+
+    while time.time() - start < MAX_WAIT:
+        time.sleep(3)
+
+        with _mt5_lock:
+            still_active = mt5.orders_get(ticket=order_ticket)
+        if still_active:
+            continue  # Still pending — keep waiting
+
+        # Order left active pool — check history
+        with _mt5_lock:
+            hist = mt5.history_orders_get(ticket=order_ticket)
+        if not hist:
+            time.sleep(1)
+            with _mt5_lock:
+                hist = mt5.history_orders_get(ticket=order_ticket)
+        if not hist:
+            continue  # MT5 history not updated yet
+
+        h = hist[0]
+        ts = datetime.now(timezone.utc).isoformat()
+
+        if h.state == mt5.ORDER_STATE_FILLED:
+            # Get actual fill price from the deal associated with this order
+            fill_price = h.price_open  # default: requested price (limit orders fill at this)
+            fill_volume = h.volume_initial - h.volume_current
+            try:
+                from_dt = datetime.now(timezone.utc) - timedelta(hours=24)
+                to_dt   = datetime.now(timezone.utc) + timedelta(seconds=10)
+                with _mt5_lock:
+                    deals = mt5.history_deals_get(from_dt, to_dt) or []
+                order_deals = [d for d in deals if getattr(d, "order", -1) == order_ticket]
+                if order_deals:
+                    fill_price  = order_deals[0].price
+                    fill_volume = order_deals[0].volume
+            except Exception as exc:
+                logger.warning("Deal lookup failed for order %d: %s", order_ticket, exc)
+
+            result = {
+                "status":            "FILLED",
+                "mt5_order_ticket":  order_ticket,
+                "actual_fill_price": fill_price,
+                "actual_volume":     fill_volume,
+                "actual_sl":         h.sl,
+                "actual_tp":         h.tp,
+                "requested_entry":   req_entry,
+                "requested_sl":      req_sl,
+                "requested_tp":      req_tp,
+                "entry_discrepancy": round(abs(fill_price - req_entry), 6),
+                "sl_discrepancy":    round(abs((h.sl  or req_sl)  - req_sl),  6),
+                "tp_discrepancy":    round(abs((h.tp  or req_tp)  - req_tp),  6),
+                "broker_comment":    getattr(h, "comment", ""),
+                "timestamp":         ts,
+            }
+            logger.info("Order %d FILLED @ %.5f (req %.5f) disc=%.6f",
+                        order_ticket, fill_price, req_entry, result["entry_discrepancy"])
+        else:
+            state_map = {
+                mt5.ORDER_STATE_CANCELED: "CANCELLED",
+                mt5.ORDER_STATE_REJECTED: "REJECTED",
+                mt5.ORDER_STATE_EXPIRED:  "EXPIRED",
+            }
+            status = state_map.get(h.state, "CANCELLED")
+            result = {
+                "status":           status,
+                "mt5_order_ticket": order_ticket,
+                "broker_comment":   getattr(h, "comment", ""),
+                "timestamp":        ts,
+            }
+            logger.info("Order %d terminal state: %s", order_ticket, status)
+
+        with _exec_results_lock:
+            _execution_results[signal_id] = result
+        return
+
+    # Monitoring timeout (curfew/news should have cancelled the order before this)
+    logger.warning("Order %d monitor timeout after 4h (signal_id=%s)", order_ticket, signal_id)
+    with _exec_results_lock:
+        _execution_results[signal_id] = {
+            "status":           "EXPIRED",
+            "mt5_order_ticket": order_ticket,
+            "error":            "monitor_timeout_4h",
+            "timestamp":        datetime.now(timezone.utc).isoformat(),
+        }
+
+
 def _execute_order(ticket: dict) -> None:
-    receipt_ms = int(time.time() * 1000)
-    ticker   = ticket["ticker"]
-    resolved = _resolve_symbol(ticker)
-    signal   = ticket["signal"]
-    lots     = float(ticket["lots"])
-    entry    = float(ticket["entry"])
-    sl       = float(ticket["sl"])
-    tp       = float(ticket["tp"])
-
-    order_type = mt5.ORDER_TYPE_BUY if signal == "LONG" else mt5.ORDER_TYPE_SELL
-    filling    = _get_filling_mode(resolved)
-
-    # Fetch point once for slippage measurement
-    with _mt5_lock:
-        _sym = mt5.symbol_info(resolved)
-    point = _sym.point if _sym else 0.0001
+    signal_id = ticket.get("signal_id", "")
+    ticker    = ticket["ticker"]
+    resolved  = _resolve_symbol(ticker)
+    signal    = ticket["signal"]
+    lots      = float(ticket["lots"])
+    entry     = float(ticket["entry"])
+    sl        = float(ticket["sl"])
+    tp        = float(ticket["tp"])
 
     _ensure_connected()
 
@@ -378,17 +484,26 @@ def _execute_order(ticket: dict) -> None:
             "'Disable algorithmic trading when the account has been changed'.",
             signal, ticker,
         )
+        if signal_id:
+            with _exec_results_lock:
+                _execution_results[signal_id] = {
+                    "status": "ERROR",
+                    "error":  "algo_trading_disabled",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
         return
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    filling = _get_filling_mode(resolved)
+
+    if not LIMIT_ONLY_EXECUTION:
+        # Fallback: legacy market order (LIMIT_ONLY_EXECUTION=false env override)
         with _mt5_lock:
             tick = mt5.symbol_info_tick(resolved)
         if tick is None:
             logger.error("symbol_info_tick returned None for %s — aborting", resolved)
             return
-
-        price = tick.ask if signal == "LONG" else tick.bid
-
+        price      = tick.ask if signal == "LONG" else tick.bid
+        order_type = mt5.ORDER_TYPE_BUY if signal == "LONG" else mt5.ORDER_TYPE_SELL
         request = {
             "action":       mt5.TRADE_ACTION_DEAL,
             "symbol":       resolved,
@@ -403,42 +518,149 @@ def _execute_order(ticket: dict) -> None:
             "type_time":    mt5.ORDER_TIME_GTC,
             "type_filling": filling,
         }
-
-        sent_ms = int(time.time() * 1000)
         with _mt5_lock:
             result = mt5.order_send(request)
-        fill_ms = int(time.time() * 1000)
-
-        if result is None:
-            logger.error("order_send returned None — %s", mt5.last_error())
-            return
-
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            slippage_pips = abs(result.price - entry) / point if point > 0 else 0
-            logger.info(
-                "FILLED  %s %s→%s  %.2f lots | order=%d  price=%.5f  "
-                "receipt→sent=%dms  sent→fill=%dms  slippage=%.1f ticks",
-                signal, ticker, resolved, lots, result.order, result.price,
-                sent_ms - receipt_ms, fill_ms - sent_ms, slippage_pips,
-            )
-            return
-
-        retriable = (
-            mt5.TRADE_RETCODE_REQUOTE,
-            mt5.TRADE_RETCODE_PRICE_CHANGED,
-            mt5.TRADE_RETCODE_PRICE_OFF,
-        )
-        if result.retcode in retriable:
-            logger.warning("Retriable error %d on %s %s (attempt %d/%d) — retrying in %.1fs",
-                           result.retcode, signal, ticker, attempt, MAX_RETRIES, RETRY_DELAY)
-            time.sleep(RETRY_DELAY)
-            continue
-
-        logger.error("Order rejected — retcode=%d  %s | %s %s %.2f lots",
-                     result.retcode, result.comment, signal, ticker, lots)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            logger.info("MARKET FILLED  %s %s  %.2f lots @ %.5f  order=%d",
+                        signal, ticker, lots, result.price, result.order)
+            if signal_id:
+                with _exec_results_lock:
+                    _execution_results[signal_id] = {
+                        "status":            "FILLED",
+                        "mt5_order_ticket":  result.order,
+                        "actual_fill_price": result.price,
+                        "actual_volume":     lots,
+                        "actual_sl":         sl,
+                        "actual_tp":         tp,
+                        "requested_entry":   entry,
+                        "requested_sl":      sl,
+                        "requested_tp":      tp,
+                        "entry_discrepancy": round(abs(result.price - entry), 6),
+                        "sl_discrepancy":    0.0,
+                        "tp_discrepancy":    0.0,
+                        "broker_comment":    result.comment,
+                        "timestamp":         datetime.now(timezone.utc).isoformat(),
+                    }
+        else:
+            rc = result.retcode if result else "None"
+            cm = result.comment if result else ""
+            logger.error("Market order rejected — retcode=%s  %s | %s %s", rc, cm, signal, ticker)
+            if signal_id:
+                with _exec_results_lock:
+                    _execution_results[signal_id] = {
+                        "status":         "REJECTED",
+                        "broker_retcode": str(rc),
+                        "broker_comment": cm,
+                        "timestamp":      datetime.now(timezone.utc).isoformat(),
+                    }
         return
 
-    logger.error("Gave up after %d attempts — %s %s %.2f lots", MAX_RETRIES, signal, ticker, lots)
+    # ── Limit-only execution (default) ────────────────────────────────────
+    with _mt5_lock:
+        tick = mt5.symbol_info_tick(resolved)
+    if tick is None:
+        logger.error("symbol_info_tick returned None for %s — aborting", resolved)
+        if signal_id:
+            with _exec_results_lock:
+                _execution_results[signal_id] = {
+                    "status": "ERROR", "error": "no_tick_data",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+        return
+
+    if signal == "LONG":
+        if entry >= tick.ask:
+            msg = (f"UNSUPPORTED_LIMIT: BUY entry {entry:.5f} >= ask {tick.ask:.5f} "
+                   f"for {ticker} — would need BUY STOP (not allowed in limit-only mode)")
+            logger.warning(msg)
+            if signal_id:
+                with _exec_results_lock:
+                    _execution_results[signal_id] = {
+                        "status":          "UNSUPPORTED_LIMIT_SETUP",
+                        "error":           msg,
+                        "requested_entry": entry,
+                        "current_price":   tick.ask,
+                        "timestamp":       datetime.now(timezone.utc).isoformat(),
+                    }
+            return
+        limit_type     = mt5.ORDER_TYPE_BUY_LIMIT
+        order_type_str = "BUY_LIMIT"
+    else:
+        if entry <= tick.bid:
+            msg = (f"UNSUPPORTED_LIMIT: SELL entry {entry:.5f} <= bid {tick.bid:.5f} "
+                   f"for {ticker} — would need SELL STOP (not allowed in limit-only mode)")
+            logger.warning(msg)
+            if signal_id:
+                with _exec_results_lock:
+                    _execution_results[signal_id] = {
+                        "status":          "UNSUPPORTED_LIMIT_SETUP",
+                        "error":           msg,
+                        "requested_entry": entry,
+                        "current_price":   tick.bid,
+                        "timestamp":       datetime.now(timezone.utc).isoformat(),
+                    }
+            return
+        limit_type     = mt5.ORDER_TYPE_SELL_LIMIT
+        order_type_str = "SELL_LIMIT"
+
+    request = {
+        "action":       mt5.TRADE_ACTION_PENDING,
+        "symbol":       resolved,
+        "volume":       lots,
+        "type":         limit_type,
+        "price":        entry,
+        "sl":           sl,
+        "tp":           tp,
+        "magic":        MT5_MAGIC,
+        "comment":      f"TEE-{WORKER_NAME}",
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": filling,
+    }
+
+    with _mt5_lock:
+        result = mt5.order_send(request)
+
+    success = result is not None and result.retcode in (
+        mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED,
+    )
+
+    if not success:
+        rc = result.retcode if result else "None"
+        cm = result.comment if result else "order_send returned None"
+        logger.error("Pending order REJECTED: retcode=%s  %s | %s %s %.2f lots @ %.5f",
+                     rc, cm, signal, ticker, lots, entry)
+        if signal_id:
+            with _exec_results_lock:
+                _execution_results[signal_id] = {
+                    "status":         "REJECTED",
+                    "broker_retcode": str(rc),
+                    "broker_comment": cm,
+                    "timestamp":      datetime.now(timezone.utc).isoformat(),
+                }
+        return
+
+    order_ticket = result.order
+    logger.info("Pending %s placed: %s %s %.2f lots @ %.5f  ticket=%d",
+                order_type_str, signal, ticker, lots, entry, order_ticket)
+
+    if signal_id:
+        with _exec_results_lock:
+            _execution_results[signal_id] = {
+                "status":           "PENDING_PLACED",
+                "mt5_order_type":   order_type_str,
+                "mt5_order_ticket": order_ticket,
+                "requested_entry":  entry,
+                "requested_sl":     sl,
+                "requested_tp":     tp,
+                "requested_volume": lots,
+                "timestamp":        datetime.now(timezone.utc).isoformat(),
+            }
+        threading.Thread(
+            target=_monitor_pending_order,
+            args=(signal_id, resolved, order_ticket, entry, sl, tp),
+            daemon=True,
+            name=f"monitor-{order_ticket}",
+        ).start()
 
 
 # ── Static drawdown guard (prop worker only) ──────────────────────────────
@@ -564,6 +786,13 @@ def _build_equity_reply(ticker: str) -> dict:
         }
 
 
+def _build_order_status_reply(signal_id: str) -> dict:
+    if not signal_id:
+        return {"status": "UNKNOWN", "error": "no signal_id"}
+    with _exec_results_lock:
+        return dict(_execution_results.get(signal_id, {"status": "UNKNOWN"}))
+
+
 def _rep_loop(ctx: zmq.Context) -> None:
     sock = ctx.socket(zmq.REP)
     _bind_with_retry(sock, REP_ADDR)
@@ -589,6 +818,8 @@ def _rep_loop(ctx: zmq.Context) -> None:
 
         if query == "positions":
             reply = _build_positions_reply()
+        elif query == "order_status":
+            reply = _build_order_status_reply(msg.get("signal_id", ""))
         else:
             reply = _build_equity_reply(ticker)
         try:
