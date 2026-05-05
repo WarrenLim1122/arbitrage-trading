@@ -116,31 +116,54 @@ def _handle_mismatch(ticker: str, mismatch_type: str,
     _dir = {0: "LONG", 1: "SHORT"}
     if mismatch_type == "prop_only":
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "orphan_mismatch")
-        msg = (
-            f"⚠️ <b>Critical Mismatch — {ticker}</b>\n\n"
-            f"Prop Hedge has {_dir.get(prop_dir, '?')} but Personal Signal has no position.\n"
-            f"Orphaned Prop Hedge position force-closed.\n\n"
-            f"Check MT5 on both accounts immediately."
+        summary = (
+            f"Orphan: {_dir.get(prop_dir, '?')} on Prop Hedge "
+            f"(no matching Personal Signal position)\n"
+            f"Action: Force-closed Prop Hedge"
         )
     elif mismatch_type == "pers_only":
         _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "orphan_mismatch")
-        msg = (
-            f"⚠️ <b>Critical Mismatch — {ticker}</b>\n\n"
-            f"Personal Signal has {_dir.get(pers_dir, '?')} but Prop Hedge has no position.\n"
-            f"Orphaned Personal Signal position force-closed.\n\n"
-            f"Check MT5 on both accounts immediately."
+        summary = (
+            f"Orphan: {_dir.get(pers_dir, '?')} on Personal Signal "
+            f"(no matching Prop Hedge position)\n"
+            f"Action: Force-closed Personal Signal"
         )
     else:  # same_direction
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "direction_mismatch")
         _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "direction_mismatch")
-        msg = (
-            f"⚠️ <b>Critical Direction Mismatch — {ticker}</b>\n\n"
-            f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge is broken.\n"
-            f"Positions closed on both accounts.\n\n"
-            f"Check MT5 on both accounts immediately."
+        summary = (
+            f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge broken\n"
+            f"Action: Force-closed both accounts"
         )
     logger.error("MISMATCH HANDLED: %s  type=%s", ticker, mismatch_type)
-    _alert_sync(msg)
+
+    # Re-check positions 5 s after force-close to confirm the orphan is gone
+    time.sleep(5)
+    try:
+        post_prop = _query_positions(ZMQ_REQ_PROP)
+        post_pers = _query_positions(ZMQ_REQ_PERS)
+        prop_open = any(p["symbol"] == ticker for p in post_prop)
+        pers_open = any(p["symbol"] == ticker for p in post_pers)
+        prop_str  = f"Still open — {ticker}" if prop_open else "No open positions"
+        pers_str  = f"Still open — {ticker}" if pers_open else "No open positions"
+        if not prop_open and not pers_open:
+            resolution = "✅ Resolved — both accounts are flat."
+        else:
+            resolution = "⚠️ Action required — check MT5 immediately."
+    except Exception as exc:
+        logger.warning("Post-mismatch position re-check failed: %s", exc)
+        prop_str  = "Query failed"
+        pers_str  = "Query failed"
+        resolution = "⚠️ Could not verify — check MT5 on both accounts."
+
+    _alert_sync(
+        f"⚠️ <b>Mismatch Detected &amp; Resolved — {ticker}</b>\n\n"
+        f"{summary}\n\n"
+        f"<b>After Close</b>\n"
+        f"Personal Signal: {pers_str}\n"
+        f"Prop Hedge: {prop_str}\n\n"
+        f"{resolution}"
+    )
 
 
 def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) -> None:
@@ -310,7 +333,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
             f"P&amp;L: <b>${pnl:+,.2f}</b>"
         )
     else:
-        sections.append("<b>Personal Signal</b>\n⚠️ Still open / not confirmed")
+        sections.append("<b>Personal Signal</b>\nNo matching position — already closed")
 
     # ── Prop Hedge ───────────────────────────────────────────────────────────
     if prop_pos_data:
@@ -323,7 +346,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
             f"P&amp;L: ${pnl:+,.2f}"
         )
     else:
-        sections.append("<b>Prop Hedge</b>\n⚠️ Still open / not confirmed")
+        sections.append("<b>Prop Hedge</b>\nNo matching position — already closed")
 
     # ── After Close ──────────────────────────────────────────────────────────
     sections.append(
