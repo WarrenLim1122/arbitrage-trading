@@ -42,8 +42,8 @@ Telegram Bot API ←→ layer2/logic_core.py
 | VPS | Provider | IP | OS | Purpose |
 |---|---|---|---|---|
 | VPS #1 | DigitalOcean (SGP1) | 152.42.213.98 | Ubuntu 24.04 | Layer 1 + Layer 2 + nginx + TLS |
-| VPS #2 | Vultr | 139.180.136.233 | Windows Server | worker-personal (Fusion Markets MT5) |
-| VPS #3 | Vultr | 45.76.156.55 | Windows Server | worker-prop (FundingPips MT5) |
+| VPS #2 | Vultr | 139.180.136.233 | Windows Server | worker-personal (Fusion Markets MT5) — project folder `C:\arbitrage` |
+| VPS #3 | Vultr | 45.76.156.55 | Windows Server | worker-prop (FundingPips MT5) — project folder `C:\arbitrage` |
 
 - **Public endpoint**: https://api.warrenlimzf.com/signal
 - **Telegram bot**: HedgeHog (token in VPS #1 `.env`)
@@ -57,8 +57,8 @@ Telegram Bot API ←→ layer2/logic_core.py
 |---|---|---|
 | 0 — Signal Engine | `layer0/signal_engine.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `layer1/news_filter.py`, `layer1/ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
-| 2 — Logic Core | `layer2/logic_core.py`, `layer2/telegram_handlers.py`, `layer2/state.py` | ✅ LIVE — simultaneous MARKET execution + mismatch wording deployed 2026-05-06 |
-| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — journal pipeline + market-order override deployed 2026-05-06 |
+| 2 — Logic Core | `layer2/logic_core.py`, `layer2/telegram_handlers.py`, `layer2/state.py` | ✅ LIVE — simultaneous MARKET execution + mismatch wording + block alerts + `_verify_and_notify` crash guard deployed 2026-05-06 |
+| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — journal pipeline confirmed live 2026-05-06; worker docstring VPS numbers corrected |
 
 **Current phase**: Gate D — 7-day demo run started 2026-04-25. Target go-live: ~2026-05-03 (already past; proceed when ready).
 
@@ -124,6 +124,9 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 - **News stale cache fallback**: if ForexFactory calendar fetch returns empty (API down), `ff_calendar.py` returns the last good cache instead of an empty list. Prevents false "all clear" news state.
 - **News suppression clear notification**: when a news suppression window expires, a grouped 🔴→🟢 Telegram alert fires (listing all pairs cleared at once) before dispatching `NEWS_CLEAR` to Layer 3. `/news` shows 🟠 per event; `/blackboard` shows 🔴 per suppressed pair.
 - **`dd_floor.json` stale value on VPS #3**: Layer 3 prop worker loads `config/dd_floor.json` at startup. Layer 2 only sends `SET_PARAMETERS` (which updates this file) on explicit events (`/phase1`, `/changepropfirm` wizard). If the worker restarts with a stale/wrong floor, STATIC DD GUARD fires every 30s and blocks all trades until Layer 2 resends. Fix: run `/phase1` in Telegram (idempotent) to trigger a resend. Root cause of the 2026-04-30 incident: previous incorrect baseline entry ($1,234,567) had saved floor=$1,160,492.98. Never enter test/placeholder numbers as `baseline_equity` in the wizard.
+- **Signal block alerts**: when a signal is silently dropped (system halted K1/K3, permanently halted K2/K4/K5, or news/manual suppression), a Telegram alert fires explaining the reason. Deduped via `_block_alerted` dict with 30-min cooldown per `(ticker, reason_tag)` — prevents spam when TradingView sends repeated signals while blocked. Three paths: ⏸ halted, 🔴 permanently halted, 📰 suppressed.
+- **`_verify_and_notify` crash guard**: the order-confirmation task body lives in `_verify_and_notify_inner()`. The outer `_verify_and_notify()` wraps it in try/except — any crash sends a Telegram alert ("⚠️ Internal Error — check VPS #1 logs") instead of silently disappearing via `asyncio.create_task()` exception swallowing.
+- **Windows VPS project folder**: both VPS #2 and VPS #3 use `C:\arbitrage` (NOT `C:\arbitrage-trading`). Workers launched via `uv run python layer3/worker_personal.py` from that directory. `load_dotenv()` in `_worker_core.py` loads `C:\arbitrage\.env` from CWD. Firebase service account path: `C:\arbitrage\secrets\firebase-service-account.json`. The `secrets\` folder is gitignored and must be created manually on VPS #2 only.
 
 ---
 
@@ -143,7 +146,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 ---
 
-## Current State (as of 2026-05-06, session 7)
+## Current State (as of 2026-05-06, session 8)
 
 All four layers deployed and operational. Gate D demo run in progress (7-day window passed; proceed to live when ready).
 
@@ -174,9 +177,10 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
   - On close: fetches deal history → renders dark-theme outcome chart (matplotlib Agg) → saves locally to `generated_screenshots/` → writes to Firestore at `users/{userId}/trades/{tradeId}` (Firebase Storage disabled — project on Spark plan; `SCREENSHOT_STORAGE=local`, `SCREENSHOT_DRY_RUN=true`)
   - Document ID: `{accountType}_{mt5AccountId}_{ticket}` (deterministic, upsert-safe)
   - Retry queue (`journal_retry_queue.jsonl`) for failed Firestore writes, retried every 300 s
-  - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false` — LIVE, writing to Firestore. `SCREENSHOT_STORAGE=local`, `SCREENSHOT_DRY_RUN=true` — charts rendered locally, not uploaded (Storage disabled on Spark plan). `FIREBASE_STORAGE_BUCKET=` blank — falls back to `{project_id}.appspot.com` in SDK init but Storage SDK is never called.**
+  - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false` — CONFIRMED LIVE 2026-05-06 (verified: "Journal modules started (dry_run=false)" in startup logs). `SCREENSHOT_STORAGE=local`, `SCREENSHOT_DRY_RUN=true` — charts rendered locally to `C:\arbitrage\generated_screenshots\`, not uploaded (Storage disabled on Spark plan). `FIREBASE_STORAGE_BUCKET=` blank — Storage SDK never called. `FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json`.**
   - **VPS #3 (prop): `FIREBASE_JOURNAL_ENABLED=false` — journal disabled, prop trades not recorded**
   - Website: warrenlimzf.com/journal reads from Firestore collection `users/{userId}/trades`
+  - Firebase project: `gen-lang-client-0206326169`. User ID: `WCzOHP18C4Q1aa3EDHkOGhdH9To1`.
   - Dry-run test: `python scripts/test_journal_dryrun.py` (no Firebase credentials needed)
 
-**Next action**: Monitor first live signal for the new sequential Telegram flow. Consider switching accounts from MetaQuotes demo to real Fusion Markets + FundingPips when ready.
+**Next action**: Monitor first live signal to confirm simultaneous MARKET Telegram flow and Firestore journal entry. Switch accounts from MetaQuotes demo to real Fusion Markets + FundingPips when ready.
