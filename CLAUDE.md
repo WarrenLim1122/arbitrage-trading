@@ -180,7 +180,7 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
   - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false` — CONFIRMED LIVE 2026-05-06 (verified: "Journal modules started (dry_run=false)" in startup logs). `SCREENSHOT_STORAGE=local`, `SCREENSHOT_DRY_RUN=true` — charts rendered locally to `C:\arbitrage\generated_screenshots\`, not uploaded (Storage disabled on Spark plan). `FIREBASE_STORAGE_BUCKET=` blank — Storage SDK never called. `FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json`.**
   - **VPS #3 (prop): `FIREBASE_JOURNAL_ENABLED=false` — journal disabled, prop trades not recorded**
   - Website: warrenlimzf.com/journal reads from Firestore collection `users/{userId}/trades`
-  - Firebase project: `gen-lang-client-0206326169`. User ID (warrenlimzf@gmail.com): `wmFIYrstEnMnZPvng3aAC0MDntb2`. Database ID: `ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607` (named, not default).
+  - Firebase project: `gen-lang-client-0206326169`. User ID (wanttobefire@gmail.com — dedicated journal account): `WCzOHPl8C4Q1aa3EDHkOGhdH9To1`. Database ID: `ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607` (named, not default — must set FIREBASE_DATABASE_ID in .env).
   - Dry-run test: `python scripts/test_journal_dryrun.py` (no Firebase credentials needed)
 
 **Next action**: Monitor first live signal to confirm simultaneous MARKET Telegram flow and Firestore journal entry. Switch accounts from MetaQuotes demo to real Fusion Markets + FundingPips when ready.
