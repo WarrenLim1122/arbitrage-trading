@@ -60,6 +60,9 @@ bool htf_bear = htf_trend == -1
 
 bgcolor(htf_bull ? color.new(color.green, 90) : htf_bear ? color.new(color.red, 90) : na, title="HTF Trend Background")
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DIAGNOSTIC DASHBOARD TEXT
+// ═══════════════════════════════════════════════════════════════════════════
 string raw_struct = (is_2hh and is_2hl) ? "FULL BULL" : (is_2lh and is_2ll) ? "FULL BEAR" : "MIXED (Holding Trend)"
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -82,8 +85,10 @@ var bool short_fired = false
 if not na(ltf_ph)
     float new_sh = high[N_LTF]
     string high_lbl = na(prev_ltf_sh) ? "SH" : (new_sh > prev_ltf_sh ? "HH" : "LH")
+
     if showLabels
         label.new(bar_index[N_LTF], new_sh, high_lbl, color=color.new(color.orange, 40), style=label.style_label_down, textcolor=color.white, size=size.small)
+
     prev_ltf_sh := last_ltf_sh
     last_ltf_sh := new_sh
     last_sh_idx := bar_index[N_LTF]
@@ -92,36 +97,41 @@ if not na(ltf_ph)
 if not na(ltf_pl)
     float new_sl = low[N_LTF]
     string low_lbl = na(prev_ltf_sl) ? "SL" : (new_sl > prev_ltf_sl ? "HL" : "LL")
+
     if showLabels
         label.new(bar_index[N_LTF], new_sl, low_lbl, color=color.new(color.aqua, 40), style=label.style_label_up, textcolor=color.white, size=size.small)
+
     prev_ltf_sl := last_ltf_sl
     last_ltf_sl := new_sl
     last_sl_idx := bar_index[N_LTF]
     short_fired := false
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MANUAL TRADE STATE TRACKER (Replaces strategy.position_size)
+// TRADE MEMORY / PLACEHOLDER LOGIC
 // ═══════════════════════════════════════════════════════════════════════════
 var bool  in_trade  = false
-var int   trade_dir = 0 // 1 for Long, -1 for Short
-var float active_sl = na
-var float active_tp = na
+var int   trade_dir = 0      // 1 for Long, -1 for Short
+var float trade_sl  = na
+var float trade_tp  = na
 
-// Check if active trade hits TP or SL
+// Check if active "simulated" trade has hit SL or TP during the current candle
 if in_trade
-    if trade_dir == 1 // Long exit condition
-        if low <= active_sl or high >= active_tp
+    if trade_dir == 1 // Active Long
+        if low <= trade_sl or high >= trade_tp
             in_trade  := false
             trade_dir := 0
-    else if trade_dir == -1 // Short exit condition
-        if high >= active_sl or low <= active_tp
+            trade_sl  := na
+            trade_tp  := na
+    else if trade_dir == -1 // Active Short
+        if high >= trade_sl or low <= trade_tp
             in_trade  := false
             trade_dir := 0
+            trade_sl  := na
+            trade_tp  := na
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ENTRY TRIGGERS + SL % RANGE FILTER
 // ═══════════════════════════════════════════════════════════════════════════
-// Notice 'not in_trade' is now acting as the gatekeeper
 bool can_long  = htf_bull and not long_fired  and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
 bool can_short = htf_bear and not short_fired and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
 
@@ -141,25 +151,25 @@ bool short_skipped_tight_sl = can_short and close < last_ltf_sl and not na(short
 bool short_skipped_wide_sl  = can_short and close < last_ltf_sl and not na(short_stop_pct) and short_stop_pct > maxStopPct
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ENTRIES / EXITS / ALERTS
+// ENTRIES / ALERTS / VISUALS
 // ═══════════════════════════════════════════════════════════════════════════
-plotshape(long_sig, title="Long Entry", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small)
-plotshape(short_sig, title="Short Entry", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small)
+bool plot_long_entry  = false
+bool plot_short_entry = false
 
 if long_sig
     long_fired := true
-    in_trade   := true
-    trade_dir  := 1
-    
     float entry_px = close
     float sl_px    = last_ltf_sl
     float risk     = entry_px - sl_px
     float tp_px    = entry_px + (risk * RR)
     float sl_pips  = math.abs(entry_px - sl_px) / pip_size
     
-    // Save to state tracker
-    active_sl := sl_px
-    active_tp := tp_px
+    // Update Trade Memory
+    in_trade  := true
+    trade_dir := 1
+    trade_sl  := sl_px
+    trade_tp  := tp_px
+    plot_long_entry := true
 
     if showLevels
         line.new(last_sh_idx, last_ltf_sh, bar_index + 2, last_ltf_sh, color=color.orange, style=line.style_dotted, width=2)
@@ -174,18 +184,18 @@ if long_sig
 
 if short_sig
     short_fired := true
-    in_trade    := true
-    trade_dir   := -1
-    
     float entry_px = close
     float sl_px    = last_ltf_sh
     float risk     = sl_px - entry_px
     float tp_px    = entry_px - (risk * RR)
     float sl_pips  = math.abs(entry_px - sl_px) / pip_size
-    
-    // Save to state tracker
-    active_sl := sl_px
-    active_tp := tp_px
+
+    // Update Trade Memory
+    in_trade  := true
+    trade_dir := -1
+    trade_sl  := sl_px
+    trade_tp  := tp_px
+    plot_short_entry := true
 
     if showLevels
         line.new(last_sl_idx, last_ltf_sl, bar_index + 2, last_ltf_sl, color=color.aqua, style=line.style_dotted, width=2)
@@ -197,6 +207,10 @@ if short_sig
 
     string payloadShort = '{"signal":"SHORT","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(time) + ',"timeframe":"15m","entry":' + str.tostring(entry_px) + ',"sl":' + str.tostring(sl_px) + ',"tp":' + str.tostring(tp_px) + ',"sl_pips":' + str.tostring(sl_pips) + ',"sl_percent":' + str.tostring(short_stop_pct) + ',"rr_ratio":' + str.tostring(RR) + ',"order_type":"MARKET","daily_trend":"BEARISH","m15_swing_high":' + str.tostring(last_ltf_sh) + ',"m15_swing_low":' + str.tostring(last_ltf_sl) + ',"pip_type":"' + pip_type + '"}'
     alert(payloadShort, alert.freq_once_per_bar_close)
+
+// Entry Signals plotted on chart
+plotshape(plot_long_entry,  title="Long Signal",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, text="LONG")
+plotshape(plot_short_entry, title="Short Signal", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small, text="SHORT")
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SKIPPED TRADE MARKERS
@@ -210,7 +224,7 @@ plotshape(showSkipMarkers and short_skipped_wide_sl,  title="Short Skipped - Wid
 // ═══════════════════════════════════════════════════════════════════════════
 // DIAGNOSTIC TABLE
 // ═══════════════════════════════════════════════════════════════════════════
-var table diag_panel = table.new(position.top_right, 2, 8, border_width=1, border_color=color.gray)
+var table diag_panel = table.new(position.top_right, 2, 9, border_width=1, border_color=color.gray)
 
 if barstate.islast and showTable
     table.cell(diag_panel, 0, 0, "Locked 1D Trend", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.small)
@@ -236,3 +250,7 @@ if barstate.islast and showTable
 
     table.cell(diag_panel, 0, 7, "Max SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
     table.cell(diag_panel, 1, 7, str.tostring(maxStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    
+    // Display Trade Memory State
+    table.cell(diag_panel, 0, 8, "Active Trade State", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(diag_panel, 1, 8, in_trade ? (trade_dir == 1 ? "LONG OPEN" : "SHORT OPEN") : "NO TRADE", bgcolor=color.new(color.black, 20), text_color=in_trade ? color.aqua : color.gray, text_size=size.tiny)

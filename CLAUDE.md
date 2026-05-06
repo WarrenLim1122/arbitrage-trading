@@ -146,7 +146,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 ---
 
-## Current State (as of 2026-05-06, session 8)
+## Current State (as of 2026-05-07, session 9)
 
 All four layers deployed and operational. Gate D demo run in progress (7-day window passed; proceed to live when ready).
 
@@ -171,16 +171,17 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
   - `/changepropfirm` wizard (10 steps, `/back` supported). Buffer rules: Overall DD no buffer, Daily DD −1pp, Consistency −1pp, daily cap = 25% of target (auto).
   - All SL/TP/entry prices use `_fmt_price(symbol, price)` — no float artifacts.
 - Layer 3: Both workers running (VPS #2 personal 106497299, VPS #3 prop 106496748, both MetaQuotes demo). Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`. Both workers honor `order_type=market` ticket field — Layer 2 always sends `order_type=market` for all tickets. `LIMIT_ONLY_EXECUTION` env var is overridden by the market ticket field.
-- **Trade Journal (deployed this session, VPS #2 only)**:
+- **Trade Journal (session 9 — fully operational, VPS #2 only)**:
   - `layer3/journal/` package: `firebase_journal.py`, `rr_chart_renderer.py`, `storage_uploader.py`, `screenshot_capture.py`, `journaling_worker.py`, `retry_queue.py`
   - `_position_close_watcher()` daemon thread polls MT5 every 5 s, detects TP/SL closes by magic number, fires journal pipeline
-  - On close: fetches deal history → renders dark-theme outcome chart (matplotlib Agg) → saves locally to `generated_screenshots/` → writes to Firestore at `users/{userId}/trades/{tradeId}` (Firebase Storage disabled — project on Spark plan; `SCREENSHOT_STORAGE=local`, `SCREENSHOT_DRY_RUN=true`)
+  - On close: fetches deal history (with 5-retry backoff [5,10,20,40,60]s) → renders dark-theme outcome chart (matplotlib Agg) → uploads PNG to Firebase Storage → writes Firestore doc with `rrChartUrl` + `outcomeScreenshotUrl`
   - Document ID: `{accountType}_{mt5AccountId}_{ticket}` (deterministic, upsert-safe)
   - Retry queue (`journal_retry_queue.jsonl`) for failed Firestore writes, retried every 300 s
-  - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false` — CONFIRMED LIVE 2026-05-06 (verified: "Journal modules started (dry_run=false)" in startup logs). `SCREENSHOT_STORAGE=local`, `SCREENSHOT_DRY_RUN=true` — charts rendered locally to `C:\arbitrage\generated_screenshots\`, not uploaded (Storage disabled on Spark plan). `FIREBASE_STORAGE_BUCKET=` blank — Storage SDK never called. `FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json`.**
+  - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false`. `SCREENSHOT_STORAGE=firebase`, `SCREENSHOT_DRY_RUN=false`, `FIREBASE_STORAGE_BUCKET=gen-lang-client-0206326169.firebasestorage.app` — Firebase Storage LIVE (upgraded to Blaze plan 2026-05-07). Screenshots upload to `trade-screenshots/{accountType}/{mt5AccountId}/{ticket}/outcome.png`. `FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json`.**
   - **VPS #3 (prop): `FIREBASE_JOURNAL_ENABLED=false` — journal disabled, prop trades not recorded**
   - Website: warrenlimzf.com/journal reads from Firestore collection `users/{userId}/trades`
-  - Firebase project: `gen-lang-client-0206326169`. User ID (wanttobefire@gmail.com — dedicated journal account): `WCzOHPl8C4Q1aa3EDHkOGhdH9To1`. Database ID: `ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607` (named, not default — must set FIREBASE_DATABASE_ID in .env).
-  - Dry-run test: `python scripts/test_journal_dryrun.py` (no Firebase credentials needed)
+  - Firebase project: `gen-lang-client-0206326169`. Plan: **Blaze (pay-as-you-go)**. User ID (wanttobefire@gmail.com — dedicated journal account): `WCzOHPl8C4Q1aa3EDHkOGhdH9To1`. Database ID: `ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607` (named, not default — must set FIREBASE_DATABASE_ID in .env). Storage bucket: `gen-lang-client-0206326169.firebasestorage.app`.
+  - Connectivity test: `python scripts/test_firebase_write.py` (writes real Firestore doc, reads back)
+  - **Key bugs fixed this session**: (1) MT5 deal history lag — first TP not journaled because history unavailable 4 s after close; fixed with 5-retry backoff. (2) Firestore 404 — `firebase_admin` connected to `(default)` DB; fixed by rewriting `firebase_journal.py` to use `google.cloud.firestore.Client` with `database=FIREBASE_DATABASE_ID`. (3) Storage on Spark plan — upgraded to Blaze; `storage_uploader.py` rewritten to use `google.cloud.storage.Client`.
 
-**Next action**: Monitor first live signal to confirm simultaneous MARKET Telegram flow and Firestore journal entry. Switch accounts from MetaQuotes demo to real Fusion Markets + FundingPips when ready.
+**Next action**: Wait for next real TP/SL close on VPS #2 — verify screenshot appears in Firebase Console → Storage → Files and `rrChartUrl` is populated in the Firestore doc. Then switch accounts from MetaQuotes demo to real Fusion Markets + FundingPips when ready.
