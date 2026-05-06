@@ -75,12 +75,20 @@ def handle_closed_position(
         entry_deals, exit_deals = _get_deals(mt5_lock, position_ticket, open_time)
 
         if not exit_deals:
-            # MT5 history sometimes lags; retry once after a short pause
-            import time; time.sleep(4)
-            entry_deals, exit_deals = _get_deals(mt5_lock, position_ticket, open_time)
+            import time
+            # MT5 history can lag several seconds after close; retry with backoff
+            for attempt, wait in enumerate([5, 10, 20, 40, 60], start=1):
+                logger.info(
+                    "Journal: no exit deal yet for position %d (attempt %d/5) — retrying in %ds",
+                    position_ticket, attempt, wait,
+                )
+                time.sleep(wait)
+                entry_deals, exit_deals = _get_deals(mt5_lock, position_ticket, open_time)
+                if exit_deals:
+                    break
 
         if not exit_deals:
-            logger.warning("Journal: no exit deal for position %d — skipping", position_ticket)
+            logger.warning("Journal: no exit deal for position %d after all retries — skipping", position_ticket)
             return None
 
         exit_deal  = exit_deals[-1]
