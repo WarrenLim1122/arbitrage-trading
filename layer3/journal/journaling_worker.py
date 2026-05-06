@@ -163,7 +163,7 @@ def handle_closed_position(
 
         # ── 5. Build Firestore payload ────────────────────────────────────
         from .firebase_journal import (
-            build_document_id, derive_market_type, FIREBASE_JOURNAL_COLLECTION,
+            build_document_id, derive_market_type,
         )
 
         now_iso   = datetime.now(timezone.utc).isoformat()

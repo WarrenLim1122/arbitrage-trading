@@ -24,6 +24,7 @@ PROJECT_ID    = os.getenv("FIREBASE_PROJECT_ID", "")
 SA_PATH       = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "")
 USER_ID       = os.getenv("FIREBASE_JOURNAL_USER_ID", "")
 COLLECTION    = os.getenv("FIREBASE_JOURNAL_COLLECTION", "trades")
+DATABASE_ID   = os.getenv("FIREBASE_DATABASE_ID", "(default)")
 
 print("=" * 60)
 print("Firebase Connectivity Test")
@@ -32,6 +33,7 @@ print(f"  Project ID:       {PROJECT_ID}")
 print(f"  Service account:  {SA_PATH}")
 print(f"  User ID:          {USER_ID}")
 print(f"  Collection:       {COLLECTION}")
+print(f"  Database ID:      {DATABASE_ID}")
 print(f"  SA file exists:   {Path(SA_PATH).exists() if SA_PATH else False}")
 print("=" * 60)
 
@@ -48,23 +50,18 @@ if not USER_ID:
     print("FAIL: FIREBASE_JOURNAL_USER_ID is not set in .env")
     sys.exit(1)
 
-print("\nStep 1 — Initialising Firebase Admin SDK...")
+print("\nStep 1 — Initialising Firestore client...")
 try:
-    import firebase_admin
-    from firebase_admin import credentials, firestore as fb_firestore
+    from google.oauth2 import service_account
+    from google.cloud import firestore
 
-    if not firebase_admin._apps:
-        cred = credentials.Certificate(SA_PATH)
-        firebase_admin.initialize_app(cred, {"projectId": PROJECT_ID})
-    print("  Firebase Admin SDK initialised OK")
-except Exception as exc:
-    print(f"  FAIL: {exc}")
-    sys.exit(1)
-
-print("\nStep 2 — Getting Firestore client...")
-try:
-    db = fb_firestore.client()
-    print("  Firestore client OK")
+    creds = service_account.Credentials.from_service_account_file(SA_PATH)
+    db = firestore.Client(
+        project=PROJECT_ID,
+        credentials=creds,
+        database=DATABASE_ID,
+    )
+    print(f"  Firestore client OK (database={DATABASE_ID})")
 except Exception as exc:
     print(f"  FAIL: {exc}")
     sys.exit(1)
@@ -73,7 +70,7 @@ doc_id  = "connection_test_delete_me"
 now_iso = datetime.now(timezone.utc).isoformat()
 ref     = db.collection("users").document(USER_ID).collection(COLLECTION).document(doc_id)
 
-print(f"\nStep 3 — Writing test document...")
+print(f"\nStep 2 — Writing test document...")
 print(f"  Path: users/{USER_ID}/{COLLECTION}/{doc_id}")
 try:
     ref.set({
@@ -118,7 +115,7 @@ except Exception as exc:
     print(f"  FAIL: {exc}")
     sys.exit(1)
 
-print("\nStep 4 — Reading it back to verify...")
+print("\nStep 3 — Reading it back to verify...")
 try:
     snap = ref.get()
     if snap.exists:

@@ -1,5 +1,5 @@
 """
-Write completed trades to Firestore via Firebase Admin SDK.
+Write completed trades to Firestore via Google Cloud Firestore SDK.
 
 Schema follows FIRESTORE_TRADE_SCHEMA.md and BOT_JOURNALING_API.md exactly.
 Firestore path: users/{userId}/trades/{tradeId}
@@ -18,38 +18,46 @@ FIREBASE_PROJECT_ID           = os.getenv("FIREBASE_PROJECT_ID", "")
 FIREBASE_SERVICE_ACCOUNT_PATH = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "")
 FIREBASE_JOURNAL_USER_ID      = os.getenv("FIREBASE_JOURNAL_USER_ID", "")
 FIREBASE_JOURNAL_COLLECTION   = os.getenv("FIREBASE_JOURNAL_COLLECTION", "trades")
-FIREBASE_STORAGE_BUCKET       = os.getenv("FIREBASE_STORAGE_BUCKET", "")
+# Named Firestore database — leave blank or "(default)" for projects with only one database.
+# Find in Firebase Console → Firestore → database selector dropdown.
+FIREBASE_DATABASE_ID          = os.getenv("FIREBASE_DATABASE_ID", "(default)")
 
-_firebase_initialized = False
+_db_client = None
 
 
-def _ensure_firebase() -> bool:
-    global _firebase_initialized
-    if _firebase_initialized:
-        return True
+def _get_db():
+    """Return a cached Firestore client, initialising it on first call."""
+    global _db_client
+    if _db_client is not None:
+        return _db_client
+
     if not FIREBASE_PROJECT_ID or not FIREBASE_SERVICE_ACCOUNT_PATH:
         logger.error(
-            "Firebase not configured — set FIREBASE_PROJECT_ID and "
+            "Firestore not configured — set FIREBASE_PROJECT_ID and "
             "FIREBASE_SERVICE_ACCOUNT_PATH in .env"
         )
-        return False
-    try:
-        import firebase_admin
-        from firebase_admin import credentials
+        return None
 
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(FIREBASE_SERVICE_ACCOUNT_PATH)
-            bucket = FIREBASE_STORAGE_BUCKET or f"{FIREBASE_PROJECT_ID}.appspot.com"
-            firebase_admin.initialize_app(cred, {
-                "projectId":     FIREBASE_PROJECT_ID,
-                "storageBucket": bucket,
-            })
-        _firebase_initialized = True
-        logger.info("Firebase Admin SDK initialised (project=%s)", FIREBASE_PROJECT_ID)
-        return True
+    try:
+        from google.oauth2 import service_account
+        from google.cloud import firestore
+
+        creds = service_account.Credentials.from_service_account_file(
+            FIREBASE_SERVICE_ACCOUNT_PATH
+        )
+        _db_client = firestore.Client(
+            project=FIREBASE_PROJECT_ID,
+            credentials=creds,
+            database=FIREBASE_DATABASE_ID,
+        )
+        logger.info(
+            "Firestore client initialised (project=%s  database=%s)",
+            FIREBASE_PROJECT_ID, FIREBASE_DATABASE_ID,
+        )
+        return _db_client
     except Exception as exc:
-        logger.error("Firebase init failed: %s", exc)
-        return False
+        logger.error("Firestore client init failed: %s", exc)
+        return None
 
 
 def build_document_id(account_type: str, mt5_account_id: str, ticket: int) -> str:
@@ -65,12 +73,11 @@ def derive_market_type(symbol: str) -> str:
         return "Crypto"
     if sym in {"NAS100", "US500", "US30", "DAX40", "UK100", "GER40", "SPX500"}:
         return "Indices"
-    # Standard forex pairs — any 6-char pair made of known currency codes
     currencies = {"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD",
                   "SGD", "HKD", "SEK", "NOK", "DKK", "MXN", "TRY"}
     if len(sym) == 6 and sym[:3] in currencies and sym[3:] in currencies:
         return "Forex"
-    return "Forex"  # sensible default
+    return "Forex"
 
 
 def write_trade(payload: dict) -> bool:
@@ -103,19 +110,18 @@ def write_trade(payload: dict) -> bool:
         )
         return True
 
-    if not _ensure_firebase():
+    db = _get_db()
+    if db is None:
         return False
 
     try:
-        from firebase_admin import firestore
-        db  = firestore.client()
         ref = (
             db.collection("users")
               .document(FIREBASE_JOURNAL_USER_ID)
               .collection(FIREBASE_JOURNAL_COLLECTION)
               .document(doc_id)
         )
-        ref.set(payload, merge=True)   # merge=True = upsert
+        ref.set(payload, merge=True)
         logger.info(
             "Firestore write OK: users/%s/%s/%s",
             FIREBASE_JOURNAL_USER_ID, FIREBASE_JOURNAL_COLLECTION, doc_id,
