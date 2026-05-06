@@ -503,7 +503,7 @@ def _execute_order(ticket: dict) -> None:
 
     force_market = ticket.get("order_type") == "market"
     if not LIMIT_ONLY_EXECUTION or force_market:
-        # Market order: either LIMIT_ONLY_EXECUTION=false, or prop hedge triggered after personal fill
+        # Market order: either LIMIT_ONLY_EXECUTION=false env override, or order_type=market in ticket
         with _mt5_lock:
             tick = mt5.symbol_info_tick(resolved)
         if tick is None:
