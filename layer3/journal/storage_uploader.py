@@ -7,9 +7,34 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-SCREENSHOT_STORAGE      = os.getenv("SCREENSHOT_STORAGE",     "firebase")
-SCREENSHOT_DRY_RUN      = os.getenv("SCREENSHOT_DRY_RUN",     "false").lower() == "true"
-FIREBASE_STORAGE_BUCKET = os.getenv("FIREBASE_STORAGE_BUCKET", "")
+SCREENSHOT_STORAGE        = os.getenv("SCREENSHOT_STORAGE",      "firebase")
+SCREENSHOT_DRY_RUN        = os.getenv("SCREENSHOT_DRY_RUN",      "false").lower() == "true"
+FIREBASE_STORAGE_BUCKET   = os.getenv("FIREBASE_STORAGE_BUCKET", "")
+FIREBASE_SERVICE_ACCOUNT_PATH = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH", "")
+
+_storage_client = None
+
+
+def _get_storage_client():
+    global _storage_client
+    if _storage_client is not None:
+        return _storage_client
+    if not FIREBASE_SERVICE_ACCOUNT_PATH:
+        logger.error("FIREBASE_SERVICE_ACCOUNT_PATH not set — cannot init storage client")
+        return None
+    try:
+        from google.oauth2 import service_account
+        from google.cloud import storage
+
+        creds = service_account.Credentials.from_service_account_file(
+            FIREBASE_SERVICE_ACCOUNT_PATH
+        )
+        _storage_client = storage.Client(credentials=creds)
+        logger.info("Google Cloud Storage client initialised")
+        return _storage_client
+    except Exception as exc:
+        logger.error("Storage client init failed: %s", exc)
+        return None
 
 
 def upload_screenshot(
@@ -24,7 +49,6 @@ def upload_screenshot(
     Storage path: trade-screenshots/{accountType}/{mt5AccountId}/{ticket}/outcome.png
 
     Returns public URL on success, None on failure.
-    In dry-run mode returns a placeholder URL and skips upload.
     """
     blob_path = (
         f"trade-screenshots/{account_type}/{mt5_account_id}/{ticket}/outcome.png"
@@ -43,10 +67,12 @@ def upload_screenshot(
         logger.error("FIREBASE_STORAGE_BUCKET not set — screenshot upload skipped")
         return None
 
-    try:
-        from firebase_admin import storage as fb_storage  # firebase_admin already init'd
+    client = _get_storage_client()
+    if client is None:
+        return None
 
-        bucket = fb_storage.bucket(FIREBASE_STORAGE_BUCKET)
+    try:
+        bucket = client.bucket(FIREBASE_STORAGE_BUCKET)
         blob   = bucket.blob(blob_path)
         blob.upload_from_filename(str(local_path), content_type="image/png")
         blob.make_public()
