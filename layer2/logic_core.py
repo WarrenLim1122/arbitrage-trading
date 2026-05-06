@@ -94,6 +94,23 @@ _pers_algo_disabled:   bool = False
 # Tracks (ticker, event_time_iso) pairs already acted on — prevents repeat closes.
 _news_closed_events: set[tuple[str, str]] = set()
 
+# ── Signal-blocked alert dedup ─────────────────────────────────────────────
+# Prevents flooding Telegram when TradingView fires multiple signals while the
+# system is halted or suppressed.  Key: (ticker, reason_tag).  Value: last alert UTC.
+_block_alerted: dict[tuple[str, str], datetime] = {}
+_BLOCK_COOLDOWN_SECS = 1800   # 30 min — one reminder per ticker per reason per 30 min
+
+
+def _maybe_block_alert(ticker: str, reason_tag: str) -> bool:
+    """Return True (and record timestamp) if we should send a block alert now."""
+    key = (ticker, reason_tag)
+    now = datetime.now(timezone.utc)
+    last = _block_alerted.get(key)
+    if last is None or (now - last).total_seconds() >= _BLOCK_COOLDOWN_SECS:
+        _block_alerted[key] = now
+        return True
+    return False
+
 # ── Position close tracking (detects TP/SL exits between equity monitor polls) ─
 _prev_prop_pos: dict[tuple[str, int], dict] = {}
 _prev_pers_pos: dict[tuple[str, int], dict] = {}
@@ -933,6 +950,43 @@ async def _verify_and_notify(
     price_digits: int,
     entry: float,
 ) -> None:
+    try:
+        await _verify_and_notify_inner(
+            ticker=ticker, prop_signal_id=prop_signal_id, pers_signal_id=pers_signal_id,
+            prop_signal=prop_signal, prop_lots=prop_lots, prop_sl=prop_sl, prop_tp=prop_tp,
+            prop_dollar_risk=prop_dollar_risk, pers_signal=pers_signal, pers_lots=pers_lots,
+            pers_sl=pers_sl, pers_tp=pers_tp, pers_dollar_risk=pers_dollar_risk,
+            phase=phase, baseline_equity=baseline_equity, price_digits=price_digits, entry=entry,
+        )
+    except Exception as exc:
+        logger.error("_verify_and_notify crashed for %s: %s", ticker, exc, exc_info=True)
+        await _telegram_alert(
+            f"⚠️ <b>Internal Error — {ticker}</b>\n\n"
+            f"Order confirmation task crashed: {exc}\n\n"
+            f"Check VPS #1 logs. Positions may be open — verify MT5 manually."
+        )
+
+
+async def _verify_and_notify_inner(
+    *,
+    ticker: str,
+    prop_signal_id: str,
+    pers_signal_id: str,
+    prop_signal: str,
+    prop_lots: float,
+    prop_sl: float,
+    prop_tp: float,
+    prop_dollar_risk: float,
+    pers_signal: str,
+    pers_lots: float,
+    pers_sl: float,
+    pers_tp: float,
+    pers_dollar_risk: float,
+    phase: int,
+    baseline_equity: float,
+    price_digits: int,
+    entry: float,
+) -> None:
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
     pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
     prop_arrow = "↑ LONG" if prop_signal == "LONG" else "↓ SHORT"
@@ -1092,12 +1146,26 @@ async def receive_signal(request: Request):
         max_pos = _phase_state.get("max_open_positions", 2)
 
     if p_halt:
+        if _maybe_block_alert(payload.ticker, "p_halt"):
+            await _telegram_alert(
+                f"🔴 <b>Signal Blocked — {payload.ticker}</b>\n\n"
+                f"System permanently halted (K2/K4/K5 triggered).\n"
+                f"Signal: {payload.signal}\n\n"
+                f"Use /phase2 or /changepropfirm then /resume to restart."
+            )
         return JSONResponse({
             "status": "halted",
             "reason": "profit target reached — /phase2 to configure and start next phase",
         })
 
     if not active:
+        if _maybe_block_alert(payload.ticker, "halted"):
+            await _telegram_alert(
+                f"⏸ <b>Signal Skipped — {payload.ticker}</b>\n\n"
+                f"System halted (K1/K3 daily halt or manual /stop).\n"
+                f"Signal: {payload.signal}\n\n"
+                f"Auto-resumes next session, or /resume to restart now."
+            )
         logger.info("HALTED — dropped %s %s", payload.signal, payload.ticker)
         return JSONResponse({"status": "halted", "reason": "signal processing stopped"})
 
@@ -1110,6 +1178,13 @@ async def receive_signal(request: Request):
     if news_block or manual_block:
         reason = "manual block (/closepair)" if manual_block else "news suppression window"
         logger.info("SUPPRESSED — dropped %s %s (%s)", payload.signal, payload.ticker, reason)
+        if _maybe_block_alert(payload.ticker, reason):
+            await _telegram_alert(
+                f"📰 <b>Signal Suppressed — {payload.ticker}</b>\n\n"
+                f"Reason: {reason}\n"
+                f"Signal: {payload.signal}\n\n"
+                f"Trading resumes automatically when the window expires."
+            )
         return JSONResponse({"status": "suppressed", "reason": reason})
 
     # Max open positions gate — count by prop positions (1 signal = 1 prop position)

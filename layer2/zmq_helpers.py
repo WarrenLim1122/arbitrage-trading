@@ -220,22 +220,6 @@ def _update_pers_day_start(equity: float) -> None:
     logger.info("Personal day-start equity set to %.2f", equity)
 
 
-def _query_order_status(zmq_url: str, signal_id: str) -> dict:
-    """Query Layer 3 for execution status of a pending/filled order by signal_id."""
-    sock = _zmq_ctx.socket(zmq.REQ)
-    sock.setsockopt(zmq.LINGER, 0)
-    sock.connect(zmq_url)
-    try:
-        sock.send_json({"query": "order_status", "signal_id": signal_id})
-        if not sock.poll(EQUITY_TIMEOUT):
-            return {"status": "UNKNOWN", "error": "timeout"}
-        return sock.recv_json()
-    except Exception as exc:
-        return {"status": "UNKNOWN", "error": str(exc)}
-    finally:
-        sock.close()
-
-
 def _set_personal_baseline(amount: float) -> None:
     """Persist a user-supplied personal account baseline. Never auto-written by the bot."""
     with _pf_lock:
