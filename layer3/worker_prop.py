@@ -1,9 +1,9 @@
 """
-Layer 3 — Prop firm worker (VPS #2, FundingPips MT5)
+Layer 3 — Prop firm worker (VPS #3, FundingPips MT5)
 
 Run:  python layer3/worker_prop.py
 
-Required env vars (set in .env on VPS #2):
+Required env vars (set in .env on VPS #3):
   MT5_LOGIN      — FundingPips account number
   MT5_PASSWORD   — FundingPips account password
   MT5_SERVER     — FundingPips MT5 server name

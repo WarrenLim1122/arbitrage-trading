@@ -1,9 +1,9 @@
 """
-Layer 3 — Personal account worker (VPS #3, Fusion Markets MT5)
+Layer 3 — Personal account worker (VPS #2, Fusion Markets MT5)
 
 Run:  python layer3/worker_personal.py
 
-Required env vars (set in .env on VPS #3):
+Required env vars (set in .env on VPS #2):
   MT5_LOGIN      — Fusion Markets account number
   MT5_PASSWORD   — Fusion Markets account password
   MT5_SERVER     — Fusion Markets MT5 server name
