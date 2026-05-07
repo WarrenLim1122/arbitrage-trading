@@ -1037,10 +1037,12 @@ def main() -> None:
         logger.info("Static DD guard started (prop worker only)")
     if JOURNAL_ENABLED:
         from .journal.retry_queue import start_retry_worker
+        from .journal.pending_deals_queue import start_pending_retry_worker
         threading.Thread(
             target=_position_close_watcher, daemon=True, name="pos-close-watcher"
         ).start()
         start_retry_worker()
+        start_pending_retry_worker(_mt5_lock, str(MT5_LOGIN), WORKER_NAME)
         logger.info(
             "Journal modules started (dry_run=%s)",
             os.getenv("FIREBASE_JOURNAL_DRY_RUN", "true"),

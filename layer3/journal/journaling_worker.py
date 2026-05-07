@@ -14,10 +14,35 @@ Flow:
   7. On Firestore failure: enqueue payload for retry
 """
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
+
+_PENDING_DEALS_PATH = Path(__file__).parent.parent.parent / "journal_pending_deals.jsonl"
+_pending_lock = __import__("threading").Lock()
+
+
+def _enqueue_pending_deal(ticket: int, pos_snapshot: dict, mt5_account_id: str, worker_name: str) -> None:
+    entry = {
+        "ticket":        ticket,
+        "mt5_account_id": mt5_account_id,
+        "worker_name":   worker_name,
+        "queued_at":     datetime.now(timezone.utc).isoformat(),
+        "snapshot": {
+            k: (v.isoformat() if isinstance(v, datetime) else v)
+            for k, v in pos_snapshot.items()
+        },
+    }
+    try:
+        with _pending_lock:
+            with _PENDING_DEALS_PATH.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, default=str) + "\n")
+        logger.info("Journal: deal queued for later retry (ticket=%d)", ticket)
+    except Exception as exc:
+        logger.error("Failed to enqueue pending deal (ticket=%d): %s", ticket, exc)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +98,7 @@ def handle_closed_position(
     worker_name: str,       # "personal" | "prop"
     position_ticket: int,
     pos_snapshot: dict,
+    skip_retry: bool = False,   # True when called from pending-deals retry thread
 ) -> Optional[dict]:
     """
     Run the journaling pipeline for one closed position.
@@ -91,7 +117,7 @@ def handle_closed_position(
         # ── 1. Deal history ───────────────────────────────────────────────
         entry_deals, exit_deals = _get_deals(mt5_lock, position_ticket, open_time)
 
-        if not exit_deals:
+        if not exit_deals and not skip_retry:
             import time
             # MT5 history can lag several minutes after close (MetaQuotes Demo in particular
             # can take >2 min to sync deal history). Extended backoff covers ~7 min total.
@@ -106,7 +132,19 @@ def handle_closed_position(
                     break
 
         if not exit_deals:
-            logger.warning("Journal: no exit deal for position %d after all retries — skipping", position_ticket)
+            if skip_retry:
+                # Called from pending-deals retry thread — not found yet, stay in queue
+                logger.info(
+                    "Journal: no exit deal for position %d (pending retry) — will try again later",
+                    position_ticket,
+                )
+            else:
+                # All 7 inline retries failed — save to persistent queue for later retry
+                _enqueue_pending_deal(position_ticket, pos_snapshot, mt5_account_id, worker_name)
+                logger.warning(
+                    "Journal: no exit deal for position %d after all retries — queued for later retry",
+                    position_ticket,
+                )
             return None
 
         exit_deal  = exit_deals[-1]

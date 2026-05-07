@@ -1317,7 +1317,15 @@ async def receive_signal(request: Request):
         prop_dollar_per_lot = (tp_distance / prop_tick_size) * prop_tick_val
     prop_lots            = round(prop_dollar_risk / prop_dollar_per_lot, 2)
     pers_lots            = round(prop_lots * phase_ratio, 2)
-    pers_dollar_risk     = round(prop_dollar_risk * phase_ratio, 2)  # display only
+
+    # Actual personal dollar risk if its own SL is hit (sl_distance is much wider than tp_distance)
+    pers_contract_size = pers_info.get("contract_size", prop_contract_size)
+    pers_tick_size     = pers_info.get("trade_tick_size", prop_tick_size)
+    pers_tick_val      = pers_info.get("trade_tick_value", prop_tick_val)
+    if payload.ticker.endswith("USD") and pers_contract_size > 0:
+        pers_dollar_risk = round(pers_lots * sl_distance * pers_contract_size, 2)
+    else:
+        pers_dollar_risk = round(pers_lots * (sl_distance / pers_tick_size) * pers_tick_val, 2)
 
     pers_tp = round(payload.tp, price_digits)   # personal TP = signal TP
 

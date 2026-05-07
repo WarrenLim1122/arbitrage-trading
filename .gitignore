@@ -17,4 +17,5 @@ firebase-service-account.json
 
 # Journal runtime files
 journal_retry_queue.jsonl
+journal_pending_deals.jsonl
 generated_screenshots/
