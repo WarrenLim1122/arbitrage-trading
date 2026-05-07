@@ -101,7 +101,8 @@ def render_rr_chart(
     open_time_utc  = _utc(open_time)
     close_time_utc = _utc(close_time)
 
-    times = df["time"].values  # numpy datetime64 array
+    # Strip tz to get naive UTC datetime64[ns] — searchsorted fails silently on tz-aware arrays
+    times = df["time"].dt.tz_localize(None).values
     open_idx  = max(0, np.searchsorted(
         times, np.datetime64(open_time_utc.replace(tzinfo=None)), side="left") - 1)
     close_idx = min(n - 1, np.searchsorted(
@@ -244,7 +245,7 @@ def render_rr_chart(
     # ── Meta label (bottom-left) ──────────────────────────────────────────────
     ax.text(
         0.02, 0.03,
-        f"{account_type.upper()} • {close_reason} • "
+        f"{account_type.upper()} • {close_reason} • M15 • "
         f"{close_time_utc.strftime('%Y-%m-%d %H:%M UTC')}",
         transform=ax.transAxes, color=_TEXT,
         fontsize=8, va="bottom", ha="left", alpha=0.65,
