@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -74,9 +75,12 @@ def upload_screenshot(
     try:
         bucket = client.bucket(FIREBASE_STORAGE_BUCKET)
         blob   = bucket.blob(blob_path)
+        blob.cache_control = "no-cache, no-store, must-revalidate"
         blob.upload_from_filename(str(local_path), content_type="image/png")
         blob.make_public()
-        url = blob.public_url
+        # Append timestamp so the URL in Firestore changes on every upload,
+        # forcing the journal website to fetch the new image regardless of CDN cache.
+        url = f"{blob.public_url}?t={int(time.time())}"
         logger.info("Screenshot uploaded → %s", url)
         return url
     except Exception as exc:
