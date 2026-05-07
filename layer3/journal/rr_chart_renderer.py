@@ -129,11 +129,12 @@ def render_rr_chart(
     )
     ax.set_facecolor(_PANEL)
 
-    _draw_candles(ax, df)
+    # Draw only candles up to view_end — no post-close bars visible
+    _draw_candles(ax, df.iloc[: view_end + 1])
 
     # ── Risk / Reward boxes ────────────────────────────────────────────────────
-    bx0 = open_idx  - 0.4
-    bx1 = close_idx + 0.4
+    bx0 = open_idx  - 0.3   # left edge of entry bar body (bar width = 0.6, ±0.3 from centre)
+    bx1 = close_idx + 0.3   # right edge of close bar body
     bw  = max(bx1 - bx0, 1.2)  # minimum 1.2 bars for very short trades
 
     if direction == "LONG":
@@ -185,15 +186,29 @@ def render_rr_chart(
     ax.axvline(open_idx,  color=_ENTRY, linewidth=0.8, linestyle=":", alpha=0.5, zorder=3)
     ax.axvline(close_idx, color=_CLOSE, linewidth=0.8, linestyle=":", alpha=0.5, zorder=3)
 
-    # ── Price labels (anchored to right of visible window) ────────────────────
-    for price, color, label in [
-        (tp_price,    _UP,    f"TP      {tp_price}"),
-        (entry_price, _ENTRY, f"Entry  {entry_price}"),
+    # ── Price labels — auto push-apart so they never overlap ─────────────────
+    # Sort top → bottom by nominal price, then shift any label that is too close
+    # to the one above it. A thin connector line links label to its true price.
+    MIN_LABEL_GAP = price_range * 0.045   # ~4.5% of visible range
+    raw = sorted([
+        (tp_price,    _UP,    f"TP     {tp_price}"),
+        (entry_price, _ENTRY, f"Entry {entry_price}"),
         (close_price, _CLOSE, f"Close {close_price}"),
-        (sl_price,    _DOWN,  f"SL      {sl_price}"),
-    ]:
-        ax.text(label_x + 0.3, price, label, color=color, fontsize=8,
+        (sl_price,    _DOWN,  f"SL     {sl_price}"),
+    ], key=lambda x: x[0], reverse=True)  # descending
+
+    adj_ys = [raw[0][0]]
+    for i in range(1, len(raw)):
+        gap_needed = adj_ys[-1] - MIN_LABEL_GAP
+        adj_ys.append(min(raw[i][0], gap_needed))
+
+    for (nom_y, color, text), adj_y in zip(raw, adj_ys):
+        ax.text(label_x + 0.3, adj_y, text, color=color, fontsize=8,
                 va="center", ha="left", fontfamily="monospace", clip_on=False)
+        if abs(adj_y - nom_y) > price_range * 0.002:
+            # Small connector from actual price level to displaced label
+            ax.plot([label_x, label_x + 0.25], [nom_y, adj_y],
+                    color=color, linewidth=0.6, alpha=0.6, clip_on=False)
 
     # ── Outcome badge (top-right) ─────────────────────────────────────────────
     o_color  = _WIN if outcome == "WIN" else _LOSS
