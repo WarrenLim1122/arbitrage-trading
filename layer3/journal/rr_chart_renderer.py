@@ -21,21 +21,26 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-SCREENSHOT_WIDTH         = int(os.getenv("SCREENSHOT_WIDTH",        "1600"))
-SCREENSHOT_HEIGHT        = int(os.getenv("SCREENSHOT_HEIGHT",       "900"))
+SCREENSHOT_WIDTH  = int(os.getenv("SCREENSHOT_WIDTH",  "1600"))
+SCREENSHOT_HEIGHT = int(os.getenv("SCREENSHOT_HEIGHT", "900"))
+
+# Bars to show before entry and after close in the cropped view
+_CTX_BARS  = 20   # context bars before entry
+_AFT_BARS  = 2    # candles after close (just enough to show the close bar fully)
+_LBL_SPACE = 14   # bar-width units reserved on the right for price labels
 
 # ── Dark theme palette ────────────────────────────────────────────────────────
-_BG      = "#0d1117"
-_PANEL   = "#161b22"
-_TEXT    = "#e6edf3"
-_GRID    = "#21262d"
-_UP      = "#3fb950"   # bullish candle / TP / reward
-_DOWN    = "#f85149"   # bearish candle / SL / risk
-_ENTRY   = "#58a6ff"   # entry line
-_CLOSE   = "#ffa657"   # close-price marker
-_WIN     = "#3fb950"
-_LOSS    = "#f85149"
-_BOX_A   = 0.15        # box fill alpha
+_BG    = "#0d1117"
+_PANEL = "#161b22"
+_TEXT  = "#e6edf3"
+_GRID  = "#21262d"
+_UP    = "#3fb950"   # bullish candle / TP / reward
+_DOWN  = "#f85149"   # bearish candle / SL / risk
+_ENTRY = "#58a6ff"   # entry line / marker
+_CLOSE = "#ffa657"   # close-price marker
+_WIN   = "#3fb950"
+_LOSS  = "#f85149"
+_BOX_A = 0.15        # box fill alpha
 
 
 def _draw_candles(ax: plt.Axes, df: pd.DataFrame) -> None:
@@ -74,13 +79,8 @@ def render_rr_chart(
     """
     Render chart and save to PNG.  Returns the output path.
 
-    Chart includes:
-    - Dark-theme candlestick chart
-    - Entry / SL / TP dashed horizontal lines
-    - Red risk box and green reward box
-    - Close-price marker + vertical close line
-    - WIN/LOSS + net PnL label
-    - Direction + symbol + volume label
+    The visible window is cropped to 20 bars before entry → 2 bars after close
+    so the trade fills the chart and the y-axis is tight around the trade range.
     """
     if output_path is None:
         tmp = Path(__file__).parent.parent.parent / "generated_screenshots"
@@ -95,23 +95,29 @@ def render_rr_chart(
     if n == 0:
         raise ValueError("Empty rates array — cannot render chart")
 
-    # Ensure open_time / close_time are tz-aware for comparison
     def _utc(dt: datetime) -> datetime:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
     open_time_utc  = _utc(open_time)
     close_time_utc = _utc(close_time)
 
-    # Find bar indices for open and close times
     times = df["time"].values  # numpy datetime64 array
-    open_idx  = max(0, np.searchsorted(times, np.datetime64(open_time_utc.replace(tzinfo=None)),  side="left") - 1)
-    close_idx = min(n - 1, np.searchsorted(times, np.datetime64(close_time_utc.replace(tzinfo=None)), side="left"))
+    open_idx  = max(0, np.searchsorted(
+        times, np.datetime64(open_time_utc.replace(tzinfo=None)), side="left") - 1)
+    close_idx = min(n - 1, np.searchsorted(
+        times, np.datetime64(close_time_utc.replace(tzinfo=None)), side="left"))
 
-    # Y-axis: include all key prices + candle extremes with padding
-    key_prices = [entry_price, sl_price, tp_price, close_price,
-                  float(df["high"].max()), float(df["low"].min())]
+    # ── Crop the visible window ────────────────────────────────────────────────
+    # Show only the trade horizon: context before entry + close + a couple bars after.
+    view_start = max(0, open_idx - _CTX_BARS)
+    view_end   = min(n - 1, close_idx + _AFT_BARS)
+
+    # Y-axis: tight around the VISIBLE bars and key prices (not all 120 fetched bars)
+    vis = df.iloc[view_start : view_end + 1]
+    key_prices  = [entry_price, sl_price, tp_price, close_price,
+                   float(vis["high"].max()), float(vis["low"].min())]
     price_range = max(key_prices) - min(key_prices) or abs(entry_price) * 0.01
-    pad   = price_range * 0.12
+    pad   = price_range * 0.15
     y_min = min(key_prices) - pad
     y_max = max(key_prices) + pad
 
@@ -125,17 +131,17 @@ def render_rr_chart(
 
     _draw_candles(ax, df)
 
-    # ── Risk / Reward boxes ───────────────────────────────────────────────────
-    bx0 = open_idx  - 0.3
-    bx1 = close_idx + 0.3
-    bw  = max(bx1 - bx0, 1.0)
+    # ── Risk / Reward boxes ────────────────────────────────────────────────────
+    bx0 = open_idx  - 0.4
+    bx1 = close_idx + 0.4
+    bw  = max(bx1 - bx0, 1.2)  # minimum 1.2 bars for very short trades
 
     if direction == "LONG":
-        risk_lo, risk_h   = sl_price,    entry_price - sl_price
-        reward_lo, reward_h = entry_price, tp_price   - entry_price
+        risk_lo, risk_h     = sl_price,    entry_price - sl_price
+        reward_lo, reward_h = entry_price, tp_price    - entry_price
     else:
-        risk_lo, risk_h   = entry_price, sl_price  - entry_price
-        reward_lo, reward_h = tp_price,  entry_price - tp_price
+        risk_lo, risk_h     = entry_price, sl_price    - entry_price
+        reward_lo, reward_h = tp_price,    entry_price - tp_price
 
     ax.add_patch(mpatches.Rectangle(
         (bx0, risk_lo), bw, risk_h,
@@ -146,29 +152,47 @@ def render_rr_chart(
         linewidth=1, edgecolor=_UP, facecolor=_UP, alpha=_BOX_A, zorder=2,
     ))
 
-    # ── Horizontal price lines ────────────────────────────────────────────────
+    # ── Horizontal price lines (clipped to xlim automatically) ────────────────
     ax.axhline(entry_price, color=_ENTRY, linewidth=1.5, linestyle="--", alpha=0.9, zorder=4)
-    ax.axhline(sl_price,    color=_DOWN,  linewidth=1.2, linestyle="--", alpha=0.8, zorder=4)
-    ax.axhline(tp_price,    color=_UP,    linewidth=1.2, linestyle="--", alpha=0.8, zorder=4)
+    ax.axhline(sl_price,    color=_DOWN,  linewidth=1.2, linestyle="--", alpha=0.75, zorder=4)
+    ax.axhline(tp_price,    color=_UP,    linewidth=1.2, linestyle="--", alpha=0.75, zorder=4)
 
-    # Close price: line from close candle to right edge + dot
-    ax.hlines(close_price, close_idx, n + 3,
+    # Close price: horizontal line from close bar to label column only
+    label_x = view_end + 0.8
+    ax.hlines(close_price, close_idx, label_x,
               colors=_CLOSE, linewidth=1.5, linestyles="-", zorder=4)
-    ax.scatter([close_idx], [close_price], color=_CLOSE, s=70, zorder=6)
+    ax.scatter([close_idx], [close_price], color=_CLOSE, s=80, zorder=6)
 
-    # Open / close vertical markers
-    ax.axvline(open_idx,  color=_ENTRY, linewidth=0.8, linestyle=":", alpha=0.45, zorder=3)
-    ax.axvline(close_idx, color=_CLOSE, linewidth=0.8, linestyle=":", alpha=0.45, zorder=3)
+    # ── Entry triangle + direction label ──────────────────────────────────────
+    entry_bar_low  = float(df.iloc[open_idx]["low"])
+    entry_bar_high = float(df.iloc[open_idx]["high"])
+    tri_gap = price_range * 0.025  # small gap between candle and marker
 
-    # ── Price labels (right margin) ───────────────────────────────────────────
-    lx = n + 0.4
+    if direction == "LONG":
+        tri_y = entry_bar_low - tri_gap
+        ax.scatter([open_idx], [tri_y], marker="^", color=_UP, s=200, zorder=7)
+        ax.text(open_idx, tri_y - tri_gap, "LONG",
+                color=_UP, fontsize=8, fontweight="bold",
+                ha="center", va="top", zorder=8)
+    else:
+        tri_y = entry_bar_high + tri_gap
+        ax.scatter([open_idx], [tri_y], marker="v", color=_DOWN, s=200, zorder=7)
+        ax.text(open_idx, tri_y + tri_gap, "SHORT",
+                color=_DOWN, fontsize=8, fontweight="bold",
+                ha="center", va="bottom", zorder=8)
+
+    # ── Vertical entry / close markers ────────────────────────────────────────
+    ax.axvline(open_idx,  color=_ENTRY, linewidth=0.8, linestyle=":", alpha=0.5, zorder=3)
+    ax.axvline(close_idx, color=_CLOSE, linewidth=0.8, linestyle=":", alpha=0.5, zorder=3)
+
+    # ── Price labels (anchored to right of visible window) ────────────────────
     for price, color, label in [
+        (tp_price,    _UP,    f"TP      {tp_price}"),
         (entry_price, _ENTRY, f"Entry  {entry_price}"),
-        (sl_price,    _DOWN,  f"SL       {sl_price}"),
-        (tp_price,    _UP,    f"TP       {tp_price}"),
-        (close_price, _CLOSE, f"Close  {close_price}"),
+        (close_price, _CLOSE, f"Close {close_price}"),
+        (sl_price,    _DOWN,  f"SL      {sl_price}"),
     ]:
-        ax.text(lx, price, label, color=color, fontsize=7.5,
+        ax.text(label_x + 0.3, price, label, color=color, fontsize=8,
                 va="center", ha="left", fontfamily="monospace", clip_on=False)
 
     # ── Outcome badge (top-right) ─────────────────────────────────────────────
@@ -204,18 +228,19 @@ def render_rr_chart(
         fontsize=8, va="bottom", ha="left", alpha=0.65,
     )
 
-    # ── Axis formatting ───────────────────────────────────────────────────────
-    ax.set_xlim(-1, n + 10)
+    # ── Axis limits and ticks ─────────────────────────────────────────────────
+    ax.set_xlim(view_start - 0.5, view_end + _LBL_SPACE)
     ax.set_ylim(y_min, y_max)
 
-    tick_step = max(1, n // 8)
-    tick_idx  = list(range(0, n, tick_step))
+    visible_bars = view_end - view_start + 1
+    tick_step = max(1, visible_bars // 6)
+    tick_idx  = list(range(view_start, view_end + 1, tick_step))
     ax.set_xticks(tick_idx)
     ax.set_xticklabels(
         [df.iloc[i]["time"].strftime("%m-%d %H:%M") for i in tick_idx],
-        rotation=30, ha="right", fontsize=7.5, color=_TEXT,
+        rotation=30, ha="right", fontsize=8, color=_TEXT,
     )
-    ax.tick_params(axis="y", colors=_TEXT, labelsize=7.5)
+    ax.tick_params(axis="y", colors=_TEXT, labelsize=8)
     for spine in ax.spines.values():
         spine.set_color(_GRID)
     ax.grid(True, color=_GRID, linewidth=0.5, alpha=0.6, zorder=0)
