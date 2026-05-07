@@ -133,9 +133,11 @@ def render_rr_chart(
     _draw_candles(ax, df.iloc[: view_end + 1])
 
     # ── Risk / Reward boxes ────────────────────────────────────────────────────
-    bx0 = open_idx  - 0.3   # left edge of entry bar body (bar width = 0.6, ±0.3 from centre)
-    bx1 = close_idx + 0.3   # right edge of close bar body
-    bw  = max(bx1 - bx0, 1.2)  # minimum 1.2 bars for very short trades
+    # Box starts AFTER the entry bar so the entry candle stands alone with the
+    # triangle clearly centred in it, not buried in the box boundary.
+    bx0 = open_idx  + 0.3   # right edge of entry bar (box begins after entry candle)
+    bx1 = close_idx + 0.3   # right edge of close bar
+    bw  = max(bx1 - bx0, 1.0)  # minimum 1 bar for very short trades
 
     if direction == "LONG":
         risk_lo, risk_h     = sl_price,    entry_price - sl_price
@@ -153,12 +155,17 @@ def render_rr_chart(
         linewidth=1, edgecolor=_UP, facecolor=_UP, alpha=_BOX_A, zorder=2,
     ))
 
-    # ── Horizontal price lines (clipped to xlim automatically) ────────────────
-    ax.axhline(entry_price, color=_ENTRY, linewidth=1.5, linestyle="--", alpha=0.9, zorder=4)
-    ax.axhline(sl_price,    color=_DOWN,  linewidth=1.2, linestyle="--", alpha=0.75, zorder=4)
-    ax.axhline(tp_price,    color=_UP,    linewidth=1.2, linestyle="--", alpha=0.75, zorder=4)
+    # ── Horizontal price lines — stop at view_end so label area stays clean ──
+    # Using hlines (data coords) instead of axhline (full axes width) means
+    # the lines do not bleed into the right-margin label zone.
+    ax.hlines(entry_price, view_start, view_end,
+              colors=_ENTRY, linewidth=1.5, linestyles="--", alpha=0.9,  zorder=4)
+    ax.hlines(sl_price,    view_start, view_end,
+              colors=_DOWN,  linewidth=1.2, linestyles="--", alpha=0.75, zorder=4)
+    ax.hlines(tp_price,    view_start, view_end,
+              colors=_UP,    linewidth=1.2, linestyles="--", alpha=0.75, zorder=4)
 
-    # Close price: horizontal line from close bar to label column only
+    # Close price: dot at close bar + short horizontal bridge to the label column
     label_x = view_end + 0.8
     ax.hlines(close_price, close_idx, label_x,
               colors=_CLOSE, linewidth=1.5, linestyles="-", zorder=4)
