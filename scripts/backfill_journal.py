@@ -12,7 +12,7 @@ Hardcoded for the missed XAUUSD TP trade:
 import os
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -42,6 +42,28 @@ def main():
 
     account = mt5.account_info()
     print(f"MT5 connected: login={account.login}  server={account.server}")
+
+    # ── Diagnostic: show what history_deals_get actually returns ─────────────
+    TICKET       = 8520846485
+    OPEN_TIME_UTC = datetime(2026, 5, 7, 1, 15, 4, tzinfo=timezone.utc)
+    from_dt = OPEN_TIME_UTC - timedelta(hours=2)
+    to_dt   = datetime.now(timezone.utc) + timedelta(seconds=60)
+
+    all_deals = mt5.history_deals_get(from_dt, to_dt) or []
+    print(f"\n--- DIAGNOSTIC ---")
+    print(f"Query range: {from_dt.isoformat()} → {to_dt.isoformat()}")
+    print(f"Total deals in range: {len(all_deals)}")
+    pos_deals = [d for d in all_deals if d.position_id == TICKET]
+    print(f"Deals matching position_id={TICKET}: {len(pos_deals)}")
+    if all_deals and not pos_deals:
+        print(f"Sample position_ids returned: {[d.position_id for d in all_deals[:10]]}")
+        print(">>> position_id MISMATCH — the ticket filter is wrong, not a timing issue")
+    elif not all_deals:
+        print(">>> history_deals_get returned EMPTY — timing issue or wrong query range")
+    else:
+        print(f">>> Deal found! entry={[d.entry for d in pos_deals]} reason={[d.reason for d in pos_deals]}")
+    print("------------------\n")
+    # ─────────────────────────────────────────────────────────────────────────
 
     pos_snapshot = {
         "ticket":     8520846485,

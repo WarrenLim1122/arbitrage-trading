@@ -44,7 +44,24 @@ def _get_deals(mt5_lock, position_ticket: int, open_time: datetime):
     with mt5_lock:
         all_deals = mt5.history_deals_get(from_dt, to_dt) or []
 
-    pos_deals    = [d for d in all_deals if d.position_id == position_ticket]
+    pos_deals = [d for d in all_deals if d.position_id == position_ticket]
+
+    if not pos_deals:
+        # Distinguish between "API returned nothing" vs "deals exist but position_id didn't match"
+        if not all_deals:
+            logger.info(
+                "Journal _get_deals: history_deals_get returned 0 deals total "
+                "(range %s → %s) for position=%d",
+                from_dt.isoformat(), to_dt.isoformat(), position_ticket,
+            )
+        else:
+            sample_ids = [d.position_id for d in all_deals[:10]]
+            logger.warning(
+                "Journal _get_deals: %d deals returned but NONE matched position_id=%d. "
+                "Sample position_ids in range: %s — possible position_id mismatch.",
+                len(all_deals), position_ticket, sample_ids,
+            )
+
     entry_deals  = [d for d in pos_deals if d.entry == mt5.DEAL_ENTRY_IN]
     exit_deals   = [d for d in pos_deals if d.entry == mt5.DEAL_ENTRY_OUT]
     return entry_deals, exit_deals
