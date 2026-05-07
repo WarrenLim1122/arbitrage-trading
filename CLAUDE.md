@@ -134,7 +134,7 @@ All kill thresholds are calculated against `baseline_equity` (the locked startin
 
 - Personal account always trades **opposite** direction to prop firm.
 - Lot sizing uses `baseline_equity × 0.67%` — never live equity.
-- Personal lots = `prop_lots × phase_ratio`. Never compute from a separate dollar risk formula.
+- Personal lots are sized independently so that **if the personal SL hits, the loss equals exactly `prop_dollar_risk × phase_ratio`** (e.g. $670 × 0.20 = $134 in Phase 1). Formula: `pers_lots = pers_dollar_risk / (sl_distance × contract_size)` for xxxUSD pairs. The old formula `prop_lots × phase_ratio` kept the lot ratio but caused dollar risk at the personal SL to scale with sl_distance — this caused unexpected large losses when personal SL hit. Do NOT revert to `prop_lots × phase_ratio`.
 - Prop firm config: wizard-only (`/changepropfirm`). Never edit `propfirm_config.json` manually.
 - **`baseline_equity` is immutable** — only written by explicit user commands: `/changepropfirm` wizard (Step 9/10), `/phase1` (only when baseline is 0), `/phase2` wizard. `_update_day_start()` NEVER touches it — only `day_start_equity` and `day_start_date_utc`. Nothing automatic can overwrite it. `/setbaseline` command does NOT exist — was removed; re-run wizard Step 9/10 to correct prop baseline.
 - **`pers_baseline_equity` is manual-only** — only written by `/changepropfirm` wizard (Step 10/10) or `/phase2` wizard. `_update_pers_day_start()` only writes `pers_day_start_equity`. Never auto-set from live MT5 balance.
