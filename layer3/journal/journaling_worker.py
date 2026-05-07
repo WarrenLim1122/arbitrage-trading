@@ -76,10 +76,11 @@ def handle_closed_position(
 
         if not exit_deals:
             import time
-            # MT5 history can lag several seconds after close; retry with backoff
-            for attempt, wait in enumerate([5, 10, 20, 40, 60], start=1):
+            # MT5 history can lag several minutes after close (MetaQuotes Demo in particular
+            # can take >2 min to sync deal history). Extended backoff covers ~7 min total.
+            for attempt, wait in enumerate([5, 10, 20, 40, 60, 120, 180], start=1):
                 logger.info(
-                    "Journal: no exit deal yet for position %d (attempt %d/5) — retrying in %ds",
+                    "Journal: no exit deal yet for position %d (attempt %d/7) — retrying in %ds",
                     position_ticket, attempt, wait,
                 )
                 time.sleep(wait)
