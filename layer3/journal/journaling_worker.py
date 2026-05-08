@@ -21,16 +21,22 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 _PENDING_DEALS_PATH = Path(__file__).parent.parent.parent / "journal_pending_deals.jsonl"
 _pending_lock = __import__("threading").Lock()
 
 
 def _enqueue_pending_deal(ticket: int, pos_snapshot: dict, mt5_account_id: str, worker_name: str) -> None:
-    entry = {
-        "ticket":        ticket,
-        "mt5_account_id": mt5_account_id,
-        "worker_name":   worker_name,
-        "queued_at":     datetime.now(timezone.utc).isoformat(),
+    symbol = pos_snapshot.get("symbol", "?")
+    now    = datetime.now(timezone.utc).isoformat()
+    entry  = {
+        "ticket":           ticket,
+        "symbol":           symbol,
+        "mt5_account_id":   mt5_account_id,
+        "worker_name":      worker_name,
+        "queued_at":        now,
+        "last_notified_at": now,
         "snapshot": {
             k: (v.isoformat() if isinstance(v, datetime) else v)
             for k, v in pos_snapshot.items()
@@ -40,11 +46,12 @@ def _enqueue_pending_deal(ticket: int, pos_snapshot: dict, mt5_account_id: str, 
         with _pending_lock:
             with _PENDING_DEALS_PATH.open("a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, default=str) + "\n")
-        logger.info("Journal: deal queued for later retry (ticket=%d)", ticket)
+        logger.info("Journal: deal queued for later retry (ticket=%d %s)", ticket, symbol)
+        # Initial Telegram notification (VPS #2 needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env)
+        from .pending_deals_queue import send_queued_notification
+        send_queued_notification(symbol, ticket)
     except Exception as exc:
         logger.error("Failed to enqueue pending deal (ticket=%d): %s", ticket, exc)
-
-logger = logging.getLogger(__name__)
 
 JOURNAL_ENABLED        = os.getenv("FIREBASE_JOURNAL_ENABLED",   "false").lower() == "true"
 JOURNAL_TP_SL_ONLY     = os.getenv("SCREENSHOT_ONLY_FOR_TP_SL",  "true").lower() == "true"
