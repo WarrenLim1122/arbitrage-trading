@@ -949,6 +949,8 @@ async def _verify_and_notify(
     baseline_equity: float,
     price_digits: int,
     entry: float,
+    sl_distance: float,
+    tp_distance: float,
 ) -> None:
     try:
         await _verify_and_notify_inner(
@@ -957,6 +959,7 @@ async def _verify_and_notify(
             prop_dollar_risk=prop_dollar_risk, pers_signal=pers_signal, pers_lots=pers_lots,
             pers_sl=pers_sl, pers_tp=pers_tp, pers_dollar_risk=pers_dollar_risk,
             phase=phase, baseline_equity=baseline_equity, price_digits=price_digits, entry=entry,
+            sl_distance=sl_distance, tp_distance=tp_distance,
         )
     except Exception as exc:
         logger.error("_verify_and_notify crashed for %s: %s", ticker, exc, exc_info=True)
@@ -986,10 +989,18 @@ async def _verify_and_notify_inner(
     baseline_equity: float,
     price_digits: int,
     entry: float,
+    sl_distance: float,
+    tp_distance: float,
 ) -> None:
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
     pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
     prop_arrow = "↑ LONG" if prop_signal == "LONG" else "↓ SHORT"
+
+    # Reward = potential profit if TP hits (opposite distance from risk)
+    pers_reward = round(pers_dollar_risk * (tp_distance / sl_distance), 2) if sl_distance > 0 else 0.0
+    prop_reward = round(prop_dollar_risk * (sl_distance / tp_distance), 2) if tp_distance > 0 else 0.0
+    pers_rr = tp_distance / sl_distance if sl_distance > 0 else 0.0
+    prop_rr = sl_distance / tp_distance if tp_distance > 0 else 0.0
 
     def _fp(price: float) -> str:
         return _fmt_price(ticker, price)
@@ -1074,12 +1085,14 @@ async def _verify_and_notify_inner(
             f"{pers_arrow} · {pers_lots:.2f} lots\n"
             f"{_disc_line('Entry', entry, ef.get('actual_fill_price', entry), pers_entry_disc)}\n"
             f"SL: {_fp(ef.get('actual_sl', pers_sl))} | TP: {_fp(ef.get('actual_tp', pers_tp))}\n"
-            f"Risk: <b>${pers_dollar_risk:,.2f}</b> | Ticket: {ef.get('mt5_order_ticket', '?')}\n\n"
+            f"Reward: <b>${pers_reward:,.2f}</b> | Risk: <b>${pers_dollar_risk:,.2f}</b> | RR 1:{pers_rr:.2f}\n"
+            f"Ticket: {ef.get('mt5_order_ticket', '?')}\n\n"
             f"<b>Prop Hedge</b>\n"
             f"{prop_arrow} · {prop_lots:.2f} lots\n"
             f"{_disc_line('Entry', entry, pf.get('actual_fill_price', entry), prop_entry_disc)}\n"
             f"SL: {_fp(pf.get('actual_sl', prop_sl))} | TP: {_fp(pf.get('actual_tp', prop_tp))}\n"
-            f"Risk: <b>${prop_dollar_risk:,.2f}</b> | Ticket: {pf.get('mt5_order_ticket', '?')}\n\n"
+            f"Risk: <b>${prop_dollar_risk:,.2f}</b> | Reward: <b>${prop_reward:,.2f}</b> | RR 1:{prop_rr:.2f}\n"
+            f"Ticket: {pf.get('mt5_order_ticket', '?')}\n\n"
             f"<b>Context</b>\n"
             f"Phase {phase} · Baseline ${baseline_equity:,.2f}"
         )
@@ -1405,6 +1418,8 @@ async def receive_signal(request: Request):
         baseline_equity=baseline_equity,
         price_digits=price_digits,
         entry=payload.entry,
+        sl_distance=sl_distance,
+        tp_distance=tp_distance,
     ))
 
     with _state_lock:
