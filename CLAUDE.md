@@ -74,16 +74,18 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ---
 
-## Kill Condition Math (static baseline — critical to understand)
+## Kill Condition Math — CRITICAL: K1 is DYNAMIC, K2/K3/K4 use baseline
 
-All kill thresholds are calculated against `baseline_equity` (the locked starting balance), never against live equity or day-start equity. This means every % threshold converts to a fixed dollar amount for the entire evaluation.
+**K1 daily drawdown is DYNAMIC** — calculated from `day_start_equity` (the account balance at session open), NOT from `baseline_equity`. This means the daily dollar loss limit changes each session as the account grows or shrinks. Example: account at $103k, daily DD = 2% → max daily loss = $103k × 2% = $2,060 → floor = $100,940 today.
 
-| Kill | Trigger condition | Formula |
+**K2/K3/K4 are STATIC** — all calculated from `baseline_equity`. These thresholds are fixed dollar amounts for the entire evaluation regardless of how the account moves.
+
+| Kill | Trigger condition | Formula / Example |
 |---|---|---|
-| K1 — Daily loss | `(day_start − equity) / baseline × 100 ≥ max_drawdown_daily_pct` | Always −$2,000 if DD=2% and baseline=$100k. **Auto-resumes next session.** |
-| K2 — Overall loss | `(baseline − equity) / baseline × 100 ≥ max_drawdown_overall_pct` | Fixed floor, e.g. $94,000 if DD=6%. Permanent halt. |
-| K3 — Daily profit cap | `(equity − day_start) / baseline × 100 ≥ daily_profit_cap_pct` | Always +$2,500 if cap=2.5% and baseline=$100k. **Auto-resumes next session.** |
-| K4 — Profit target | `equity ≥ baseline × (1 + profit_target_pct / 100)` | Fixed ceiling. Permanent halt. |
+| K1 — Daily loss | `equity ≤ day_start − (day_start × max_drawdown_daily_pct / 100)` | **DYNAMIC**: floor = $103k − ($103k × 2%) = $100,940. Resets each session. **Auto-resumes next session.** |
+| K2 — Overall loss | `equity ≤ baseline × (1 − max_drawdown_overall_pct / 100)` | **STATIC**: e.g. $100k × (1 − 6%) = $94,000 fixed floor. Permanent halt. |
+| K3 — Daily profit cap | `equity ≥ day_start + (baseline × daily_profit_cap_pct / 100)` | Cap amount is static from baseline (+$2,500 if cap=2.5% and baseline=$100k), but cap level shifts with day_start. **Auto-resumes next session.** |
+| K4 — Profit target | `equity ≥ baseline × (1 + profit_target_pct / 100)` | **STATIC**: fixed ceiling. Permanent halt. |
 | K5 — Consistency | largest day / total profit < consistency_threshold_pct (Phase 2 only) | e.g. firm says 30% → stored as 29% → fires when largest day < 29%. Permanent halt. |
 
 `daily_profit_cap_pct` is auto-set to `profit_target_pct × 0.25` (25% of target, enforcing before the 30% consistency threshold).

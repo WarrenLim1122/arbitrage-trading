@@ -610,15 +610,17 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     dd_overall    = pf.get("max_drawdown_overall_pct",  0.0)
     cap           = pf.get("daily_profit_cap_pct",      0.0)
     target        = pf.get("profit_target_pct",         0.0)
-    k1_layer      = int(pf.get("k1_layer", 0))
+    day_start_eq  = pf.get("day_start_equity",          0.0)
     pers_baseline = pf.get("pers_baseline_equity", 0.0)
-    layer_loss = round(baseline * dd_daily   / 100.0, 2) if dd_daily   > 0 and baseline > 0 else 0.0
+    # K1 floor is DYNAMIC — % of today's day_start, not baseline
+    daily_loss = round(day_start_eq * dd_daily / 100.0, 2) if dd_daily > 0 and day_start_eq > 0 else 0.0
+    k1_floor   = day_start_eq - daily_loss if daily_loss > 0 else 0.0
     cap_amt    = round(baseline * cap        / 100.0, 2) if cap        > 0 and baseline > 0 else 0.0
     overall_fl = round(baseline * (1 - dd_overall / 100.0), 2) if dd_overall > 0 and baseline > 0 else 0.0
     target_lvl = round(baseline * (1.0 + target / 100.0), 2)   if target    > 0 and baseline > 0 else 0.0
-    active_fl  = baseline - (k1_layer + 1) * layer_loss if layer_loss > 0 else 0.0
 
-    pers_str = f"${pers_baseline:,.2f}" if pers_baseline > 0 else "Not set — run /changepropfirm"
+    pers_str  = f"${pers_baseline:,.2f}" if pers_baseline > 0 else "Not set — run /changepropfirm"
+    k1_fl_str = f"${k1_floor:,.2f} (day-start ${day_start_eq:,.2f} − {dd_daily:.1f}%)" if k1_floor > 0 else "Pending session open"
     await update.message.reply_text(
         f"🟢 <b>Phase 1 Active</b>\n\n"
         f"<b>Risk Mode</b>\n"
@@ -627,7 +629,7 @@ async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Prop: ${baseline:,.2f}\n"
         f"Personal: {pers_str}\n\n"
         f"<b>Risk Levels</b>\n"
-        f"K1 floor: ${active_fl:,.2f}\n"
+        f"K1 floor (today): {k1_fl_str}\n"
         f"K2 overall floor: ${overall_fl:,.2f}\n"
         f"K3 daily cap: +${cap_amt:,.2f}\n"
         f"K4 target: ${target_lvl:,.2f}\n\n"
@@ -1284,28 +1286,26 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     daily_dd    = pf.get("max_drawdown_daily_pct",   0.0)
     overall_dd  = pf.get("max_drawdown_overall_pct", 0.0)
     target_pct  = pf.get("profit_target_pct",        0.0)
-    k1_layer    = int(pf.get("k1_layer", 0))
     equity      = prop["equity"]
 
     overall_pnl    = equity - baseline
     daily_pnl      = equity - day_start
-    layer_loss_amt = round(baseline * daily_dd   / 100.0, 2) if daily_dd   > 0 else 0.0
-    daily_cap_amt  = round(baseline * daily_cap  / 100.0, 2) if daily_cap  > 0 else 0.0
-    overall_dd_amt = round(baseline * overall_dd / 100.0, 2) if overall_dd > 0 else 0.0
-    target_amt     = round(baseline * target_pct / 100.0, 2) if target_pct > 0 else 0.0
-    max_loss_layers = round(overall_dd / daily_dd) if daily_dd > 0 else 0
+    # K1 daily loss is DYNAMIC: % of day_start, not baseline. Resets each session.
+    daily_loss_amt = round(day_start  * daily_dd  / 100.0, 2) if daily_dd  > 0 and day_start > 0 else 0.0
+    daily_cap_amt  = round(baseline   * daily_cap / 100.0, 2) if daily_cap > 0 else 0.0
+    overall_dd_amt = round(baseline   * overall_dd / 100.0, 2) if overall_dd > 0 else 0.0
+    target_amt     = round(baseline   * target_pct / 100.0, 2) if target_pct > 0 else 0.0
 
-    overall_floor  = baseline - overall_dd_amt
-    active_floor   = baseline - (k1_layer + 1) * layer_loss_amt if layer_loss_amt > 0 else 0.0
+    overall_floor   = baseline - overall_dd_amt
+    daily_floor     = day_start - daily_loss_amt if daily_loss_amt > 0 else 0.0
     daily_cap_level = day_start + daily_cap_amt
-    k4_target      = baseline + target_amt
+    k4_target       = baseline + target_amt
     daily_remaining = max(0.0, daily_cap_level - equity)
 
-    # K1 bar: % consumed within the current active loss layer
-    k1_prev_floor = baseline - k1_layer * layer_loss_amt
-    k1_consumed   = max(0.0, k1_prev_floor - equity)
-    k1_bar_pct    = k1_consumed / layer_loss_amt * 100 if layer_loss_amt > 0 else 0.0
-    k1_status     = "🔴 BREACHED" if equity <= active_floor else "🟢 Active"
+    # K1 bar: % of today's daily loss limit consumed (from day_start down to daily_floor)
+    k1_consumed = max(0.0, day_start - equity)
+    k1_bar_pct  = k1_consumed / daily_loss_amt * 100 if daily_loss_amt > 0 else 0.0
+    k1_status   = "🔴 BREACHED" if equity <= daily_floor else "🟢 Active"
 
     # K2 bar: % of overall DD consumed from baseline
     k2_consumed = max(0.0, baseline - equity)
@@ -1325,14 +1325,13 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Day-start:     ${day_start:,.2f}",
         f"Current equity: ${equity:,.2f}",
     ]
-    if layer_loss_amt > 0 and max_loss_layers > 0:
+    if daily_loss_amt > 0:
         lines += [
             f"\n<b>K1/K2 — Loss Protection</b>",
-            f"Layer size: ${layer_loss_amt:,.2f} ({daily_dd:.1f}% of baseline)",
-            f"Active layer: {k1_layer + 1}/{max_loss_layers}  |  {k1_status}",
-            f"Active floor: <b>${active_floor:,.2f}</b>",
-            f"Overall DD floor: ${overall_floor:,.2f}",
-            f"<code>{_pnl_bar(k1_bar_pct)}</code>  {k1_bar_pct:.1f}% toward floor",
+            f"Daily limit: ${daily_loss_amt:,.2f} ({daily_dd:.1f}% of day-start)  |  {k1_status}",
+            f"Daily floor: <b>${daily_floor:,.2f}</b>  (resets each session)",
+            f"Overall DD floor: ${overall_floor:,.2f}  (static from baseline)",
+            f"<code>{_pnl_bar(k1_bar_pct)}</code>  {k1_bar_pct:.1f}% of daily limit used",
             f"<code>{_pnl_bar(k2_bar_pct)}</code>  {k2_bar_pct:.1f}% of overall DD consumed",
         ]
     if daily_cap_amt > 0:
@@ -1356,7 +1355,7 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ]
 
     lines.append(
-        "\n<i>Bars — K1: how deep into the current loss layer · "
+        "\n<i>Bars — K1: daily loss used (% of day-start, resets each session) · "
         "K2: total DD consumed from baseline · "
         "K3: daily profit cap used · "
         "K4: progress toward profit target</i>"

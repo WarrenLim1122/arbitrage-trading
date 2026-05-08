@@ -724,15 +724,15 @@ def _run_equity_check() -> None:
     dd_daily_pct   = pf.get("max_drawdown_daily_pct",   0.0)
     dd_overall_pct = pf.get("max_drawdown_overall_pct",  0.0)
     cap_pct        = pf.get("daily_profit_cap_pct",      0.0)
-    k1_layer       = int(pf.get("k1_layer", 0))
 
-    layer_loss_amt  = round(baseline * dd_daily_pct  / 100.0, 2) if dd_daily_pct  > 0 else 0.0
-    layer_cap_amt   = round(baseline * cap_pct        / 100.0, 2) if cap_pct        > 0 else 0.0
-    overall_dd_amt  = round(baseline * dd_overall_pct / 100.0, 2) if dd_overall_pct > 0 else 0.0
-    max_loss_layers = round(dd_overall_pct / dd_daily_pct) if dd_daily_pct > 0 else 0
+    # K1 daily loss is dynamic: % of that day's starting equity, NOT baseline.
+    # Floor resets each session as day_start_equity is updated.
+    daily_loss_amt  = round(day_start * dd_daily_pct  / 100.0, 2) if dd_daily_pct  > 0 and day_start > 0 else 0.0
+    layer_cap_amt   = round(baseline  * cap_pct        / 100.0, 2) if cap_pct        > 0 else 0.0
+    overall_dd_amt  = round(baseline  * dd_overall_pct / 100.0, 2) if dd_overall_pct > 0 else 0.0
     overall_floor   = baseline - overall_dd_amt
 
-    # Kill 2 — hard floor safety net (catches equity drops that land below all layers at once)
+    # Kill 2 — static overall floor from baseline (permanent halt)
     if dd_overall_pct > 0 and prop_equity <= overall_floor:
         pos_str = _snapshot_positions_str()
         _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
@@ -749,35 +749,30 @@ def _run_equity_check() -> None:
         _alert_sync(msg)
         return
 
-    # Kill 1 — layered loss floors (all phases)
-    # Floors are fixed from baseline. Day-start equity is NOT used.
-    # Each breach advances the active floor one layer lower until K2 is reached.
-    if layer_loss_amt > 0 and max_loss_layers > 0:
-        active_floor = baseline - (k1_layer + 1) * layer_loss_amt
-        if prop_equity <= active_floor:
-            new_k1_layer = k1_layer + 1
-            with _pf_lock:
-                _propfirm["k1_layer"] = new_k1_layer
-                _save_propfirm(_propfirm)
+    # Kill 1 — dynamic daily drawdown floor (all phases)
+    # Floor = day_start_equity × (1 - dd_daily_pct/100). Resets each session.
+    # Dollar limit grows/shrinks with the account — NOT fixed from baseline.
+    if daily_loss_amt > 0 and day_start > 0:
+        daily_floor = day_start - daily_loss_amt
+        if prop_equity <= daily_floor:
             pos_str = _snapshot_positions_str()
-            next_floor = baseline - (new_k1_layer + 1) * layer_loss_amt
             _dispatch_force_close("daily_loss_limit", halt=True)
             with _state_lock:
                 _phase_state["daily_halted"] = True
                 _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
                 _save_phase(_phase_state)
             msg = (
-                f"🔴 <b>KILL 1 — Loss Floor {new_k1_layer}/{max_loss_layers} Breached</b>\n\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${active_floor:,.2f}\n\n"
+                f"🔴 <b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${daily_floor:,.2f}\n"
+                f"Day-start: ${day_start:,.2f}  |  Max daily loss: ${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
                 f"All positions force-closed. System halted for today.\n\n"
-                f"New active floor: ${next_floor:,.2f} (Layer {new_k1_layer + 1}/{max_loss_layers})\n"
                 f"Overall DD floor: ${overall_floor:,.2f}\n\n"
                 f"System auto-resumes at next session (12:00 SGT).\n"
                 f"/changepropfirm to switch to a new challenge"
             )
-            logger.warning("KILL1: equity=%.2f floor=%.2f layer=%d/%d",
-                           prop_equity, active_floor, new_k1_layer, max_loss_layers)
+            logger.warning("KILL1: equity=%.2f daily_floor=%.2f day_start=%.2f",
+                           prop_equity, daily_floor, day_start)
             _alert_sync(msg)
             return
 
