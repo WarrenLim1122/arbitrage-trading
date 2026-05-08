@@ -1080,13 +1080,13 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         f"Daily profit cap: {pf.get('daily_profit_cap_pct', 0):.1f}%\n\n"
         f"<b>Drawdown</b>\n"
         f"Overall DD: {pf.get('max_drawdown_overall_pct', 0):.1f}%\n"
-        f"Daily DD: {pf.get('max_drawdown_daily_pct', 0):.1f}%\n"
+        f"Daily DD: {pf.get('max_drawdown_daily_pct', 0):.1f}% (↓1pp)\n"
         f"Type: {'Static' if pf.get('drawdown_is_static') else 'Dynamic'}\n\n"
         f"<b>Other Rules</b>\n"
         f"Raw spread: {'Yes' if pf.get('raw_spread_account') else 'No'}\n"
         f"Profit sharing: {pf.get('profit_sharing_pct', 0):.1f}%\n"
         f"Min profit days: {pf.get('min_profit_days', 0)}\n"
-        f"Consistency: {pf.get('consistency_threshold_pct', 0):.1f}%\n\n"
+        f"Consistency: {pf.get('consistency_threshold_pct', 0):.1f}% (↓1pp)\n\n"
         f"<b>Baselines</b>\n"
         f"Prop: ${prop_b:,.2f}\n"
         f"Personal: {f'${pers_b:,.2f}' if pers_b > 0 else 'Not set'}",
@@ -1354,6 +1354,13 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"Progress: ${max(0.0, overall_pnl):,.2f} / ${target_amt:,.2f}",
             f"<code>{_pnl_bar(k4_bar_pct)}</code>  {k4_bar_pct:.1f}%",
         ]
+
+    lines.append(
+        "\n<i>Bars — K1: how deep into the current loss layer · "
+        "K2: total DD consumed from baseline · "
+        "K3: daily profit cap used · "
+        "K4: progress toward profit target</i>"
+    )
 
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
