@@ -54,7 +54,7 @@ def _enqueue_pending_deal(ticket: int, pos_snapshot: dict, mt5_account_id: str, 
         logger.error("Failed to enqueue pending deal (ticket=%d): %s", ticket, exc)
 
 JOURNAL_ENABLED        = os.getenv("FIREBASE_JOURNAL_ENABLED",   "false").lower() == "true"
-JOURNAL_TP_SL_ONLY     = os.getenv("SCREENSHOT_ONLY_FOR_TP_SL",  "true").lower() == "true"
+JOURNAL_TP_SL_ONLY     = os.getenv("SCREENSHOT_ONLY_FOR_TP_SL",  "false").lower() == "true"
 JOURNAL_ACCOUNT_TYPE   = os.getenv("JOURNAL_ACCOUNT_TYPE",       "demo")   # demo|live|prop
 JOURNAL_BROKER         = os.getenv("JOURNAL_BROKER",              "")
 FIREBASE_BOT_NAME      = os.getenv("FIREBASE_BOT_NAME",          "HedgeHog Bot")
@@ -70,8 +70,13 @@ def _get_deals(mt5_lock, position_ticket: int, open_time: datetime):
     """Return (entry_deals, exit_deals) for the given position ticket."""
     import MetaTrader5 as mt5
 
-    from_dt = open_time - timedelta(hours=2)
-    to_dt   = datetime.now(timezone.utc) + timedelta(seconds=60)
+    # Use the earlier of (open_time - 2h) and (now - 6h) as from_dt.
+    # MT5 demo servers may report position.time in server-local timezone rather
+    # than as a pure UTC Unix timestamp, causing open_time to appear hours ahead
+    # of the actual close time. The min() guard ensures from_dt is always before to_dt.
+    safe_from = datetime.now(timezone.utc) - timedelta(hours=6)
+    from_dt   = min(open_time - timedelta(hours=2), safe_from)
+    to_dt     = datetime.now(timezone.utc) + timedelta(seconds=60)
 
     with mt5_lock:
         all_deals = mt5.history_deals_get(from_dt, to_dt) or []
@@ -165,14 +170,7 @@ def handle_closed_position(
             mt5.DEAL_REASON_MOBILE: "MANUAL",
             mt5.DEAL_REASON_CLIENT: "MANUAL",
         }
-        close_reason = reason_map.get(exit_deal.reason, "MANUAL")
-
-        if JOURNAL_TP_SL_ONLY and close_reason not in ("TP", "SL"):
-            logger.info(
-                "Journal: position %d closed by %s — not TP/SL, skipping",
-                position_ticket, close_reason,
-            )
-            return None
+        close_reason = pos_snapshot.get("close_reason_override") or reason_map.get(exit_deal.reason, "MANUAL")
 
         # ── 3. Actual MT5 values ──────────────────────────────────────────
         direction   = "LONG" if pos_snapshot.get("type") == 0 else "SHORT"

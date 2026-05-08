@@ -320,9 +320,9 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
 
     def _pos_summary(pos_list: list[dict]) -> str:
         if not pos_list:
-            return "No open positions"
-        return ", ".join(
-            f"{p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
+            return "  No open positions"
+        return "\n".join(
+            f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
             for p in pos_list
         )
 
@@ -368,8 +368,8 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     # ── After Close ──────────────────────────────────────────────────────────
     sections.append(
         f"<b>After Close</b>\n"
-        f"Personal Signal: {_pos_summary(curr_pers)}\n"
-        f"Prop Hedge: {_pos_summary(curr_prop)}"
+        f"<b>Personal Signal:</b>\n{_pos_summary(curr_pers)}\n\n"
+        f"<b>Prop Hedge:</b>\n{_pos_summary(curr_prop)}"
     )
 
     # ── Equity ───────────────────────────────────────────────────────────────
@@ -441,10 +441,17 @@ def _run_news_preclose_check() -> None:
         logger.info("NEWS suppression window closed for %s", t)
 
     # ── Two-stage news-first scan ─────────────────────────────────────────
-    # Outer loop: events. Inner loop: pairs affected by that event's currency.
+    # Group affected tickers by (currency, event_utc) so we send ONE message per event,
+    # not one per ticker. Outer loop: events. Inner loop: pairs affected by that currency.
     #
     # Stage 1 (awareness zone, 31–60 min before): log only, no action.
     # Stage 2 (ban zone, 0–30 min before + 0–30 min after): close + suppress ONCE.
+
+    # event_key → list of newly-triggered tickers for this run
+    event_tickers: dict[str, list[str]] = {}
+    # event_key → metadata for the alert
+    event_meta: dict[str, dict] = {}
+
     for event in events:
         if event.get("impact") != "High":
             continue
@@ -453,10 +460,9 @@ def _run_news_preclose_check() -> None:
         if event_utc is None:
             continue
 
-        time_to_event = event_utc - now   # positive = upcoming, negative = past
+        time_to_event = event_utc - now
         mins_to_event = time_to_event.total_seconds() / 60
 
-        # Skip events outside the awareness window and beyond the post-event ban.
         if not (-_NEWS_TRADING_BAN_WINDOW <= mins_to_event <= _NEWS_AWARENESS_WINDOW):
             continue
 
@@ -473,7 +479,7 @@ def _run_news_preclose_check() -> None:
                 )
                 continue
 
-            # Stage 2 — ban zone (≤30 min away or ≤30 min past): close + suppress ONCE.
+            # Stage 2 — ban zone: close + suppress ONCE per (ticker, event_time).
             key = (ticker, event_utc.isoformat())
             with _news_events_lock:
                 if key in _news_closed_events:
@@ -487,30 +493,73 @@ def _run_news_preclose_check() -> None:
                 if existing is None or suppression_end > existing:
                     _news_suppressed_pairs[ticker] = suppression_end
 
-            # Tell Layer 3 to refuse new execution tickets for this pair.
             _dispatch_news_suppress(ticker, suppression_end)
 
-            # Close any existing positions for this pair.
-            if mins_to_event >= 0:
-                direction = f"in {int(mins_to_event)} min"
-            else:
-                direction = f"{int(abs(mins_to_event))} min ago"
-            _sgt = timedelta(hours=8)
-            event_desc = (
-                f"[{event['currency']}] {event['title']} "
-                f"@ {(event_utc + _sgt).strftime('%H:%M')} SGT ({direction})"
-            )
-            logger.warning("NEWS BAN %s — %s", ticker, event_desc)
-            pos_str = _snapshot_positions_str()
+            # Collect into event group for a single announcement.
+            ev_key = f"{event['currency']}|{event_utc.isoformat()}"
+            if ev_key not in event_meta:
+                event_tickers[ev_key] = []
+                event_meta[ev_key] = {
+                    "currency":       event["currency"],
+                    "title":          event["title"],
+                    "event_utc":      event_utc,
+                    "suppression_end": suppression_end,
+                    "mins_to_event":  mins_to_event,
+                }
+            event_tickers[ev_key].append(ticker)
+
+    # ── Fire one announcement per event group, then close affected tickers ──
+    for ev_key, tickers in event_tickers.items():
+        meta      = event_meta[ev_key]
+        event_utc = meta["event_utc"]
+        sup_end   = meta["suppression_end"]
+        mins      = meta["mins_to_event"]
+        _sgt      = timedelta(hours=8)
+
+        direction  = f"in {int(mins)} min" if mins >= 0 else f"{int(abs(mins))} min ago"
+        event_desc = (
+            f"[{meta['currency']}] {meta['title']} "
+            f"@ {(event_utc + _sgt).strftime('%H:%M')} SGT ({direction})"
+        )
+
+        # Query positions ONCE for this event group — show only positions being closed.
+        try:
+            pers_pos = _query_positions(ZMQ_REQ_PERS) or []
+        except Exception:
+            pers_pos = []
+        try:
+            prop_pos = _query_positions(ZMQ_REQ_PROP) or []
+        except Exception:
+            prop_pos = []
+
+        tickers_set = set(tickers)
+        affected_pers = [p for p in pers_pos if p["symbol"] in tickers_set]
+        affected_prop = [p for p in prop_pos if p["symbol"] in tickers_set]
+
+        def _fmt_pos_list(pos_list: list[dict]) -> str:
+            return "\n".join(
+                f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'}"
+                f" {p['volume']:.2f} lots  P&L: ${p['profit']:+,.2f}"
+                for p in pos_list
+            ) if pos_list else "  No open positions"
+
+        closing_lines = (
+            f"<b>Personal Signal:</b>\n{_fmt_pos_list(affected_pers)}\n\n"
+            f"<b>Prop Hedge:</b>\n{_fmt_pos_list(affected_prop)}"
+        )
+
+        logger.warning("NEWS BAN [%s] — %s  affected: %s", meta["currency"], event_desc, tickers)
+        _alert_sync(
+            f"📰 <b>News Pre-Close — [{meta['currency']}]</b>\n\n"
+            f"{event_desc}\n\n"
+            f"<b>Positions being closed:</b>\n{closing_lines}\n\n"
+            f"New signals blocked until "
+            f"{(sup_end + _sgt).strftime('%H:%M')} SGT "
+            f"(event +{_NEWS_TRADING_BAN_WINDOW} min)."
+        )
+
+        for ticker in tickers:
             _dispatch_close_ticker(ticker, f"pre_news_{ticker}")
-            _alert_sync(
-                f"<b>News Pre-Close — {ticker}</b>\n\n"
-                f"{event_desc}\n\n"
-                f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"New signals blocked until "
-                f"{(suppression_end + _sgt).strftime('%H:%M')} SGT "
-                f"(event +{_NEWS_TRADING_BAN_WINDOW} min)."
-            )
 
 
 def _news_preclose_loop() -> None:

@@ -26,7 +26,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 _PENDING_QUEUE_PATH = Path(__file__).parent.parent.parent / "journal_pending_deals.jsonl"
-RETRY_INTERVAL    = 600   # 10 min between retry sweeps
+RETRY_INTERVAL    = 7200  # 2 hours between retry sweeps
 MAX_AGE_HOURS     = 24
 NOTIFY_INTERVAL_H = 3     # hours between Telegram reminders per entry
 

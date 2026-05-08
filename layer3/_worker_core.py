@@ -301,6 +301,13 @@ def _force_close_ticker(canonical_ticker: str, reason: str) -> None:
         logger.info("CLOSE_TICKER(%s): no open positions for %s", reason, resolved)
         return
 
+    # Tag positions as NEWS close so the journal pipeline knows the reason.
+    if reason.startswith("pre_news"):
+        with _known_positions_lock:
+            for pos in positions:
+                if pos.ticket in _known_positions:
+                    _known_positions[pos.ticket]["close_reason_override"] = "NEWS"
+
     closed = 0
     for pos in positions:
         close_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
