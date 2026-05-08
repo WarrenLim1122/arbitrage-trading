@@ -1317,11 +1317,9 @@ async def receive_signal(request: Request):
         prop_dollar_per_lot = (tp_distance / prop_tick_size) * prop_tick_val
     prop_lots = round(prop_dollar_risk / prop_dollar_per_lot, 2)
 
-    # Personal account is sized independently: risk exactly prop_dollar_risk × phase_ratio
-    # at its own SL (signal SL), which is much wider than the prop SL (= signal TP).
-    # Using prop_lots × phase_ratio would preserve the lot ratio but cause personal to risk
-    # far more in dollar terms when its SL hits (e.g. $512 instead of $134 for XAUUSD).
-    pers_dollar_risk   = round(prop_dollar_risk * phase_ratio, 2)   # e.g. $670 × 0.20 = $134
+    # Personal lots are a fixed ratio of prop lots (phase_ratio: 0.20 phase 1, 0.70 phase 2).
+    # Dollar risk at personal SL is derived from the resulting lot size — it varies per trade.
+    pers_lots          = round(prop_lots * phase_ratio, 2)
     pers_contract_size = pers_info.get("contract_size", prop_contract_size)
     pers_tick_size     = pers_info.get("trade_tick_size", prop_tick_size)
     pers_tick_val      = pers_info.get("trade_tick_value", prop_tick_val)
@@ -1329,15 +1327,15 @@ async def receive_signal(request: Request):
         pers_dollar_per_lot = sl_distance * pers_contract_size
     else:
         pers_dollar_per_lot = (sl_distance / pers_tick_size) * pers_tick_val
-    pers_lots = round(pers_dollar_risk / pers_dollar_per_lot, 2)
+    pers_dollar_risk   = round(pers_lots * pers_dollar_per_lot, 2)
 
     pers_tp = round(payload.tp, price_digits)   # personal TP = signal TP
 
     logger.info(
-        "LOTS  prop=%.2f lots ($%.2f at SL)  personal=%.2f lots ($%.2f at SL)  "
-        "phase=%d ×%.2f  baseline=%.2f  tp_dist=%.5f  sl_dist=%.5f  "
+        "LOTS  prop=%.2f lots ($%.2f at SL)  personal=%.2f lots (×%.2f ratio, $%.2f at SL)  "
+        "phase=%d  baseline=%.2f  tp_dist=%.5f  sl_dist=%.5f  "
         "tick_size=%.5f tick_val=%.4f",
-        prop_lots, prop_dollar_risk, pers_lots, pers_dollar_risk,
+        prop_lots, prop_dollar_risk, pers_lots, phase_ratio, pers_dollar_risk,
         phase, phase_ratio, baseline_equity, tp_distance, sl_distance,
         prop_tick_size, prop_tick_val,
     )

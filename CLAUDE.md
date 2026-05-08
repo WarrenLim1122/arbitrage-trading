@@ -191,8 +191,8 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
 
 - **Lot sizing — CORRECT procedure (do not change)**:
   1. `prop_dollar_risk = baseline_equity × 0.67%` (e.g. $100k × 0.0067 = $670)
-  2. `pers_dollar_risk = prop_dollar_risk × phase_ratio` (Phase 1 = 0.20 → $134; Phase 2 = 0.70 → $469)
-  3. Prop lots: `prop_lots = prop_dollar_risk / (tp_distance × contract_size)` for xxxUSD — sized so prop risks $670 if prop SL (= signal TP) hits
-  4. Personal lots: `pers_lots = pers_dollar_risk / (sl_distance × contract_size)` for xxxUSD — sized independently so personal risks $134 if its own SL (= signal SL) hits. **Do NOT revert to `prop_lots × phase_ratio`** — that formula kept the lot ratio but caused personal SL loss to scale with sl_distance (e.g. $477 loss when $134 expected).
+  2. Prop lots: `prop_lots = prop_dollar_risk / (tp_distance × contract_size)` for xxxUSD — sized so prop risks $670 if prop SL (= signal TP) hits
+  3. Personal lots: `pers_lots = prop_lots × phase_ratio` (Phase 1 = 0.20, Phase 2 = 0.70) — fixed ratio of prop lots
+  4. Personal dollar risk: `pers_dollar_risk = pers_lots × sl_distance × contract_size` — derived result, varies per trade (e.g. ~$134 in Phase 1 but depends on SL distance). This is intentional — personal risk scales with the trade's SL distance.
 
 **Next action**: Wait for next TP/SL close on VPS #2 — confirm persistent journal queue works (📋 Queued Telegram fires, then ✅ Recovered or ⚠️ Failed). Also add `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` to VPS #2 `.env`. Then: switch to real Fusion Markets + FundingPips accounts when ready.
