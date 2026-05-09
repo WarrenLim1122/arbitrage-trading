@@ -148,53 +148,44 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ---
 
-## Current State (as of 2026-05-07, session 10)
+## Current State (as of 2026-05-09, session 11)
 
 All four layers deployed and operational. Gate D demo run in progress (7-day window passed; proceed to live when ready).
 
 - Layer 0: 8 alerts active. `in_trade` gate live. **Signal engine is frozen — do not touch.**
 - Layer 1: Live. News filter active. Stale-cache fallback on FF calendar failure deployed.
 - Layer 2: Full feature set deployed:
-  - Kill 1/2/3/4/5 use static `baseline_equity` divisor — all thresholds are fixed dollar amounts
-  - K1 layered floors from baseline (staircase). K2 hard floor safety net. K3 daily cap from day_start. K4 cumulative profit target. K5 consistency (Phase 2 only).
-  - **K1 and K3 are daily halts — auto-resume at next session open (12:00 SGT) via `daily_halted` + `daily_halted_date` flags.** K2/K4/K5 are permanent halts requiring manual action. `/resume` still works as a manual override for K1/K3 and also clears the daily halt flags.
+  - **K1 daily drawdown is DYNAMIC** — floor = `day_start_equity × (1 − dd_pct/100)`, resets each session. K2/K3/K4 remain static from `baseline_equity`. Old k1_layer staircase removed (session 11).
+  - K1 and K3 are daily halts — auto-resume at next session open (12:00 SGT). K2/K4/K5 are permanent halts. `/resume` clears daily halt flags manually.
   - `/phase1` is idempotent — will not overwrite an existing baseline mid-evaluation
   - 120 s close-detection buffer and 120 s mismatch grace — prevents split alerts and false CRITICAL MISMATCH when legs close ~2 min apart
   - All Telegram alerts use "Personal Signal" and "Prop Hedge" labels — no VPS numbers in user-facing output. Personal Signal always listed first.
-  - **Simultaneous MARKET execution (reverted 2026-05-06)**: both personal and prop tickets dispatched as `order_type=market` at signal time. `_verify_and_notify()` polls both simultaneously (60 s max). Telegram flow: ✅ Trade Opened (with actual MT5 fill price, ticket, SL/TP, slippage). If one or both don't fill: "⚠️ Order Not Filled — {ticker}" with per-side status.
-  - **Mismatch alert (updated 2026-05-06)**: `_handle_mismatch()` re-queries both accounts 5 s after force-close. Message says "✅ Resolved — both accounts are flat." or "⚠️ Action required" based on actual verified state. Position closed alert shows "No matching position — already closed" instead of "Still open / not confirmed" when one side has no data.
-  - Position Closed alert: title = 🟢 Take Profit / 🔴 Stop Loss based on Personal P&L; sections: Personal Signal, Prop Hedge, After Close, Equity
-  - `/equity`: Baseline, Balance, Equity, Floating P&L, Overall P&L per account; Personal Signal first, Prop Hedge second.
-  - `/checkaccount`: queries both Layer 3 workers via ZMQ REQ and shows MT5 login + server for each account (no password transmitted)
-  - `/update`: `local` / `layer2` / `layer3` (1=Personal, 2=Prop) / `account`
-  - Dynamic trading window: `config/trading_window.json` + `/setwindow`. Currently 12:00–00:00 SGT.
-  - `trade_allowed` monitoring. News suppression clear notification (grouped 🔴→🟢).
-  - `/news` shows 🟠 per event; `/blackboard` shows 🔴 per pair, 🟢 when clear
-  - `/changepropfirm` wizard (10 steps, `/back` supported). Buffer rules: Overall DD no buffer, Daily DD −1pp, Consistency −1pp, daily cap = 25% of target (auto).
+  - **Simultaneous MARKET execution**: both personal and prop tickets dispatched as `order_type=market` at signal time. `_verify_and_notify()` polls both simultaneously (60 s max). Telegram flow: ✅ Trade Opened (with actual MT5 fill price, ticket, SL/TP, slippage). If one or both don't fill: "⚠️ Order Not Filled — {ticker}" with per-side status.
+  - **Mismatch alert**: `_handle_mismatch()` re-queries both accounts 5 s after force-close. Message says "✅ Resolved — both accounts are flat." or "⚠️ Action required". Position closed alert shows "No matching position — already closed" when one side has no data.
+  - Position Closed alert: title = 🟢 Take Profit / 🔴 Stop Loss based on Personal P&L; sections: Personal Signal, Prop Hedge, After Close (each position on its own line, blank line between Personal/Prop), Equity.
+  - **News Pre-Close (updated session 11)**: ONE grouped message per currency event (not one per pair). Shows only the positions being closed by that specific event, split into Personal Signal / Prop Hedge sections. After the announcement, closes each affected ticker. The TP/SL close alert then fires per pair as normal. `_TICKER_CURRENCIES` in `config/allowed_pairs.json` controls which pairs are affected by which currency — XAUUSD/XAGUSD = ["USD"] so they close on USD news.
+  - `/equity`, `/checkaccount`, `/update`, `/setwindow`, `/news`, `/blackboard`, `/changepropfirm` wizard — all operational.
   - All SL/TP/entry prices use `_fmt_price(symbol, price)` — no float artifacts.
-- Layer 3: Both workers running (VPS #2 personal 106497299, VPS #3 prop 106496748, both MetaQuotes demo). Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`. Both workers honor `order_type=market` ticket field — Layer 2 always sends `order_type=market` for all tickets. `LIMIT_ONLY_EXECUTION` env var is overridden by the market ticket field.
-- **Trade Journal (session 9 — fully operational, VPS #2 only)**:
+- Layer 3: Both workers running (VPS #2 personal 106497299, VPS #3 prop 106496748, both MetaQuotes demo). Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`. Both workers honor `order_type=market` ticket field.
+  - **News close tagging (session 11)**: before closing positions via `CLOSE_TICKER`, `_force_close_ticker()` tags each position in `_known_positions` with `close_reason_override = "NEWS"` when `reason.startswith("pre_news")`. The journal pipeline reads this override so news-triggered closes are identified correctly.
+- **Trade Journal (session 11 — fixed and fully operational, VPS #2 only)**:
   - `layer3/journal/` package: `firebase_journal.py`, `rr_chart_renderer.py`, `storage_uploader.py`, `screenshot_capture.py`, `journaling_worker.py`, `retry_queue.py`, `pending_deals_queue.py`
-  - `_position_close_watcher()` daemon thread polls MT5 every 5 s, detects TP/SL closes by magic number, fires journal pipeline
-  - On close: fetches deal history (with 7-retry backoff [5,10,20,40,60,120,180]s — ~7 min total) → renders dark-theme outcome chart (matplotlib Agg) → uploads PNG to Firebase Storage → writes Firestore doc with `rrChartUrl` + `outcomeScreenshotUrl`
-  - Document ID: `{accountType}_{mt5AccountId}_{ticket}` (deterministic, upsert-safe)
-  - Retry queue (`journal_retry_queue.jsonl`) for failed Firestore writes, retried every 300 s
-  - **Persistent deal retry queue** (`journal_pending_deals.jsonl`, gitignored): if 7-retry inline loop fails (MetaQuotes Demo history takes >7 min to sync), position is enqueued here. Background thread (`pending_deals_queue.py`) retries every 10 min for up to 24h, then drops with a warning. Telegram notifications sent at: enqueue ("📋 Journal Queued"), every 3h still pending ("⏳ Journal Still Pending"), success ("✅ Journal Recovered"), 24h drop ("⚠️ Journal Failed"). **VPS #2 `.env` must have `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` for these alerts to fire** — same values as VPS #1.
-  - **⚠️ KNOWN ISSUE (session 11 must fix)**: Journal pipeline has additional unresolved bugs — Warren to report specific error logs next session. `from_dt` timezone shows `+07:00` instead of `+00:00` in logs (possible MT5 position `time` field timezone mismatch on VPS #2). Prioritise debugging this after the next trade closes. The persistent queue is a workaround, not the root-cause fix.
-  - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false`. `SCREENSHOT_STORAGE=firebase`, `SCREENSHOT_DRY_RUN=false`, `FIREBASE_STORAGE_BUCKET=gen-lang-client-0206326169.firebasestorage.app` — Firebase Storage LIVE (upgraded to Blaze plan 2026-05-07). Screenshots upload to `trade-screenshots/{accountType}/{mt5AccountId}/{ticket}/outcome.png`. `FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json`.**
-  - **VPS #3 (prop): `FIREBASE_JOURNAL_ENABLED=false` — journal disabled, prop trades not recorded**
-  - Website: warrenlimzf.com/journal reads from Firestore collection `users/{userId}/trades`
-  - Firebase project: `gen-lang-client-0206326169`. Plan: **Blaze (pay-as-you-go)**. User ID (wanttobefire@gmail.com — dedicated journal account): `WCzOHPl8C4Q1aa3EDHkOGhdH9To1`. Database ID: `ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607` (named, not default — must set FIREBASE_DATABASE_ID in .env). Storage bucket: `gen-lang-client-0206326169.firebasestorage.app`.
-  - Connectivity test: `python scripts/test_firebase_write.py` (writes real Firestore doc, reads back)
-  - Manual backfill: `uv run python scripts/backfill_journal.py` — one-off script for missed trades; hardcoded per ticket, edit as needed
-  - **Storage cache**: `storage_uploader.py` sets `cache_control="no-cache, no-store, must-revalidate"` and appends `?t={timestamp}` to the public URL so the journal website always fetches fresh images
-  - **Chart renderer fixes (session 10)**: `rr_chart_renderer.py` — fixed `open_idx`/`close_idx` using `dt.tz_localize(None).values` so searchsorted gives correct bar index (tz-aware `.values` silently returned wrong index ~10 bars early); added M15 to bottom-left meta label. Screenshot filenames are `{accountType}_{ticket}_outcome.png` (not generic `outcome.png`).
-  - **Key bugs fixed (sessions 9–10)**: (1) MT5 deal history lag — history unavailable at close time; extended retries to 7 steps (~7 min). (2) Firestore 404 — `firebase_admin` connected to `(default)` DB; fixed by using `google.cloud.firestore.Client` with named `database=FIREBASE_DATABASE_ID`. (3) Storage on Spark plan — upgraded to Blaze; `storage_uploader.py` rewritten to use `google.cloud.storage.Client`. (4) Entry bar wrong — tz-aware `.values` + naive `datetime64` searchsorted mismatch; fixed with `dt.tz_localize(None).values`.
+  - `_position_close_watcher()` daemon thread polls MT5 every 5 s, detects closes by magic number, fires journal pipeline for **ALL close types** (TP, SL, news, manual).
+  - On close: fetches deal history (7-retry backoff [5,10,20,40,60,120,180]s — ~7 min total) → renders dark-theme outcome chart → uploads PNG to Firebase Storage → writes Firestore doc.
+  - Document ID: `{accountType}_{mt5AccountId}_{ticket}` (deterministic, upsert-safe).
+  - Retry queue (`journal_retry_queue.jsonl`) for failed Firestore writes, retried every 300 s.
+  - **Persistent deal retry queue** (`journal_pending_deals.jsonl`, gitignored): if 7-retry inline loop fails, position is enqueued. Background thread retries every **2 hours** for up to 24h. Telegram notifications: enqueue ("📋 Journal Queued"), every 3h still pending ("⏳ Journal Still Pending"), success ("✅ Journal Recovered"), 24h drop ("⚠️ Journal Failed"). **VPS #2 `.env` must have `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.**
+  - **Root cause fixed (session 11)**: journal was skipping ALL news/bot-triggered closes with "not TP/SL, skipping" due to `JOURNAL_TP_SL_ONLY` guard. Guard removed — all close types now journaled. `close_reason` = "TP" / "SL" / "NEWS" (override) / "BOT_LOGIC" / "MANUAL".
+  - **from_dt fix (session 11)**: MT5 MetaQuotes Demo server returns `position.time` offset by ~3h (server UTC+3 timezone). `from_dt = min(open_time − 2h, now − 6h)` prevents inverted query range (from_dt > to_dt = 0 deals returned). MetaQuotes Demo deal history can take 2–3h to appear after close — this is expected server latency, not a bug.
+  - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false`. `SCREENSHOT_STORAGE=firebase`, `SCREENSHOT_DRY_RUN=false`, `FIREBASE_STORAGE_BUCKET=gen-lang-client-0206326169.firebasestorage.app`. `FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json`.**
+  - **VPS #3 (prop): `FIREBASE_JOURNAL_ENABLED=false` — journal disabled, prop trades not recorded.**
+  - Website: warrenlimzf.com/journal reads from Firestore collection `users/{userId}/trades`.
+  - Firebase project: `gen-lang-client-0206326169`. Plan: **Blaze**. User ID (wanttobefire@gmail.com): `WCzOHPl8C4Q1aa3EDHkOGhdH9To1`. Database ID: `ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607` (named — must set `FIREBASE_DATABASE_ID` in .env). Storage bucket: `gen-lang-client-0206326169.firebasestorage.app`.
 
 - **Lot sizing — CORRECT procedure (do not change)**:
   1. `prop_dollar_risk = baseline_equity × 0.67%` (e.g. $100k × 0.0067 = $670)
   2. Prop lots: `prop_lots = prop_dollar_risk / (tp_distance × contract_size)` for xxxUSD — sized so prop risks $670 if prop SL (= signal TP) hits
   3. Personal lots: `pers_lots = prop_lots × phase_ratio` (Phase 1 = 0.20, Phase 2 = 0.70) — fixed ratio of prop lots
-  4. Personal dollar risk: `pers_dollar_risk = pers_lots × sl_distance × contract_size` — derived result, varies per trade (e.g. ~$134 in Phase 1 but depends on SL distance). This is intentional — personal risk scales with the trade's SL distance.
+  4. Personal dollar risk: `pers_dollar_risk = pers_lots × sl_distance × contract_size` — derived result, varies per trade. This is intentional — personal risk scales with the trade's SL distance.
 
-**Next action**: Wait for next TP/SL close on VPS #2 — confirm persistent journal queue works (📋 Queued Telegram fires, then ✅ Recovered or ⚠️ Failed). Also add `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` to VPS #2 `.env`. Then: switch to real Fusion Markets + FundingPips accounts when ready.
+**Next action**: Run `/update layer2` on VPS #1, then `/update layer3` → option 1 (Personal) on VPS #2 to deploy all session 11 changes. After restart, the pending queue (GBPUSD/NZDUSD/XAUUSD from 2026-05-08) will be journaled on the next 2-hour sweep. Then switch to real Fusion Markets + FundingPips accounts when ready.
