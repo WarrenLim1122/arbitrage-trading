@@ -55,7 +55,7 @@ def send_queued_notification(symbol: str, ticket: int) -> None:
     _send_telegram(
         f"📋 <b>Journal Queued — {symbol}</b>\n\n"
         f"Ticket #{ticket} — MT5 deal history not yet available.\n"
-        f"Will retry every 10 min for up to 24h."
+        f"Will retry every 2h for up to 24h."
     )
 
 
@@ -144,7 +144,7 @@ def process_queue(mt5_lock, mt5_account_id: str, worker_name: str) -> None:
             _send_telegram(
                 f"⏳ <b>Journal Still Pending — {symbol}</b>\n\n"
                 f"Ticket #{ticket} not yet journaled ({age_h:.0f}h elapsed).\n"
-                f"Retrying automatically every 10 min.\n"
+                f"Retrying automatically every 2h.\n"
                 f"Will give up at {MAX_AGE_HOURS}h."
             )
 
