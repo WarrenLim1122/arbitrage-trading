@@ -57,8 +57,8 @@ Telegram Bot API ←→ layer2/logic_core.py
 |---|---|---|
 | 0 — Signal Engine | `layer0/signal_engine.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `layer1/news_filter.py`, `layer1/ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
-| 2 — Logic Core | `layer2/logic_core.py`, `layer2/telegram_handlers.py`, `layer2/state.py` | ✅ LIVE — simultaneous MARKET execution + mismatch wording + block alerts + `_verify_and_notify` crash guard deployed 2026-05-06 |
-| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — journal pipeline confirmed live 2026-05-06; worker docstring VPS numbers corrected |
+| 2 — Logic Core | `layer2/logic_core.py`, `layer2/telegram_handlers.py`, `layer2/state.py` | ✅ LIVE — Trade Opened message reformatted (session 12); needs `/update layer2` |
+| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — immediate screenshot architecture deployed (session 12); needs `/update layer3` → option 1 |
 
 **Current phase**: Gate D — 7-day demo run started 2026-04-25. Target go-live: ~2026-05-03 (already past; proceed when ready).
 
@@ -148,7 +148,7 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ---
 
-## Current State (as of 2026-05-09, session 11)
+## Current State (as of 2026-05-13, session 12)
 
 All four layers deployed and operational. Gate D demo run in progress (7-day window passed; proceed to live when ready).
 
@@ -161,6 +161,7 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
   - 120 s close-detection buffer and 120 s mismatch grace — prevents split alerts and false CRITICAL MISMATCH when legs close ~2 min apart
   - All Telegram alerts use "Personal Signal" and "Prop Hedge" labels — no VPS numbers in user-facing output. Personal Signal always listed first.
   - **Simultaneous MARKET execution**: both personal and prop tickets dispatched as `order_type=market` at signal time. `_verify_and_notify()` polls both simultaneously (60 s max). Telegram flow: ✅ Trade Opened (with actual MT5 fill price, ticket, SL/TP, slippage). If one or both don't fill: "⚠️ Order Not Filled — {ticker}" with per-side status.
+  - **Trade Opened message format (session 12)**: symbol first in title (`XAUUSD — Trade Opened`), no ✅. Direction merged into section headers (`Personal Signal — ↑ LONG`). Each field on its own line: Size / Entry / SL / TP / Risk / Reward / RR / Ticket. RR format `0.27` (no `1:` prefix). Footer: `Phase: Phase 1` / `Baseline: $100,000` (no decimals). Entry slippage `(req ..., diff ...)` removed.
   - **Mismatch alert**: `_handle_mismatch()` re-queries both accounts 5 s after force-close. Message says "✅ Resolved — both accounts are flat." or "⚠️ Action required". Position closed alert shows "No matching position — already closed" when one side has no data.
   - Position Closed alert: title = 🟢 Take Profit / 🔴 Stop Loss based on Personal P&L; sections: Personal Signal, Prop Hedge, After Close (each position on its own line, blank line between Personal/Prop), Equity.
   - **News Pre-Close (updated session 11)**: ONE grouped message per currency event (not one per pair). Shows only the positions being closed by that specific event, split into Personal Signal / Prop Hedge sections. After the announcement, closes each affected ticker. The TP/SL close alert then fires per pair as normal. `_TICKER_CURRENCIES` in `config/allowed_pairs.json` controls which pairs are affected by which currency — XAUUSD/XAGUSD = ["USD"] so they close on USD news.
@@ -168,15 +169,19 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
   - All SL/TP/entry prices use `_fmt_price(symbol, price)` — no float artifacts.
 - Layer 3: Both workers running (VPS #2 personal 106497299, VPS #3 prop 106496748, both MetaQuotes demo). Layer 3 is only dormant on weekends; trading hours controlled entirely by Layer 2 `/setwindow`. Both workers honor `order_type=market` ticket field.
   - **News close tagging (session 11)**: before closing positions via `CLOSE_TICKER`, `_force_close_ticker()` tags each position in `_known_positions` with `close_reason_override = "NEWS"` when `reason.startswith("pre_news")`. The journal pipeline reads this override so news-triggered closes are identified correctly.
-- **Trade Journal (session 11 — fixed and fully operational, VPS #2 only)**:
+- **Trade Journal (session 12 — immediate screenshot architecture, VPS #2 only)**:
   - `layer3/journal/` package: `firebase_journal.py`, `rr_chart_renderer.py`, `storage_uploader.py`, `screenshot_capture.py`, `journaling_worker.py`, `retry_queue.py`, `pending_deals_queue.py`
   - `_position_close_watcher()` daemon thread polls MT5 every 5 s, detects closes by magic number, fires journal pipeline for **ALL close types** (TP, SL, news, manual).
-  - On close: fetches deal history (7-retry backoff [5,10,20,40,60,120,180]s — ~7 min total) → renders dark-theme outcome chart → uploads PNG to Firebase Storage → writes Firestore doc.
+  - **Screenshot is decoupled from deal history (session 12)**. Two-phase pipeline:
+    - **Phase 1 (immediate)**: `_position_close_watcher` stamps `close_time_detected = now()` and `close_price_est = last tick bid/ask` into snapshot the instant the position disappears. Journal thread calls `_take_screenshot_immediate()` using snapshot + candle data (always available) — renders and uploads PNG before waiting for deal history. Screenshot URL stored in snapshot as `_screenshot_fields`.
+    - **Phase 2 (whenever deal history arrives)**: `history_deals_get()` fetched with 7-retry backoff. On success: Firestore written using Phase 1 screenshot URL + actual P&L/commission/swap. If all retries fail: snapshot (including `_screenshot_fields`) queued — pending queue carries screenshot forward, so the Firestore write is the only thing delayed.
+  - **Why this matters**: MetaQuotes Demo deal history syncs asynchronously (2-3h delay). Previously, screenshot was chained AFTER deal history — queued trades got no screenshot. Candle data has no delay (it is market price data, not account-specific). On real Fusion Markets, deal history arrives in < 1 s so Phase 1 and Phase 2 complete back-to-back with no observable gap.
+  - **Snapshot isolation**: each closed ticket gets its own `pop()`-ed snapshot dict. Multiple simultaneous news closes (e.g. 5 pairs at once) each have an independent snapshot — `close_time_detected` and `close_price_est` cannot overwrite each other.
+  - `SCREENSHOT_ONLY_FOR_TP_SL` defaults to `false` (session 12 fix) — screenshots taken for ALL close types (TP, SL, NEWS, BOT_LOGIC, MANUAL). Chart badge shows `WIN  RR 0.27` (no $ amount) when `net_pnl=None` at Phase 1 time.
   - Document ID: `{accountType}_{mt5AccountId}_{ticket}` (deterministic, upsert-safe).
   - Retry queue (`journal_retry_queue.jsonl`) for failed Firestore writes, retried every 300 s.
   - **Persistent deal retry queue** (`journal_pending_deals.jsonl`, gitignored): if 7-retry inline loop fails, position is enqueued. Background thread retries every **2 hours** for up to 24h. Telegram notifications: enqueue ("📋 Journal Queued"), every 3h still pending ("⏳ Journal Still Pending"), success ("✅ Journal Recovered"), 24h drop ("⚠️ Journal Failed"). **VPS #2 `.env` must have `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.**
-  - **Root cause fixed (session 11)**: journal was skipping ALL news/bot-triggered closes with "not TP/SL, skipping" due to `JOURNAL_TP_SL_ONLY` guard. Guard removed — all close types now journaled. `close_reason` = "TP" / "SL" / "NEWS" (override) / "BOT_LOGIC" / "MANUAL".
-  - **from_dt fix (session 11)**: MT5 MetaQuotes Demo server returns `position.time` offset by ~3h (server UTC+3 timezone). `from_dt = min(open_time − 2h, now − 6h)` prevents inverted query range (from_dt > to_dt = 0 deals returned). MetaQuotes Demo deal history can take 2–3h to appear after close — this is expected server latency, not a bug.
+  - **from_dt fix (session 11)**: MT5 MetaQuotes Demo server returns `position.time` offset by ~3h (server UTC+3 timezone). `from_dt = min(open_time − 2h, now − 6h)` prevents inverted query range. MetaQuotes Demo deal history can take 2-3h — expected server latency, not a bug. On real brokers: instant.
   - **VPS #2 (personal): `FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false`. `SCREENSHOT_STORAGE=firebase`, `SCREENSHOT_DRY_RUN=false`, `FIREBASE_STORAGE_BUCKET=gen-lang-client-0206326169.firebasestorage.app`. `FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json`.**
   - **VPS #3 (prop): `FIREBASE_JOURNAL_ENABLED=false` — journal disabled, prop trades not recorded.**
   - Website: warrenlimzf.com/journal reads from Firestore collection `users/{userId}/trades`.
@@ -188,4 +193,4 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
   3. Personal lots: `pers_lots = prop_lots × phase_ratio` (Phase 1 = 0.20, Phase 2 = 0.70) — fixed ratio of prop lots
   4. Personal dollar risk: `pers_dollar_risk = pers_lots × sl_distance × contract_size` — derived result, varies per trade. This is intentional — personal risk scales with the trade's SL distance.
 
-**Next action**: Run `/update layer2` on VPS #1, then `/update layer3` → option 1 (Personal) on VPS #2 to deploy all session 11 changes. After restart, the pending queue (GBPUSD/NZDUSD/XAUUSD from 2026-05-08) will be journaled on the next 2-hour sweep. Then switch to real Fusion Markets + FundingPips accounts when ready.
+**Next action**: Run `/update layer2` on VPS #1 (Trade Opened format), then `/update layer3` → option 1 (Personal) on VPS #2 (immediate screenshot + SCREENSHOT_ONLY_FOR_TP_SL fix). Then switch to real Fusion Markets + FundingPips accounts when ready.
