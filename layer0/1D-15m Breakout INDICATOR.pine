@@ -1,5 +1,5 @@
 //@version=6
-indicator("1D/15m Breakout Indicator", overlay=true)
+indicator("1D/15m Breakout Indicator", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PARAMETERS
@@ -20,7 +20,7 @@ float pip_size  = syminfo.ticker == "USDJPY" ? 0.01 : 0.0001
 string pip_type = syminfo.ticker == "USDJPY" ? "jpy" : "standard"
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BULLETPROOF 1-DAY (HTF) EXTRACTION
+// BULLETPROOF 1-DAY (HTF) EXTRACTION (Processed internally for deep history)
 // ═══════════════════════════════════════════════════════════════════════════
 f_htf_state() =>
     ph = ta.pivothigh(high, N_HTF, N_HTF)
@@ -34,26 +34,24 @@ f_htf_state() =>
     pl2 = ta.valuewhen(not na(pl), pl, 1)
     pl3 = ta.valuewhen(not na(pl), pl, 2)
 
-    [ph1, ph2, ph3, pl1, pl2, pl3]
+    // Calculate Trend directly inside the Daily timeframe context
+    is_2hh = not na(ph3) and (ph1 > ph2) and (ph2 > ph3)
+    is_2hl = not na(pl3) and (pl1 > pl2) and (pl2 > pl3)
+    is_2lh = not na(ph3) and (ph1 < ph2) and (ph2 < ph3)
+    is_2ll = not na(pl3) and (pl1 < pl2) and (pl2 < pl3)
 
-// Daily HTF data
-[h_ph1, h_ph2, h_ph3, h_pl1, h_pl2, h_pl3] = request.security(syminfo.tickerid, "D", f_htf_state(), lookahead=barmerge.lookahead_off)
+    int _trend = 0
+    if is_2hh and is_2hl
+        _trend := 1
+    else if is_2lh and is_2ll
+        _trend := -1
+    else
+        _trend := nz(_trend[1], 0) // If mixed, keep previous trend
 
-// ═══════════════════════════════════════════════════════════════════════════
-// FINE-TUNED TREND LOGIC (Sticky State)
-// ═══════════════════════════════════════════════════════════════════════════
-bool is_2hh = not na(h_ph3) and (h_ph1 > h_ph2) and (h_ph2 > h_ph3)
-bool is_2hl = not na(h_pl3) and (h_pl1 > h_pl2) and (h_pl2 > h_pl3)
+    [ph1, ph2, ph3, pl1, pl2, pl3, _trend]
 
-bool is_2lh = not na(h_ph3) and (h_ph1 < h_ph2) and (h_ph2 < h_ph3)
-bool is_2ll = not na(h_pl3) and (h_pl1 < h_pl2) and (h_pl2 < h_pl3)
-
-var int htf_trend = 0
-
-if is_2hh and is_2hl
-    htf_trend := 1
-else if is_2lh and is_2ll
-    htf_trend := -1
+// Daily HTF data retrieval
+[h_ph1, h_ph2, h_ph3, h_pl1, h_pl2, h_pl3, htf_trend] = request.security(syminfo.tickerid, "D", f_htf_state(), lookahead=barmerge.lookahead_off)
 
 bool htf_bull = htf_trend == 1
 bool htf_bear = htf_trend == -1
@@ -63,7 +61,11 @@ bgcolor(htf_bull ? color.new(color.green, 90) : htf_bear ? color.new(color.red, 
 // ═══════════════════════════════════════════════════════════════════════════
 // DIAGNOSTIC DASHBOARD TEXT
 // ═══════════════════════════════════════════════════════════════════════════
-string raw_struct = (is_2hh and is_2hl) ? "FULL BULL" : (is_2lh and is_2ll) ? "FULL BEAR" : "MIXED (Holding Trend)"
+bool is_2hh_local = not na(h_ph3) and (h_ph1 > h_ph2) and (h_ph2 > h_ph3)
+bool is_2hl_local = not na(h_pl3) and (h_pl1 > h_pl2) and (h_pl2 > h_pl3)
+bool is_2lh_local = not na(h_ph3) and (h_ph1 < h_ph2) and (h_ph2 < h_ph3)
+bool is_2ll_local = not na(h_pl3) and (h_pl1 < h_pl2) and (h_pl2 < h_pl3)
+string raw_struct = (is_2hh_local and is_2hl_local) ? "FULL BULL" : (is_2lh_local and is_2ll_local) ? "FULL BEAR" : "MIXED (Holding Trend)"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 15-MINUTE (LTF) SWING DETECTION & LABELS
@@ -107,14 +109,14 @@ if not na(ltf_pl)
     short_fired := false
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TRADE MEMORY / PLACEHOLDER LOGIC
+// TRADE MEMORY / PLACEHOLDER LOGIC (Replaces strategy.position_size)
 // ═══════════════════════════════════════════════════════════════════════════
 var bool  in_trade  = false
-var int   trade_dir = 0      // 1 for Long, -1 for Short
+var int   trade_dir = 0      // 1 = Long, -1 = Short
 var float trade_sl  = na
 var float trade_tp  = na
 
-// Check if active "simulated" trade has hit SL or TP during the current candle
+// Exit checking logic - MUST run before entry evaluation
 if in_trade
     if trade_dir == 1 // Active Long
         if low <= trade_sl or high >= trade_tp
@@ -132,6 +134,7 @@ if in_trade
 // ═══════════════════════════════════════════════════════════════════════════
 // ENTRY TRIGGERS + SL % RANGE FILTER
 // ═══════════════════════════════════════════════════════════════════════════
+// We now check `not in_trade` instead of `strategy.position_size == 0`
 bool can_long  = htf_bull and not long_fired  and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
 bool can_short = htf_bear and not short_fired and not na(last_ltf_sh) and not na(last_ltf_sl) and not in_trade
 
@@ -250,7 +253,6 @@ if barstate.islast and showTable
 
     table.cell(diag_panel, 0, 7, "Max SL %", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
     table.cell(diag_panel, 1, 7, str.tostring(maxStopPct, format.mintick), bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
-    
-    // Display Trade Memory State
+
     table.cell(diag_panel, 0, 8, "Active Trade State", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
     table.cell(diag_panel, 1, 8, in_trade ? (trade_dir == 1 ? "LONG OPEN" : "SHORT OPEN") : "NO TRADE", bgcolor=color.new(color.black, 20), text_color=in_trade ? color.aqua : color.gray, text_size=size.tiny)
