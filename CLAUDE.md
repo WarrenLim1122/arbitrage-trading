@@ -18,6 +18,23 @@ When Warren asks how to update or deploy:
 
 ---
 
+## 🔔 Pending Changes — REMIND WARREN NEXT SESSION
+
+These tasks were discussed but NOT yet implemented. The first time Warren returns, surface this list:
+
+1. **Telegram close-alert P&L breakdown** — change `_send_close_alert()` in `layer2/logic_core.py` so the P&L line shows BOTH gross and net side-by-side, plus commission, so Warren can see the full picture without mental math:
+   ```
+   P&L (Net):  $-34.98
+   Gross:      $-29.86
+   Commission: $-5.12
+   Swap:       $0.00          ← omit line if swap is 0
+   ```
+   This replaces the current two-line layout (`P&L: $-34.98` + `Commission: $-5.12`) with a three- or four-line breakdown for clarity. Apply to both Personal Signal and Prop Hedge sections. Demo fallback (when deal data unavailable) stays single-line `P&L: $-X.XX (est.)`.
+
+   Why we paused: Warren ran out of context tokens mid-discussion. Approved in principle on 2026-05-13.
+
+---
+
 ## Project
 
 Automated Trade Execution Engine — 4-layer cross-hedging system. Personal account (Fusion Markets) follows signal direction; prop firm account (FundingPips) executes the **inverse** as a hedge. Sizing is phase-dependent, controlled via Telegram.
@@ -163,7 +180,8 @@ All four layers deployed and operational. Gate D demo run in progress (7-day win
   - **Simultaneous MARKET execution**: both personal and prop tickets dispatched as `order_type=market` at signal time. `_verify_and_notify()` polls both simultaneously (60 s max). Telegram flow: ✅ Trade Opened (with actual MT5 fill price, ticket, SL/TP, slippage). If one or both don't fill: "⚠️ Order Not Filled — {ticker}" with per-side status.
   - **Trade Opened message format (session 12)**: symbol first in title (`XAUUSD — Trade Opened`), no ✅. Direction merged into section headers (`Personal Signal — ↑ LONG`). Each field on its own line: Size / Entry / SL / TP / Risk / Reward / RR / Ticket. RR format `0.27` (no `1:` prefix). Footer: `Phase: Phase 1` / `Baseline: $100,000` (no decimals). Entry slippage `(req ..., diff ...)` removed.
   - **Mismatch alert**: `_handle_mismatch()` re-queries both accounts 5 s after force-close. Message says "✅ Resolved — both accounts are flat." or "⚠️ Action required". Position closed alert shows "No matching position — already closed" when one side has no data.
-  - Position Closed alert: title = 🟢 Take Profit / 🔴 Stop Loss based on Personal P&L; sections: Personal Signal, Prop Hedge, After Close (each position on its own line, blank line between Personal/Prop), Equity.
+  - **Position Closed alert (session 12, clean format)**: title is `{emoji} {symbol} — {Take Profit | Stop Loss | News Close | Position Closed}`. Emoji selection driven by Layer 3 deal reason when available (🟢 TP / 🔴 SL / ⚠️ BOT_LOGIC|MANUAL), or by personal P&L sign as fallback on demo. 📰 News Close fires when Layer 2's `_news_close_dispatched` dict (10-min TTL, populated when Layer 2 dispatches `pre_news_*` close) has an entry for that symbol. Each side block: `Personal Signal — ↑ LONG` / `Prop Hedge — ↓ SHORT` header with one variable per line: Size / Entry / Exit / Reason / P&L / Commission / Ticket. Exit price comes from `deal.price` (actual fill), not theoretical SL/TP level. P&L is net (`gross + commission + swap`), commission shown on separate line for transparency. **Pending: re-format to show Net + Gross + Commission breakdown — see top of file.** Footer line is automatic: on demo with deal data missing → `ℹ️ Demo account — exact MT5 figures will sync to the journal in ~2-3h.` On real with deal missing → `⚠️ Deal data unavailable from broker — check journal dashboard shortly.` On any account with both sides' deal data present → no footer.
+  - **Demo/live auto-detection**: Layer 3 caches `_account_mode` ("demo"/"real"/"contest") at MT5 connect by reading `account_info().trade_mode`. Embedded in every `deal_pnl` ZMQ reply so Layer 2 always knows what kind of account it's dealing with. No env var. Switching to live Fusion Markets just requires a worker restart — the `(est.)` labels and demo footer auto-disappear.
   - **News Pre-Close (updated session 11)**: ONE grouped message per currency event (not one per pair). Shows only the positions being closed by that specific event, split into Personal Signal / Prop Hedge sections. After the announcement, closes each affected ticker. The TP/SL close alert then fires per pair as normal. `_TICKER_CURRENCIES` in `config/allowed_pairs.json` controls which pairs are affected by which currency — XAUUSD/XAGUSD = ["USD"] so they close on USD news.
   - `/equity`, `/checkaccount`, `/update`, `/setwindow`, `/news`, `/blackboard`, `/changepropfirm` wizard — all operational.
   - All SL/TP/entry prices use `_fmt_price(symbol, price)` — no float artifacts.
