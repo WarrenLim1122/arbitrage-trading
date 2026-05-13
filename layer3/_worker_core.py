@@ -902,6 +902,46 @@ def _build_order_status_reply(signal_id: str) -> dict:
         return dict(_execution_results.get(signal_id, {"status": "UNKNOWN"}))
 
 
+def _build_deal_pnl_reply(symbol: str) -> dict:
+    """Return actual realized P&L (gross + commission + swap) for the most recently closed position on symbol.
+    Falls back to {"found": False} when deal history is unavailable (MetaQuotes Demo lag)."""
+    if not symbol:
+        return {"found": False, "error": "no symbol"}
+    try:
+        from_dt = datetime.now(timezone.utc) - timedelta(hours=24)
+        to_dt   = datetime.now(timezone.utc) + timedelta(seconds=30)
+        with _mt5_lock:
+            deals = mt5.history_deals_get(from_dt, to_dt) or []
+
+        sym_exits = [
+            d for d in deals
+            if d.symbol == symbol and d.entry == mt5.DEAL_ENTRY_OUT
+        ]
+        if not sym_exits:
+            return {"found": False}
+
+        latest_exit = max(sym_exits, key=lambda d: d.time)
+        ticket      = latest_exit.position_id
+
+        pos_deals  = [d for d in deals if d.position_id == ticket]
+        gross_pnl  = sum(d.profit     for d in pos_deals)
+        commission = sum(d.commission for d in pos_deals)
+        swap       = sum(d.swap       for d in pos_deals)
+        net_pnl    = gross_pnl + commission + swap
+
+        return {
+            "found":      True,
+            "ticket":     ticket,
+            "gross_pnl":  round(gross_pnl,  2),
+            "commission": round(commission, 2),
+            "swap":       round(swap,       2),
+            "net_pnl":    round(net_pnl,    2),
+        }
+    except Exception as exc:
+        logger.error("deal_pnl reply error for %s: %s", symbol, exc)
+        return {"found": False, "error": str(exc)}
+
+
 def _rep_loop(ctx: zmq.Context) -> None:
     sock = ctx.socket(zmq.REP)
     _bind_with_retry(sock, REP_ADDR)
@@ -929,6 +969,8 @@ def _rep_loop(ctx: zmq.Context) -> None:
             reply = _build_positions_reply()
         elif query == "order_status":
             reply = _build_order_status_reply(msg.get("signal_id", ""))
+        elif query == "deal_pnl":
+            reply = _build_deal_pnl_reply(msg.get("symbol", ""))
         else:
             reply = _build_equity_reply(ticker)
         try:

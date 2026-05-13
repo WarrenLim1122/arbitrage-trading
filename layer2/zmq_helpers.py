@@ -276,6 +276,25 @@ def _dispatch_parameters() -> None:
         logger.error("SET_PARAMETERS dispatch failed: %s", exc)
 
 
+def _query_deal_pnl(zmq_url: str, symbol: str) -> dict | None:
+    """Query Layer 3 for the actual realized P&L of the most recently closed position on symbol.
+    Returns dict with net_pnl/gross_pnl/commission/swap when deal history is available (real brokers),
+    or None when unavailable (MetaQuotes Demo 2-3h lag) — caller falls back to pos.profit."""
+    sock = _zmq_ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.connect(zmq_url)
+    try:
+        sock.send_json({"query": "deal_pnl", "symbol": symbol})
+        if not sock.poll(EQUITY_TIMEOUT):
+            return None
+        reply = sock.recv_json()
+        return reply if reply.get("found") else None
+    except Exception:
+        return None
+    finally:
+        sock.close()
+
+
 def _query_order_status(zmq_url: str, signal_id: str) -> dict:
     """Query Layer 3 for execution status of a pending/filled order by signal_id."""
     sock = _zmq_ctx.socket(zmq.REQ)

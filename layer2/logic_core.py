@@ -57,7 +57,7 @@ from layer2.state import (
     _fmt_price,
 )
 from layer2.zmq_helpers import (
-    _query_equity, _query_positions, _snapshot_positions_str,
+    _query_equity, _query_positions, _query_deal_pnl, _snapshot_positions_str,
     _dispatch_force_close, _dispatch_close_ticker, _dispatch_news_suppress,
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
@@ -328,9 +328,14 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
 
     sections: list[str] = []
 
+    # Query actual realized P&L from Layer 3 deal history.
+    # Available immediately on Fusion Markets; returns None on MetaQuotes Demo (2-3h lag).
+    pers_deal = _query_deal_pnl(ZMQ_REQ_PERS, symbol) if pers_pos_data else None
+    prop_deal = _query_deal_pnl(ZMQ_REQ_PROP, symbol) if prop_pos_data else None
+
     # ── Title — driven by personal P&L ──────────────────────────────────────
     if pers_pos_data:
-        pers_pnl = pers_pos_data["profit"]
+        pers_pnl = pers_deal["net_pnl"] if pers_deal else pers_pos_data["profit"]
         title = f"🟢 <b>Take Profit — {symbol}</b>" if pers_pnl >= 0 else f"🔴 <b>Stop Loss — {symbol}</b>"
     else:
         title = f"⚠️ <b>Position Closed — {symbol}</b>"
@@ -340,7 +345,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     if pers_pos_data:
         pos      = pers_pos_data
         dir_str  = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        pnl      = pos["profit"]
+        pnl      = pers_deal["net_pnl"] if pers_deal else pos["profit"]
         exit_lvl = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
         exit_tag = f"TP at {exit_lvl}" if pnl >= 0 else f"SL at {exit_lvl}"
         sections.append(
@@ -356,7 +361,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     if prop_pos_data:
         pos     = prop_pos_data
         dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        pnl     = pos["profit"]
+        pnl     = prop_deal["net_pnl"] if prop_deal else pos["profit"]
         sections.append(
             f"<b>Prop Hedge</b>\n"
             f"{dir_str} · {pos['volume']:.2f} lots\n"
@@ -1143,8 +1148,9 @@ async def _verify_and_notify_inner(
             f"Reward: ${prop_reward:,.2f}\n"
             f"RR: {prop_rr:.2f}\n"
             f"Ticket: {pf.get('mt5_order_ticket', '?')}\n\n"
+            f"<b>Context</b>\n"
             f"Phase: Phase {phase}\n"
-            f"Baseline: ${baseline_equity:,.0f}"
+            f"Baseline: ${baseline_equity:,.2f}"
         )
         return
 

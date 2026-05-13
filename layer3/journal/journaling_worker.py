@@ -294,7 +294,7 @@ def handle_closed_position(
         direction   = "LONG" if pos_snapshot.get("type") == 0 else "SHORT"
         entry_price = entry_deal.price if entry_deal else pos_snapshot.get("price_open", 0.0)
         close_price = exit_deal.price
-        volume      = exit_deal.volume
+        volume      = round(exit_deal.volume, 2)
         close_time  = datetime.fromtimestamp(exit_deal.time, tz=timezone.utc)
 
         all_pos_deals = entry_deals + exit_deals
