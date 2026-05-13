@@ -13,7 +13,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 SCREENSHOT_ENABLED        = os.getenv("SCREENSHOT_ENABLED",        "true").lower() == "true"
-SCREENSHOT_ONLY_FOR_TP_SL = os.getenv("SCREENSHOT_ONLY_FOR_TP_SL", "true").lower() == "true"
+SCREENSHOT_ONLY_FOR_TP_SL = os.getenv("SCREENSHOT_ONLY_FOR_TP_SL", "false").lower() == "true"
 SCREENSHOT_DRY_RUN        = os.getenv("SCREENSHOT_DRY_RUN",        "false").lower() == "true"
 SCREENSHOT_TIMEFRAME      = os.getenv("SCREENSHOT_TIMEFRAME",      "M15")
 SCREENSHOT_LOOKBACK_BARS  = int(os.getenv("SCREENSHOT_LOOKBACK_BARS", "120"))
