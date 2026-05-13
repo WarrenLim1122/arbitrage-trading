@@ -104,7 +104,7 @@ def render_rr_chart(
     # Strip tz to get naive UTC datetime64[ns] — searchsorted fails silently on tz-aware arrays
     times = df["time"].dt.tz_localize(None).values
     open_idx  = max(0, np.searchsorted(
-        times, np.datetime64(open_time_utc.replace(tzinfo=None)), side="left") - 1)
+        times, np.datetime64(open_time_utc.replace(tzinfo=None)), side="right") - 1)
     close_idx = min(n - 1, np.searchsorted(
         times, np.datetime64(close_time_utc.replace(tzinfo=None)), side="left"))
 
@@ -159,11 +159,11 @@ def render_rr_chart(
     # ── Horizontal price lines — stop at view_end so label area stays clean ──
     # Using hlines (data coords) instead of axhline (full axes width) means
     # the lines do not bleed into the right-margin label zone.
-    ax.hlines(entry_price, view_start, view_end,
+    ax.hlines(entry_price, open_idx, view_end,
               colors=_ENTRY, linewidth=1.5, linestyles="--", alpha=0.9,  zorder=4)
-    ax.hlines(sl_price,    view_start, view_end,
+    ax.hlines(sl_price,    open_idx, view_end,
               colors=_DOWN,  linewidth=1.2, linestyles="--", alpha=0.75, zorder=4)
-    ax.hlines(tp_price,    view_start, view_end,
+    ax.hlines(tp_price,    open_idx, view_end,
               colors=_UP,    linewidth=1.2, linestyles="--", alpha=0.75, zorder=4)
 
     # Close price: dot at close bar + short horizontal bridge to the label column

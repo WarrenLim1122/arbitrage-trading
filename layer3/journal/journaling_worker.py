@@ -284,7 +284,7 @@ def handle_closed_position(
         reason_map = {
             mt5.DEAL_REASON_TP:     "TP",
             mt5.DEAL_REASON_SL:     "SL",
-            mt5.DEAL_REASON_EXPERT: "BOT_LOGIC",
+            mt5.DEAL_REASON_EXPERT: "MANUAL",
             mt5.DEAL_REASON_MOBILE: "MANUAL",
             mt5.DEAL_REASON_CLIENT: "MANUAL",
         }
@@ -346,7 +346,7 @@ def handle_closed_position(
             "accountType":  JOURNAL_ACCOUNT_TYPE,
             "broker":       JOURNAL_BROKER,
             "mt5AccountId": mt5_account_id,
-            "ticket":       position_ticket,
+            "ticket":       str(position_ticket),
             "magicNumber":  pos_snapshot.get("magic"),
 
             # ── Trade info ────────────────────────────────────────────────
