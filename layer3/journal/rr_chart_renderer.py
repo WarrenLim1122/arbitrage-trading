@@ -68,11 +68,11 @@ def render_rr_chart(
     close_time: datetime,
     open_time: datetime,
     outcome: str,          # "WIN" | "LOSS"
-    net_pnl: float,
+    net_pnl: Optional[float],  # None when called before deal history (omits $ from badge)
     volume: float,
     ticket: int,
     account_type: str,
-    close_reason: str,     # "TP" | "SL"
+    close_reason: str,
     rr_ratio: Optional[float] = None,
     output_path: Optional[Path] = None,
 ) -> Path:
@@ -220,11 +220,15 @@ def render_rr_chart(
 
     # ── Outcome badge (top-right) ─────────────────────────────────────────────
     o_color  = _WIN if outcome == "WIN" else _LOSS
-    pnl_sign = "+" if net_pnl >= 0 else ""
     rr_text  = f"   RR {rr_ratio:.2f}R" if rr_ratio else ""
+    if net_pnl is not None:
+        pnl_sign   = "+" if net_pnl >= 0 else ""
+        badge_text = f"{outcome}  ${pnl_sign}{net_pnl:.2f}{rr_text}"
+    else:
+        badge_text = f"{outcome}{rr_text}"
     ax.text(
         0.98, 0.97,
-        f"{outcome}  ${pnl_sign}{net_pnl:.2f}{rr_text}",
+        badge_text,
         transform=ax.transAxes, color=o_color,
         fontsize=14, fontweight="bold", va="top", ha="right",
         bbox=dict(facecolor=_PANEL, edgecolor=o_color,

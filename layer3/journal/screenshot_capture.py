@@ -58,7 +58,7 @@ def capture_outcome_screenshot(
     close_time: datetime,
     open_time: datetime,
     outcome: str,
-    net_pnl: float,
+    net_pnl: Optional[float],   # None when called before deal history is available
     volume: float,
     ticket: int,
     account_type: str,

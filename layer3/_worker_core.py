@@ -757,6 +757,21 @@ def _position_close_watcher() -> None:
                         ticket, snapshot.get("magic", 0), MT5_MAGIC,
                     )
                     continue
+
+                # Stamp close time immediately — accurate to within one poll interval (5 s)
+                snapshot["close_time_detected"] = datetime.now(timezone.utc)
+                # Capture last tick price as close price estimate before the position data ages
+                try:
+                    with _mt5_lock:
+                        tick = mt5.symbol_info_tick(snapshot["symbol"])
+                    if tick:
+                        # LONG fills at ask on open, closes at bid; SHORT is the reverse
+                        snapshot["close_price_est"] = (
+                            tick.bid if snapshot.get("type") == 0 else tick.ask
+                        )
+                except Exception:
+                    pass
+
                 logger.info(
                     "Position closed: ticket=%d  %s — triggering journal",
                     ticket, snapshot.get("symbol"),
