@@ -930,12 +930,13 @@ def _build_deal_pnl_reply(symbol: str) -> dict:
         net_pnl    = gross_pnl + commission + swap
 
         return {
-            "found":      True,
-            "ticket":     ticket,
-            "gross_pnl":  round(gross_pnl,  2),
-            "commission": round(commission, 2),
-            "swap":       round(swap,       2),
-            "net_pnl":    round(net_pnl,    2),
+            "found":       True,
+            "ticket":      ticket,
+            "close_price": latest_exit.price,
+            "gross_pnl":   round(gross_pnl,  2),
+            "commission":  round(commission, 2),
+            "swap":        round(swap,       2),
+            "net_pnl":     round(net_pnl,    2),
         }
     except Exception as exc:
         logger.error("deal_pnl reply error for %s: %s", symbol, exc)

@@ -343,16 +343,23 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
 
     # ── Personal ─────────────────────────────────────────────────────────────
     if pers_pos_data:
-        pos      = pers_pos_data
-        dir_str  = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        pnl      = pers_deal["net_pnl"] if pers_deal else pos["profit"]
-        exit_lvl = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
-        exit_tag = f"TP at {exit_lvl}" if pnl >= 0 else f"SL at {exit_lvl}"
+        pos     = pers_pos_data
+        dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
+        if pers_deal:
+            pnl        = pers_deal["net_pnl"]
+            exit_price = _fmt_price(symbol, pers_deal["close_price"])
+            commission = pers_deal["commission"]
+            pnl_detail = f"${pnl:+,.2f}  (commission ${commission:+,.2f})"
+        else:
+            pnl        = pos["profit"]
+            exit_price = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
+            pnl_detail = f"${pnl:+,.2f} (est.)"
+        exit_tag = f"TP at {exit_price}" if pnl >= 0 else f"SL at {exit_price}"
         sections.append(
             f"<b>Personal Signal</b>\n"
             f"{dir_str} · {pos['volume']:.2f} lots\n"
             f"Entry {_fmt_price(symbol, pos['price_open'])} | {exit_tag}\n"
-            f"P&amp;L: <b>${pnl:+,.2f}</b>"
+            f"P&amp;L: <b>{pnl_detail}</b>"
         )
     else:
         sections.append("<b>Personal Signal</b>\nNo matching position — already closed")
@@ -361,11 +368,17 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     if prop_pos_data:
         pos     = prop_pos_data
         dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        pnl     = prop_deal["net_pnl"] if prop_deal else pos["profit"]
+        if prop_deal:
+            pnl        = prop_deal["net_pnl"]
+            commission = prop_deal["commission"]
+            pnl_detail = f"${pnl:+,.2f}  (commission ${commission:+,.2f})"
+        else:
+            pnl        = pos["profit"]
+            pnl_detail = f"${pnl:+,.2f} (est.)"
         sections.append(
             f"<b>Prop Hedge</b>\n"
             f"{dir_str} · {pos['volume']:.2f} lots\n"
-            f"P&amp;L: ${pnl:+,.2f}"
+            f"P&amp;L: {pnl_detail}"
         )
     else:
         sections.append("<b>Prop Hedge</b>\nNo matching position — already closed")
