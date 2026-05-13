@@ -94,6 +94,13 @@ _pers_algo_disabled:   bool = False
 # Tracks (ticker, event_time_iso) pairs already acted on — prevents repeat closes.
 _news_closed_events: set[tuple[str, str]] = set()
 
+# Symbols Layer 2 just dispatched a news-close for — used to drive the 📰 News Close
+# title in Position Closed alerts.  Layer 3 sees these closes as DEAL_REASON_EXPERT
+# (bot logic), so we rely on Layer 2's own intent to identify them as news closes.
+# Entries auto-expire after 10 minutes (more than enough for the close to register).
+_news_close_dispatched: dict[str, datetime] = {}
+_NEWS_DISPATCH_TTL_SECS = 600
+
 # ── Signal-blocked alert dedup ─────────────────────────────────────────────
 # Prevents flooding Telegram when TradingView fires multiple signals while the
 # system is halted or suppressed.  Key: (ticker, reason_tag).  Value: last alert UTC.
@@ -304,9 +311,10 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
 def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: dict | None) -> None:
     """Build and send the Position Closed Telegram alert for one symbol.
 
-    Always does a fresh live re-query of both workers so that the
-    'After Close' and 'Equity' sections reflect the actual current state
-    rather than the stale snapshot from the last poll.
+    Layout mirrors the Trade Opened message: one variable per line, section headers
+    in bold with direction merged in, four close-type emojis (🟢 TP / 🔴 SL /
+    📰 News / ⚠️ Other).  Account mode (demo/real) is read from MT5 directly via
+    Layer 3 — no env var, fully automatic.
     """
     # Fresh re-query — gives accurate after-close snapshot.
     try:
@@ -326,62 +334,101 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
             for p in pos_list
         )
 
-    sections: list[str] = []
-
-    # Query actual realized P&L from Layer 3 deal history.
-    # Available immediately on Fusion Markets; returns None on MetaQuotes Demo (2-3h lag).
+    # Query actual deal P&L from Layer 3 — always returns account_mode even when
+    # deal not yet found (MetaQuotes Demo lag).  Returns None only on transport error.
     pers_deal = _query_deal_pnl(ZMQ_REQ_PERS, symbol) if pers_pos_data else None
     prop_deal = _query_deal_pnl(ZMQ_REQ_PROP, symbol) if prop_pos_data else None
 
-    # ── Title — driven by personal P&L ──────────────────────────────────────
-    if pers_pos_data:
-        pers_pnl = pers_deal["net_pnl"] if pers_deal else pers_pos_data["profit"]
-        title = f"🟢 <b>Take Profit — {symbol}</b>" if pers_pnl >= 0 else f"🔴 <b>Stop Loss — {symbol}</b>"
+    # Account mode — read whichever side we got back; personal is the authoritative one.
+    account_mode = "unknown"
+    if pers_deal and pers_deal.get("account_mode"):
+        account_mode = pers_deal["account_mode"]
+    elif prop_deal and prop_deal.get("account_mode"):
+        account_mode = prop_deal["account_mode"]
+
+    # Was this a news-triggered close?  (Layer 2 tracks its own dispatches.)
+    now_utc = datetime.now(timezone.utc)
+    is_news_close = False
+    dispatch_ts = _news_close_dispatched.get(symbol)
+    if dispatch_ts and (now_utc - dispatch_ts).total_seconds() <= _NEWS_DISPATCH_TTL_SECS:
+        is_news_close = True
+        _news_close_dispatched.pop(symbol, None)
+
+    # Reason label (per side) — prefer Layer 3 deal.reason, override to NEWS when applicable.
+    def _reason_label(deal: dict | None) -> str:
+        if is_news_close:
+            return "NEWS"
+        if deal and deal.get("found") and deal.get("close_reason"):
+            return deal["close_reason"]
+        # Fallback inference when deal data is unavailable (demo)
+        if deal is None:
+            return "—"
+        return "—"
+
+    pers_reason = _reason_label(pers_deal)
+    prop_reason = _reason_label(prop_deal)
+
+    sections: list[str] = []
+
+    # ── Title — driven by close reason if available, else personal P&L sign ──
+    if is_news_close:
+        title = f"📰 <b>{symbol} — News Close</b>"
+    elif pers_pos_data:
+        if pers_deal and pers_deal.get("found"):
+            cr = pers_deal["close_reason"]
+            if cr == "TP":
+                title = f"🟢 <b>{symbol} — Take Profit</b>"
+            elif cr == "SL":
+                title = f"🔴 <b>{symbol} — Stop Loss</b>"
+            else:
+                title = f"⚠️ <b>{symbol} — Position Closed</b>"
+        else:
+            # Fall back to P&L sign for demo accounts where deal data hasn't arrived
+            pers_pnl = pers_pos_data["profit"]
+            title = (
+                f"🟢 <b>{symbol} — Take Profit</b>" if pers_pnl >= 0
+                else f"🔴 <b>{symbol} — Stop Loss</b>"
+            )
     else:
-        title = f"⚠️ <b>Position Closed — {symbol}</b>"
+        title = f"⚠️ <b>{symbol} — Position Closed</b>"
     sections.append(title)
 
-    # ── Personal ─────────────────────────────────────────────────────────────
-    if pers_pos_data:
-        pos     = pers_pos_data
-        dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        if pers_deal:
-            pnl        = pers_deal["net_pnl"]
-            exit_price = _fmt_price(symbol, pers_deal["close_price"])
-            commission = pers_deal["commission"]
-            pnl_detail = f"${pnl:+,.2f}  (commission ${commission:+,.2f})"
+    # ── Helper to build one side block ───────────────────────────────────────
+    def _side_block(label: str, pos_data: dict | None, deal: dict | None, reason_label: str) -> str:
+        if not pos_data:
+            return f"<b>{label}</b>\nNo matching position — already closed"
+        dir_str = "↑ LONG" if pos_data["type"] == 0 else "↓ SHORT"
+        if deal and deal.get("found"):
+            pnl        = deal["net_pnl"]
+            exit_price = _fmt_price(symbol, deal["close_price"])
+            commission = deal["commission"]
+            pnl_line   = f"P&amp;L: ${pnl:+,.2f}"
+            comm_line  = f"Commission: ${commission:+,.2f}"
         else:
-            pnl        = pos["profit"]
-            exit_price = _fmt_price(symbol, pos["tp"]) if pnl >= 0 else _fmt_price(symbol, pos["sl"])
-            pnl_detail = f"${pnl:+,.2f} (est.)"
-        exit_tag = f"TP at {exit_price}" if pnl >= 0 else f"SL at {exit_price}"
-        sections.append(
-            f"<b>Personal Signal</b>\n"
-            f"{dir_str} · {pos['volume']:.2f} lots\n"
-            f"Entry {_fmt_price(symbol, pos['price_open'])} | {exit_tag}\n"
-            f"P&amp;L: <b>{pnl_detail}</b>"
-        )
-    else:
-        sections.append("<b>Personal Signal</b>\nNo matching position — already closed")
+            pnl = pos_data["profit"]
+            # No deal data → fall back to theoretical exit level
+            exit_price = (
+                _fmt_price(symbol, pos_data["tp"]) if pnl >= 0
+                else _fmt_price(symbol, pos_data["sl"])
+            )
+            pnl_line  = f"P&amp;L: ${pnl:+,.2f} (est.)"
+            comm_line = None
+        lines = [
+            f"<b>{label} — {dir_str}</b>",
+            f"Size: {pos_data['volume']:.2f} lots",
+            f"Entry: {_fmt_price(symbol, pos_data['price_open'])}",
+            f"Exit: {exit_price}",
+            f"Reason: {reason_label}",
+            pnl_line,
+        ]
+        if comm_line:
+            lines.append(comm_line)
+        if pos_data.get("ticket"):
+            lines.append(f"Ticket: {pos_data['ticket']}")
+        return "\n".join(lines)
 
-    # ── Prop Hedge ───────────────────────────────────────────────────────────
-    if prop_pos_data:
-        pos     = prop_pos_data
-        dir_str = "↑ LONG" if pos["type"] == 0 else "↓ SHORT"
-        if prop_deal:
-            pnl        = prop_deal["net_pnl"]
-            commission = prop_deal["commission"]
-            pnl_detail = f"${pnl:+,.2f}  (commission ${commission:+,.2f})"
-        else:
-            pnl        = pos["profit"]
-            pnl_detail = f"${pnl:+,.2f} (est.)"
-        sections.append(
-            f"<b>Prop Hedge</b>\n"
-            f"{dir_str} · {pos['volume']:.2f} lots\n"
-            f"P&amp;L: {pnl_detail}"
-        )
-    else:
-        sections.append("<b>Prop Hedge</b>\nNo matching position — already closed")
+    sections.append(_side_block("Personal Signal", pers_pos_data, pers_deal, pers_reason))
+    sections.append(_side_block("Prop Hedge",      prop_pos_data, prop_deal, prop_reason))
 
     # ── After Close ──────────────────────────────────────────────────────────
     sections.append(
@@ -406,6 +453,21 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         f"Personal Signal: {pers_eq_str}\n"
         f"Prop Hedge: {prop_eq_str}"
     )
+
+    # ── Footer — context line for demo / live data state ─────────────────────
+    pers_deal_missing = pers_pos_data and not (pers_deal and pers_deal.get("found"))
+    prop_deal_missing = prop_pos_data and not (prop_deal and prop_deal.get("found"))
+    any_deal_missing  = pers_deal_missing or prop_deal_missing
+    if any_deal_missing:
+        if account_mode == "demo":
+            sections.append(
+                "ℹ️ Demo account — exact MT5 figures will sync to the journal in ~2-3h."
+            )
+        elif account_mode == "real":
+            sections.append(
+                "⚠️ Deal data unavailable from broker — check journal dashboard shortly."
+            )
+        # account_mode == "unknown" or "contest": stay silent (no spurious footer)
 
     # Clear from known-open-positions tracker.
     with _known_pos_lock:
@@ -578,6 +640,7 @@ def _run_news_preclose_check() -> None:
 
         for ticker in tickers:
             _dispatch_close_ticker(ticker, f"pre_news_{ticker}")
+            _news_close_dispatched[ticker] = datetime.now(timezone.utc)
 
 
 def _news_preclose_loop() -> None:

@@ -278,8 +278,9 @@ def _dispatch_parameters() -> None:
 
 def _query_deal_pnl(zmq_url: str, symbol: str) -> dict | None:
     """Query Layer 3 for the actual realized P&L of the most recently closed position on symbol.
-    Returns dict with net_pnl/gross_pnl/commission/swap when deal history is available (real brokers),
-    or None when unavailable (MetaQuotes Demo 2-3h lag) — caller falls back to pos.profit."""
+    Returns the full reply dict (always includes account_mode, plus net_pnl/commission/close_price
+    when found=True). Returns None only on transport error/timeout. Caller checks reply["found"]
+    to decide whether to use the exact values or fall back to pos.profit."""
     sock = _zmq_ctx.socket(zmq.REQ)
     sock.setsockopt(zmq.LINGER, 0)
     sock.connect(zmq_url)
@@ -287,10 +288,28 @@ def _query_deal_pnl(zmq_url: str, symbol: str) -> dict | None:
         sock.send_json({"query": "deal_pnl", "symbol": symbol})
         if not sock.poll(EQUITY_TIMEOUT):
             return None
-        reply = sock.recv_json()
-        return reply if reply.get("found") else None
+        return sock.recv_json()
     except Exception:
         return None
+    finally:
+        sock.close()
+
+
+def _query_account_mode(zmq_url: str) -> str:
+    """Query Layer 3 for the MT5 account mode (demo/real/contest).
+    Reads account_info.trade_mode cached at worker startup — fully automatic, no env var needed.
+    Returns 'unknown' on transport error."""
+    sock = _zmq_ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.connect(zmq_url)
+    try:
+        sock.send_json({"query": "account_mode"})
+        if not sock.poll(EQUITY_TIMEOUT):
+            return "unknown"
+        reply = sock.recv_json()
+        return reply.get("account_mode", "unknown")
+    except Exception:
+        return "unknown"
     finally:
         sock.close()
 

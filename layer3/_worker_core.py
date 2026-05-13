@@ -161,7 +161,24 @@ def _resolve_symbol(canonical: str) -> str:
 
 # ── MT5 connection ────────────────────────────────────────────────────────
 
+# Cached at connect time — read from MT5 itself (account_info.trade_mode),
+# never set manually. Values: "demo" | "real" | "contest" | "unknown".
+_account_mode: str = "unknown"
+
+
+def _resolve_account_mode(acct) -> str:
+    """Map MT5 ACCOUNT_TRADE_MODE_* constant to a string label."""
+    try:
+        if   acct.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO:    return "demo"
+        elif acct.trade_mode == mt5.ACCOUNT_TRADE_MODE_REAL:    return "real"
+        elif acct.trade_mode == mt5.ACCOUNT_TRADE_MODE_CONTEST: return "contest"
+    except Exception:
+        pass
+    return "unknown"
+
+
 def _connect_mt5() -> None:
+    global _account_mode
     while True:
         with _mt5_lock:
             ok = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
@@ -169,8 +186,9 @@ def _connect_mt5() -> None:
             with _mt5_lock:
                 acct     = mt5.account_info()
                 terminal = mt5.terminal_info()
-            logger.info("MT5 connected — account=%d  server=%s  balance=%.2f",
-                        acct.login, acct.server, acct.balance)
+            _account_mode = _resolve_account_mode(acct)
+            logger.info("MT5 connected — account=%d  server=%s  balance=%.2f  mode=%s",
+                        acct.login, acct.server, acct.balance, _account_mode)
             if not terminal.trade_allowed:
                 logger.error(
                     "Automated trading DISABLED in MT5. "
@@ -830,12 +848,13 @@ def _build_positions_reply() -> dict:
             result.append({
                 "symbol":     p.symbol,
                 "type":       p.type,      # 0=LONG 1=SHORT
-                "volume":     p.volume,
+                "volume":     round(p.volume, 2),
                 "price_open": p.price_open,
                 "sl":         p.sl,
                 "tp":         p.tp,
                 "profit":     p.profit,
                 "magic":      p.magic,
+                "ticket":     p.ticket,
             })
         return {"positions": result}
     except Exception as exc:
@@ -902,11 +921,18 @@ def _build_order_status_reply(signal_id: str) -> dict:
         return dict(_execution_results.get(signal_id, {"status": "UNKNOWN"}))
 
 
+def _build_account_mode_reply() -> dict:
+    """Return cached MT5 account mode (queried from account_info.trade_mode at connect)."""
+    return {"account_mode": _account_mode}
+
+
 def _build_deal_pnl_reply(symbol: str) -> dict:
     """Return actual realized P&L (gross + commission + swap) for the most recently closed position on symbol.
-    Falls back to {"found": False} when deal history is unavailable (MetaQuotes Demo lag)."""
+    Always includes account_mode so Layer 2 can decide message format even when deal history is unavailable
+    (MetaQuotes Demo lags 2-3h; Fusion Markets returns deals in <1s)."""
+    base = {"account_mode": _account_mode}
     if not symbol:
-        return {"found": False, "error": "no symbol"}
+        return {**base, "found": False, "error": "no symbol"}
     try:
         from_dt = datetime.now(timezone.utc) - timedelta(hours=24)
         to_dt   = datetime.now(timezone.utc) + timedelta(seconds=30)
@@ -918,7 +944,7 @@ def _build_deal_pnl_reply(symbol: str) -> dict:
             if d.symbol == symbol and d.entry == mt5.DEAL_ENTRY_OUT
         ]
         if not sym_exits:
-            return {"found": False}
+            return {**base, "found": False}
 
         latest_exit = max(sym_exits, key=lambda d: d.time)
         ticket      = latest_exit.position_id
@@ -929,18 +955,30 @@ def _build_deal_pnl_reply(symbol: str) -> dict:
         swap       = sum(d.swap       for d in pos_deals)
         net_pnl    = gross_pnl + commission + swap
 
+        # Map MT5 deal reason → close reason label
+        deal_reason_map = {
+            mt5.DEAL_REASON_TP:     "TP",
+            mt5.DEAL_REASON_SL:     "SL",
+            mt5.DEAL_REASON_EXPERT: "BOT_LOGIC",
+            mt5.DEAL_REASON_MOBILE: "MANUAL",
+            mt5.DEAL_REASON_CLIENT: "MANUAL",
+        }
+        close_reason = deal_reason_map.get(latest_exit.reason, "UNKNOWN")
+
         return {
-            "found":       True,
-            "ticket":      ticket,
-            "close_price": latest_exit.price,
-            "gross_pnl":   round(gross_pnl,  2),
-            "commission":  round(commission, 2),
-            "swap":        round(swap,       2),
-            "net_pnl":     round(net_pnl,    2),
+            **base,
+            "found":        True,
+            "ticket":       ticket,
+            "close_price":  latest_exit.price,
+            "close_reason": close_reason,
+            "gross_pnl":    round(gross_pnl,  2),
+            "commission":   round(commission, 2),
+            "swap":         round(swap,       2),
+            "net_pnl":      round(net_pnl,    2),
         }
     except Exception as exc:
         logger.error("deal_pnl reply error for %s: %s", symbol, exc)
-        return {"found": False, "error": str(exc)}
+        return {**base, "found": False, "error": str(exc)}
 
 
 def _rep_loop(ctx: zmq.Context) -> None:
@@ -972,6 +1010,8 @@ def _rep_loop(ctx: zmq.Context) -> None:
             reply = _build_order_status_reply(msg.get("signal_id", ""))
         elif query == "deal_pnl":
             reply = _build_deal_pnl_reply(msg.get("symbol", ""))
+        elif query == "account_mode":
+            reply = _build_account_mode_reply()
         else:
             reply = _build_equity_reply(ticker)
         try:
