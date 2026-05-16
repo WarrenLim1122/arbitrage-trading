@@ -111,6 +111,60 @@ def _save_phase(data: dict) -> None:
         json.dump(data, f, indent=2)
 
 
+# ── Phase 1 strategy state (nested 'phase1' block in phase_config.json) ────
+
+_phase1_lock = threading.Lock()
+
+
+def _phase1_load() -> dict:
+    with _phase1_lock:
+        data = _load_phase()
+        return dict(data.get("phase1", {}))
+
+
+def _phase1_init(first_reward: float, fixed_risk: float, stages: list[float]) -> None:
+    """Write a fresh phase1 block (called at /phase1 confirm). Resets the ratchet."""
+    with _phase1_lock:
+        data = _load_phase()
+        data["phase1"] = {
+            "first_reward": round(first_reward, 2),
+            "fixed_risk": round(fixed_risk, 2),
+            "stages": [round(s, 2) for s in stages],
+            "active_stage_index": 0,
+            "max_prop_lots": float(data.get("phase1", {}).get("max_prop_lots", 0.0)),
+            "profitable_days": 0,
+            "last_stage_day": "never",
+        }
+        _save_phase(data)
+
+
+def _phase1_active_stage(stages: list[float], current_equity: float) -> int:
+    """Ratcheting active-stage index. Persists advances. Never reverts."""
+    from layer2.phase1_strategy import active_stage_index
+    with _phase1_lock:
+        data = _load_phase()
+        p1 = data.get("phase1", {})
+        prev = int(p1.get("active_stage_index", 0))
+        idx = active_stage_index(stages, current_equity, prev)
+        if idx != prev:
+            p1["active_stage_index"] = idx
+            data["phase1"] = p1
+            _save_phase(data)
+        return idx
+
+
+def _phase1_record_stage_day(day_str: str) -> None:
+    """Increment the profitable-day counter and stamp the day a stage was hit."""
+    with _phase1_lock:
+        data = _load_phase()
+        p1 = data.setdefault("phase1", {})
+        if p1.get("last_stage_day") != day_str:
+            p1["profitable_days"] = int(p1.get("profitable_days", 0)) + 1
+            p1["last_stage_day"] = day_str
+            data["phase1"] = p1
+            _save_phase(data)
+
+
 def _load_propfirm() -> dict:
     with PROPFIRM_CONFIG_PATH.open() as f:
         return json.load(f)
