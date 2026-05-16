@@ -1139,6 +1139,10 @@ async def _verify_and_notify(
     entry: float,
     sl_distance: float,
     tp_distance: float,
+    prop_reward_in: float = 0.0,
+    pers_reward_in: float = 0.0,
+    prop_rr_in: float = 0.0,
+    pers_rr_in: float = 0.0,
 ) -> None:
     try:
         await _verify_and_notify_inner(
@@ -1148,6 +1152,8 @@ async def _verify_and_notify(
             pers_sl=pers_sl, pers_tp=pers_tp, pers_dollar_risk=pers_dollar_risk,
             phase=phase, baseline_equity=baseline_equity, price_digits=price_digits, entry=entry,
             sl_distance=sl_distance, tp_distance=tp_distance,
+            prop_reward_in=prop_reward_in, pers_reward_in=pers_reward_in,
+            prop_rr_in=prop_rr_in, pers_rr_in=pers_rr_in,
         )
     except Exception as exc:
         logger.error("_verify_and_notify crashed for %s: %s", ticker, exc, exc_info=True)
@@ -1179,16 +1185,24 @@ async def _verify_and_notify_inner(
     entry: float,
     sl_distance: float,
     tp_distance: float,
+    prop_reward_in: float = 0.0,
+    pers_reward_in: float = 0.0,
+    prop_rr_in: float = 0.0,
+    pers_rr_in: float = 0.0,
 ) -> None:
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
     pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
     prop_arrow = "↑ LONG" if prop_signal == "LONG" else "↓ SHORT"
 
     # Reward = potential profit if TP hits (opposite distance from risk)
-    pers_reward = round(pers_dollar_risk * (tp_distance / sl_distance), 2) if sl_distance > 0 else 0.0
-    prop_reward = round(prop_dollar_risk * (sl_distance / tp_distance), 2) if tp_distance > 0 else 0.0
-    pers_rr = tp_distance / sl_distance if sl_distance > 0 else 0.0
-    prop_rr = sl_distance / tp_distance if tp_distance > 0 else 0.0
+    if phase == 1:
+        pers_reward, prop_reward = pers_reward_in, prop_reward_in
+        pers_rr, prop_rr = pers_rr_in, prop_rr_in
+    else:
+        pers_reward = round(pers_dollar_risk * (tp_distance / sl_distance), 2) if sl_distance > 0 else 0.0
+        prop_reward = round(prop_dollar_risk * (sl_distance / tp_distance), 2) if tp_distance > 0 else 0.0
+        pers_rr = tp_distance / sl_distance if sl_distance > 0 else 0.0
+        prop_rr = sl_distance / tp_distance if tp_distance > 0 else 0.0
 
     def _fp(price: float) -> str:
         return _fmt_price(ticker, price)
@@ -1288,8 +1302,9 @@ async def _verify_and_notify_inner(
             f"RR: {prop_rr:.2f}\n"
             f"Ticket: {pf.get('mt5_order_ticket', '?')}\n\n"
             f"<b>Context</b>\n"
-            f"Phase: Phase {phase}\n"
-            f"Baseline: ${baseline_equity:,.2f}"
+            f"Phase: Phase {phase}"
+            + (f"\nActive stage: ${_phase1_load().get('stages', ['?'])[min(int(_phase1_load().get('active_stage_index',0)), len(_phase1_load().get('stages',[1]))-1)]:,.0f}"
+               if phase == 1 else f"\nBaseline: ${baseline_equity:,.2f}")
         )
         return
 
@@ -1656,6 +1671,10 @@ async def receive_signal(request: Request):
         entry=payload.entry,
         sl_distance=sl_distance,
         tp_distance=tp_distance,
+        prop_reward_in=g.get("prop_reward", 0.0),
+        pers_reward_in=g.get("pers_reward", 0.0),
+        prop_rr_in=g.get("prop_rr", 0.0),
+        pers_rr_in=g.get("pers_rr", 0.0),
     ))
 
     with _state_lock:

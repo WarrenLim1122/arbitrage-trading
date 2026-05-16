@@ -73,7 +73,7 @@ VPS #1 layers run as systemd services (auto-restart). VPS #2/#3 workers run in P
 |---|---|---|
 | 0 — Signal Engine | `layer0/1D-15m Breakout INDICATOR.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `news_filter.py`, `ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
-| 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — pending `/update layer2` for Trade Opened reformat (session 12) |
+| 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
 | 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — pending `/update layer3` option 1 for immediate screenshot architecture (session 12) |
 
 ## Covered Instruments
@@ -120,5 +120,7 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 ## Current State (as of 2026-05-13, session 12)
 
 All four layers deployed and operational. Gate D demo run started 2026-04-25 (7-day window passed; proceed to live when ready).
+
+Phase 1/Phase 2 strategy modules split: Phase 1 uses dynamic reward-targeting with a −0.5pp daily buffer; Phase 2 logic unchanged. Trade Opened alert is now phase-aware (Phase 1 shows active stage; Phase 2 alert text byte-identical).
 
 **Next action**: Run `/update layer2` on VPS #1 (Trade Opened format), then `/update layer3` → option 1 (Personal) on VPS #2 (immediate screenshot + `SCREENSHOT_ONLY_FOR_TP_SL` fix). Then switch to real Fusion Markets + FundingPips accounts when ready.
