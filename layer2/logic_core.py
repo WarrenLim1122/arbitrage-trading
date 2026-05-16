@@ -65,6 +65,7 @@ from layer2.zmq_helpers import (
     _query_order_status,
 )
 from layer2 import telegram_handlers
+from layer2 import phase1_strategy, phase2_strategy
 
 # ── Logging ───────────────────────────────────────────────────────────────
 LOG_DIR = Path(__file__).parent.parent / "logs"
@@ -1439,63 +1440,100 @@ async def receive_signal(request: Request):
         await _telegram_alert(msg)
         raise HTTPException(status_code=422, detail=msg)
 
-    # Funded account SL/TP are the exact swap of the personal account SL/TP:
-    #   Funded SL = signal TP  (tight side)
-    #   Funded TP = signal SL  (wide side)
-    # This is direction-agnostic — same formula for BUY and SELL signals.
     price_digits = prop_info["digits"]
-    prop_sl = round(payload.tp, price_digits)   # funded SL = signal TP
-    prop_tp = round(payload.sl, price_digits)   # funded TP = signal SL
-
-    # Lot sizing: funded account risks prop_dollar_risk if its SL hits.
-    # Universal rule: when the ticker's quote currency is USD (symbol ends in "USD"),
-    # P&L is directly in USD — dollar_per_lot = tp_distance × contract_size.
-    # This is reliable regardless of broker tick data (avoids MetaQuotes demo XAGUSD
-    # inconsistency where tick_size=0.001 but tick_value=$0.5 instead of the correct $5).
-    # When USD is the base (USDxxx: USDCAD, USDCHF, USDJPY), P&L is in the foreign currency;
-    # broker tick_value already embeds the live conversion rate, so use the tick formula.
-    # Any future xxxUSD pair added to ALLOWED_PAIRS is handled automatically.
     prop_contract_size = prop_info.get("contract_size", 0.0)
-    if payload.ticker.endswith("USD") and prop_contract_size > 0:
-        prop_dollar_per_lot = tp_distance * prop_contract_size
-    else:
-        prop_dollar_per_lot = (tp_distance / prop_tick_size) * prop_tick_val
-    prop_lots = round(prop_dollar_risk / prop_dollar_per_lot, 2)
-
-    # Personal lots are a fixed ratio of prop lots (phase_ratio: 0.20 phase 1, 0.70 phase 2).
-    # Dollar risk at personal SL is derived from the resulting lot size — it varies per trade.
-    pers_lots          = round(prop_lots * phase_ratio, 2)
     pers_contract_size = pers_info.get("contract_size", prop_contract_size)
     pers_tick_size     = pers_info.get("trade_tick_size", prop_tick_size)
     pers_tick_val      = pers_info.get("trade_tick_value", prop_tick_val)
-    if payload.ticker.endswith("USD") and pers_contract_size > 0:
-        pers_dollar_per_lot = sl_distance * pers_contract_size
-    else:
-        pers_dollar_per_lot = (sl_distance / pers_tick_size) * pers_tick_val
-    pers_dollar_risk   = round(pers_lots * pers_dollar_per_lot, 2)
 
-    pers_tp = round(payload.tp, price_digits)   # personal TP = signal TP
+    if phase == 1:
+        p1 = _phase1_load()
+        stages = p1.get("stages", [])
+        if not stages:
+            msg = "Phase 1 not configured — run /phase1 to set reward:risk first"
+            logger.error(msg)
+            await _telegram_alert(f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n{msg}")
+            raise HTTPException(status_code=503, detail=msg)
+        try:
+            live_prop_equity = float(prop_info.get("equity", 0.0))
+        except Exception:
+            live_prop_equity = 0.0
+        if live_prop_equity <= 0:
+            msg = "Phase 1: live prop equity unavailable — cannot size dynamic reward"
+            logger.error(msg)
+            await _telegram_alert(f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n{msg}")
+            raise HTTPException(status_code=503, detail=msg)
+        idx = _phase1_active_stage(stages, live_prop_equity)
+        if idx >= len(stages):
+            msg = "Phase 1: final stage already reached — awaiting K4 / /phase2"
+            logger.info(msg)
+            return JSONResponse({"status": "halted", "reason": msg})
+        g = phase1_strategy.compute_geometry(
+            ticker=payload.ticker, signal=payload.signal,
+            entry=payload.entry, signal_sl=payload.sl,
+            price_digits=price_digits,
+            prop_contract_size=prop_contract_size,
+            prop_tick_size=prop_tick_size, prop_tick_value=prop_tick_val,
+            pers_contract_size=pers_contract_size,
+            pers_tick_size=pers_tick_size, pers_tick_value=pers_tick_val,
+            active_stage=stages[idx], live_prop_equity=live_prop_equity,
+            fixed_risk=float(p1.get("fixed_risk", 0.0)),
+            pers_ratio=PHASE_MULT.get(1, 0.20),
+            max_prop_lots=float(p1.get("max_prop_lots", 0.0)),
+        )
+    else:
+        g = phase2_strategy.compute_geometry(
+            ticker=payload.ticker, signal=payload.signal,
+            entry=payload.entry, signal_sl=payload.sl, signal_tp=payload.tp,
+            price_digits=price_digits,
+            prop_contract_size=prop_contract_size,
+            prop_tick_size=prop_tick_size, prop_tick_value=prop_tick_val,
+            pers_contract_size=pers_contract_size,
+            pers_tick_size=pers_tick_size, pers_tick_value=pers_tick_val,
+            baseline_equity=baseline_equity,
+            prop_risk_pct=PROP_RISK_PCT, phase_ratio=PHASE_MULT.get(phase, PHASE_MULT[1]),
+        )
+
+    if "reject" in g:
+        logger.info("GEOMETRY REJECT %s: %s", payload.ticker, g["reject"])
+        await _telegram_alert(
+            f"🚫 <b>Signal Skipped — {payload.ticker}</b>\n\n"
+            f"Phase {phase} sizing rejected: {g['reject']}\n"
+            f"Signal: {payload.signal}"
+        )
+        return JSONResponse({"status": "rejected", "reason": g["reject"]})
+
+    prop_lots        = g["prop_lots"]
+    pers_lots        = g["pers_lots"]
+    prop_sl          = g["prop_sl"]
+    prop_tp          = g["prop_tp"]
+    pers_sl          = g["pers_sl"]
+    pers_tp          = g["pers_tp"]
+    prop_dollar_risk = g["prop_dollar_risk"]
+    pers_dollar_risk = g["pers_dollar_risk"]
+    sl_distance      = g["sl_distance"]
+    tp_distance      = g["tp_distance"]
+    prop_signal      = g["prop_signal"]
+    pers_signal      = g["pers_signal"]
 
     logger.info(
-        "LOTS  prop=%.2f lots ($%.2f at SL)  personal=%.2f lots (×%.2f ratio, $%.2f at SL)  "
-        "phase=%d  baseline=%.2f  tp_dist=%.5f  sl_dist=%.5f  "
-        "tick_size=%.5f tick_val=%.4f",
-        prop_lots, prop_dollar_risk, pers_lots, phase_ratio, pers_dollar_risk,
-        phase, phase_ratio, baseline_equity, tp_distance, sl_distance,
-        prop_tick_size, prop_tick_val,
+        "GEOMETRY phase=%d  prop=%.2f lots ($%.2f risk)  pers=%.2f lots ($%.2f risk)  "
+        "prop_sl=%s prop_tp=%s pers_sl=%s pers_tp=%s",
+        phase, prop_lots, prop_dollar_risk, pers_lots, pers_dollar_risk,
+        prop_sl, prop_tp, pers_sl, pers_tp,
     )
 
-    # Personal follows signal direction; prop is inverse
+    # Personal follows signal direction; prop is inverse (already resolved in g)
     _base_id = f"{payload.ticker}_{payload.timestamp_ms}"
     prop_ticket = {
         "signal_id":    f"{_base_id}_prop",
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
-        "sl":           prop_sl,                   # funded SL = signal TP
+        "sl":           prop_sl,
         "tp":           prop_tp,
         "sl_pips":      payload.sl_pips,
-        "signal":       _invert(payload.signal),   # prop is inverse
+        "signal":       prop_signal,
         "lots":         prop_lots,
     }
     pers_ticket = {
@@ -1503,10 +1541,10 @@ async def receive_signal(request: Request):
         "ticker":       payload.ticker,
         "timestamp_ms": payload.timestamp_ms,
         "entry":        payload.entry,
-        "sl":           payload.sl,                # personal uses webhook sl directly
+        "sl":           pers_sl,
         "tp":           pers_tp,
         "sl_pips":      payload.sl_pips,
-        "signal":       payload.signal,            # personal follows signal
+        "signal":       pers_signal,
         "lots":         pers_lots,
     }
 
@@ -1543,7 +1581,7 @@ async def receive_signal(request: Request):
         prop_dollar_risk=prop_dollar_risk,
         pers_signal=pers_ticket["signal"],
         pers_lots=pers_lots,
-        pers_sl=payload.sl,
+        pers_sl=pers_sl,
         pers_tp=pers_tp,
         pers_dollar_risk=pers_dollar_risk,
         phase=phase,
