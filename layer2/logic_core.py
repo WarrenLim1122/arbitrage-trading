@@ -482,6 +482,10 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
 def _run_news_preclose_check() -> None:
     global _news_closed_events
 
+    with _state_lock:
+        if int(_phase_state.get("phase", 1)) == 1:
+            return  # Phase 1 (evaluation): no prop-firm news rule — skip pre-close
+
     now            = datetime.now(timezone.utc)
     awareness_td   = timedelta(minutes=_NEWS_AWARENESS_WINDOW)
     ban_td         = timedelta(minutes=_NEWS_TRADING_BAN_WINDOW)
@@ -1376,7 +1380,11 @@ async def receive_signal(request: Request):
     # News + manual suppression gate
     now_utc = datetime.now(timezone.utc)
     with _news_suppressed_lock:
-        news_block = payload.ticker in _news_suppressed_pairs and _news_suppressed_pairs[payload.ticker] > now_utc
+        news_block = (
+            phase != 1
+            and payload.ticker in _news_suppressed_pairs
+            and _news_suppressed_pairs[payload.ticker] > now_utc
+        )
     with _manual_suppress_lock:
         manual_block = payload.ticker in _manual_suppressed_pairs
     if news_block or manual_block:
