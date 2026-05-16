@@ -32,6 +32,7 @@ from layer2.state import (
     _is_sgt_curfew, _sgt_now, _propfirm_day,
     _apply_buffers, _pnl_bar, _fmt_price,
     _trading_window, _window_lock, _save_trading_window, _window_minutes,
+    _phase1_init, _phase1_load,
 )
 from layer2.zmq_helpers import (
     _query_equity, _query_positions, _snapshot_positions_str,
@@ -41,6 +42,7 @@ from layer2.zmq_helpers import (
     _lock_baseline_from_live, _dispatch_parameters,
     ZMQ_REQ_PROP, ZMQ_REQ_PERS, ZMQ_PUSH_PROP, ZMQ_PUSH_PERS,
 )
+from layer2 import phase1_strategy
 
 logger = logging.getLogger("layer2")
 
@@ -63,6 +65,8 @@ EMERGENCY_CONFIRM    = 16
 CLOSEPAIR_CONFIRM    = 17
 SETWINDOW_CONFIRM    = 18
 UPDATE_LAYER3_CHOOSE = 19
+P1_INPUT   = 20
+P1_CONFIRM = 21
 
 _wizard_data: dict = {}
 _p2_wizard_data: dict = {}
@@ -572,71 +576,136 @@ async def _wiz_back_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
 # ── Telegram commands ─────────────────────────────────────────────────────
 
 
-async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+async def _cmd_phase1(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
-        return
+        return ConversationHandler.END
+    _wizard_data.clear()
+    await update.message.reply_text(
+        "⚙️ <b>Phase 1 Setup</b>\n\n"
+        "Send first-trade  <code>reward:risk</code>  (in $)\n"
+        "   e.g.  <code>9000:2000</code>\n\n"
+        "• <b>Reward</b> — profit target of your FIRST Phase 1 "
+        "trade (sets Stage 1 = baseline + this).\n"
+        "• <b>Risk</b> — fixed $ lost if any trade hits SL. "
+        "Identical for every trade.\n\n"
+        "ℹ️ Remaining stages are spread automatically:\n"
+        "   (overall target − first reward) ÷ (min profitable days − 1)\n\n"
+        "/cancel to abort.",
+        parse_mode="HTML",
+    )
+    return P1_INPUT
+
+
+async def _p1_input(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        first_reward, fixed_risk = phase1_strategy.parse_reward_risk(update.message.text)
+    except ValueError as exc:
+        await update.message.reply_text(
+            f"⚠️ <b>Invalid Input</b>\n\n{exc}\n\n"
+            f"Format: <code>reward:risk</code> e.g. <code>9000:2000</code>",
+            parse_mode="HTML",
+        )
+        return P1_INPUT
 
     with _pf_lock:
-        existing_baseline = _propfirm.get("baseline_equity", 0.0)
+        pf = dict(_propfirm)
+    baseline       = pf.get("baseline_equity", 0.0)
+    target_pct     = pf.get("profit_target_pct", 0.0)
+    min_days       = int(pf.get("min_profit_days", 0))
+    overall_dd_pct = pf.get("max_drawdown_overall_pct", 0.0)
+
+    if baseline <= 0:
+        balance, err = await asyncio.to_thread(_lock_baseline_from_live)
+        if err:
+            await update.message.reply_text(
+                f"⚠️ <b>Baseline Missing</b>\n\nCould not set baseline: <code>{err}</code>\n\n"
+                f"Run /changepropfirm first, then /phase1 again.",
+                parse_mode="HTML",
+            )
+            return ConversationHandler.END
+        baseline = balance
+
+    verr = phase1_strategy.validate_phase1_inputs(
+        first_reward, fixed_risk, baseline, target_pct, min_days)
+    if verr:
+        await update.message.reply_text(
+            f"⚠️ <b>Cannot Configure Phase 1</b>\n\n{verr}",
+            parse_mode="HTML",
+        )
+        return ConversationHandler.END
+
+    stages = phase1_strategy.derive_stages(baseline, first_reward, target_pct, min_days)
+    target_amt  = baseline * target_pct / 100.0
+    overall_amt = baseline * overall_dd_pct / 100.0
+    _wizard_data["p1"] = {
+        "first_reward": first_reward, "fixed_risk": fixed_risk,
+        "stages": stages, "baseline": baseline,
+    }
+    stage_str = "  →  ".join(f"${s:,.0f}" for s in stages)
+    warn = ""
+    if fixed_risk >= overall_amt - (baseline - stages[0]):
+        warn = ""  # placeholder; no daily-DD figure available pre-session
+    daily_room = baseline * pf.get("max_drawdown_daily_pct", 0.0) / 100.0
+    if daily_room > 0 and fixed_risk >= daily_room:
+        warn = (f"\n\n⚠️ Risk ${fixed_risk:,.0f} ≥ daily-DD room ${daily_room:,.0f} "
+                f"— only one losing trade fits per day.")
+
+    await update.message.reply_text(
+        f"✅ <b>Phase 1 Ready</b>\n\n"
+        f"First reward : ${first_reward:,.0f}  → Stage 1 = ${stages[0]:,.0f}\n"
+        f"Fixed risk   : ${fixed_risk:,.0f}   (every trade)\n"
+        f"Stages       : {stage_str}\n"
+        f"Overall stop / target : ${baseline - overall_amt:,.0f} / ${baseline + target_amt:,.0f}"
+        f"{warn}\n\n"
+        f"Reply <code>CONFIRM</code> to proceed.\n"
+        f"Send /cancel to abort.",
+        parse_mode="HTML",
+    )
+    return P1_CONFIRM
+
+
+async def _p1_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    if (update.message.text or "").strip() != "CONFIRM":
+        await update.message.reply_text(
+            "⚠️ <b>Confirmation Required</b>\n\nType <code>CONFIRM</code> to proceed, or /cancel to abort.",
+            parse_mode="HTML",
+        )
+        return P1_CONFIRM
+
+    d = _wizard_data.get("p1")
+    if not d:
+        await update.message.reply_text("⚠️ Session expired. Run /phase1 again.", parse_mode="HTML")
+        return ConversationHandler.END
 
     with _state_lock:
         _phase_state["phase"] = 1
         _phase_state.pop("permanently_halted", None)
-        _phase_state.pop("phase1_permanently_halted", None)  # backward compat
+        _phase_state.pop("phase1_permanently_halted", None)
         _save_phase(_phase_state)
 
-    # Only lock a new baseline if none exists — baseline is STATIC for the life of an evaluation.
-    # Re-running /phase1 mid-evaluation (e.g. after /stop) must not overwrite the baseline.
-    if existing_baseline <= 0:
-        balance, err = await asyncio.to_thread(_lock_baseline_from_live)
-        if err:
-            await update.message.reply_text(
-                f"⚠️ <b>Phase 1 Prepared — Baseline Missing</b>\n\n"
-                f"Could not fetch or set baseline: <code>{err}</code>\n\n"
-                f"Run /changepropfirm to configure baselines.",
-                parse_mode="HTML",
-            )
-            logger.warning("Telegram /phase1: baseline lock failed: %s", err)
-            return
-        baseline = balance
-    else:
-        baseline = existing_baseline
-
+    _phase1_init(d["first_reward"], d["fixed_risk"], d["stages"])
     await asyncio.to_thread(_dispatch_parameters)
+    _wizard_data.clear()
 
-    with _pf_lock:
-        pf = dict(_propfirm)
-    dd_daily      = pf.get("max_drawdown_daily_pct",   0.0)
-    dd_overall    = pf.get("max_drawdown_overall_pct",  0.0)
-    cap           = pf.get("daily_profit_cap_pct",      0.0)
-    target        = pf.get("profit_target_pct",         0.0)
-    day_start_eq  = pf.get("day_start_equity",          0.0)
-    pers_baseline = pf.get("pers_baseline_equity", 0.0)
-    # K1 floor is DYNAMIC — % of today's day_start, not baseline
-    daily_loss = round(day_start_eq * dd_daily / 100.0, 2) if dd_daily > 0 and day_start_eq > 0 else 0.0
-    k1_floor   = day_start_eq - daily_loss if daily_loss > 0 else 0.0
-    cap_amt    = round(baseline * cap        / 100.0, 2) if cap        > 0 and baseline > 0 else 0.0
-    overall_fl = round(baseline * (1 - dd_overall / 100.0), 2) if dd_overall > 0 and baseline > 0 else 0.0
-    target_lvl = round(baseline * (1.0 + target / 100.0), 2)   if target    > 0 and baseline > 0 else 0.0
-
-    pers_str  = f"${pers_baseline:,.2f}" if pers_baseline > 0 else "Not set — run /changepropfirm"
-    k1_fl_str = f"${k1_floor:,.2f} (day-start ${day_start_eq:,.2f} − {dd_daily:.1f}%)" if k1_floor > 0 else "Pending session open"
+    stage_str = "  →  ".join(f"${s:,.0f}" for s in d["stages"])
     await update.message.reply_text(
         f"🟢 <b>Phase 1 Active</b>\n\n"
-        f"<b>Risk Mode</b>\n"
-        f"Personal multiplier: ×{PHASE_MULT[1]:.2f}\n\n"
-        f"<b>Baselines</b>\n"
-        f"Prop: ${baseline:,.2f}\n"
-        f"Personal: {pers_str}\n\n"
-        f"<b>Risk Levels</b>\n"
-        f"K1 floor (today): {k1_fl_str}\n"
-        f"K2 overall floor: ${overall_fl:,.2f}\n"
-        f"K3 daily cap: +${cap_amt:,.2f}\n"
-        f"K4 target: ${target_lvl:,.2f}\n\n"
+        f"Personal multiplier: ×{PHASE_MULT[1]:.2f}\n"
+        f"Prop baseline: ${d['baseline']:,.2f}\n"
+        f"Fixed risk: ${d['fixed_risk']:,.0f} / trade\n"
+        f"Stages: {stage_str}\n\n"
         f"<b>Next Step</b>\n/resume",
         parse_mode="HTML",
     )
-    logger.info("Telegram: phase set to 1  baseline=%.2f", baseline)
+    logger.info("Telegram: phase 1 configured  reward=%.2f risk=%.2f stages=%s",
+                d["first_reward"], d["fixed_risk"], d["stages"])
+    return ConversationHandler.END
+
+
+async def _p1_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    _wizard_data.clear()
+    await update.message.reply_text("❌ Phase 1 setup cancelled.", parse_mode="HTML")
+    return ConversationHandler.END
 
 
 # ── Phase 2 setup wizard (/phase2) ───────────────────────────────────────
@@ -2197,13 +2266,23 @@ def _run_bot() -> None:
         per_chat=True,
     )
 
+    phase1_wizard = ConversationHandler(
+        entry_points=[CommandHandler("phase1", _cmd_phase1)],
+        states={
+            P1_INPUT:   [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p1_input)],
+            P1_CONFIRM: [MessageHandler(tg_filters.TEXT & ~tg_filters.COMMAND, _p1_confirm)],
+        },
+        fallbacks=[CommandHandler("cancel", _p1_cancel)],
+        per_chat=True,
+    )
+
     tg_app = Application.builder().token(BOT_TOKEN).build()
     tg_app.add_handler(wizard)
     tg_app.add_handler(p2_wizard)
     tg_app.add_handler(emergency_wizard)
     tg_app.add_handler(closepair_wizard)
     tg_app.add_handler(setwindow_wizard)
-    tg_app.add_handler(CommandHandler("phase1",        _cmd_phase1))
+    tg_app.add_handler(phase1_wizard)
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
