@@ -250,13 +250,13 @@ def _invert(signal: str) -> str:
 def _apply_buffers(raw: dict) -> dict:
     """Apply safety buffers to raw prop firm limits.
 
-    - Daily DD: subtract 1 percentage point (buffer against prop firm's daily limit).
+    - Daily DD: subtract 0.5 percentage point (buffer against prop firm's daily limit).
     - Overall DD: NO buffer — trigger at exact value user inputs (prop firm closes at this exact %).
     - Daily profit cap: enforce at 25% of target (vs the 30% consistency rule).
     - Consistency threshold: subtract 1 percentage point (fire 1% before the firm's stated limit).
     """
     effective = raw.copy()
-    effective["max_drawdown_daily_pct"]      = round(raw["max_drawdown_daily_pct"]          - 1.0, 2)
+    effective["max_drawdown_daily_pct"]      = round(raw["max_drawdown_daily_pct"]          - 0.5, 2)
     effective["max_drawdown_overall_pct"]    = raw["max_drawdown_overall_pct"]
     effective["daily_profit_cap_pct"]        = round(raw["profit_target_pct"] * 0.25, 2)
     effective["consistency_threshold_pct"]   = round(raw.get("consistency_threshold_pct", 30.0) - 1.0, 2)
@@ -384,7 +384,7 @@ def _p2_display(key: str, value) -> str:
     if key == "raw_spread_account":
         return "Yes" if value else "No"
     if key == "max_drawdown_daily_pct":
-        return f"{value:.1f}% (enforced at {value - 1.0:.1f}% after −1pp buffer)"
+        return f"{value:.1f}% (enforced at {value - 0.5:.1f}% after −0.5pp buffer)"
     if key in ("profit_target_pct", "max_drawdown_overall_pct",
                "profit_sharing_pct", "consistency_threshold_pct"):
         return f"{value:.1f}%"
