@@ -864,138 +864,195 @@ def _run_equity_check() -> None:
     overall_dd_amt  = round(baseline  * dd_overall_pct / 100.0, 2) if dd_overall_pct > 0 else 0.0
     overall_floor   = baseline - overall_dd_amt
 
-    # Kill 2 — static overall floor from baseline (permanent halt)
-    if dd_overall_pct > 0 and prop_equity <= overall_floor:
-        pos_str = _snapshot_positions_str()
-        _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
-        msg = (
-            f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
-            f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${overall_floor:,.2f}\n"
-            f"Overall DD: {dd_overall_pct:.1f}%  |  Baseline: ${baseline:,.2f}\n\n"
-            f"<b>Positions at close:</b>\n{pos_str}\n\n"
-            f"All positions force-closed. Permanent halt.\n\n"
-            f"<b>Next steps:</b>\n"
-            f"/changepropfirm → /phase1 → /resume to start a new challenge."
+    if phase == 1:
+        p1 = _phase1_load()
+        stages = p1.get("stages", [])
+        idx = int(p1.get("active_stage_index", 0))
+        decision = phase1_strategy.evaluate_kills(
+            prop_equity=prop_equity, baseline=baseline, day_start=day_start,
+            dd_daily_pct=dd_daily_pct, dd_overall_pct=dd_overall_pct,
+            stages=stages, active_index=idx,
         )
-        logger.warning("KILL2: equity=%.2f floor=%.2f", prop_equity, overall_floor)
-        _alert_sync(msg)
+        if decision is None:
+            return
+        reason     = decision["reason"]
+        permanent  = decision["permanent"]
+        pos_str    = _snapshot_positions_str()
+        _dispatch_force_close(reason, halt=True, permanent=permanent)
+        if not permanent:
+            with _state_lock:
+                _phase_state["daily_halted"] = True
+                _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
+                _save_phase(_phase_state)
+        if reason == "phase1_stage_reached":
+            _phase1_record_stage_day(_propfirm_day(now_sgt))
+            # advance the ratchet so tomorrow aims at the next stage
+            _phase1_active_stage(stages, prop_equity)
+            _alert_sync(
+                f"🎯 <b>Phase 1 — Stage Reached</b>\n\n"
+                f"Prop equity: <b>${prop_equity:,.2f}</b> ≥ stage ${decision['stage_value']:,.2f}\n"
+                f"Profitable day locked. Positions force-closed.\n\n"
+                f"System auto-resumes next session; next target is the following stage."
+            )
+        elif reason == "daily_loss_limit":
+            df = decision["daily_floor"]
+            _alert_sync(
+                f"🔴 <b>KILL 1 — Daily Loss Limit Hit (Phase 1)</b>\n\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${df:,.2f}\n"
+                f"Day-start: ${day_start:,.2f}\n\n"
+                f"All positions force-closed. Auto-resumes next session."
+            )
+        elif reason == "overall_drawdown_limit":
+            of = decision["overall_floor"]
+            _alert_sync(
+                f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit (Phase 1)</b>\n\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${of:,.2f}\n\n"
+                f"All positions force-closed. Permanent halt.\n"
+                f"/changepropfirm → /phase1 → /resume to start a new challenge."
+            )
+        else:  # profit_target
+            _alert_sync(
+                f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
+                f"Prop equity: <b>${prop_equity:,.2f}</b> ≥ funded line "
+                f"${decision['stage_value']:,.2f}\n\n"
+                f"All positions force-closed. System halted.\n\n"
+                f"/phase2 to configure and start the funded phase"
+            )
         return
 
-    # Kill 1 — dynamic daily drawdown floor (all phases)
-    # Floor = day_start_equity × (1 - dd_daily_pct/100). Resets each session.
-    # Dollar limit grows/shrinks with the account — NOT fixed from baseline.
-    if daily_loss_amt > 0 and day_start > 0:
-        daily_floor = day_start - daily_loss_amt
-        if prop_equity <= daily_floor:
+    if phase != 1:
+        # Kill 2 — static overall floor from baseline (permanent halt)
+        if dd_overall_pct > 0 and prop_equity <= overall_floor:
             pos_str = _snapshot_positions_str()
-            _dispatch_force_close("daily_loss_limit", halt=True)
-            with _state_lock:
-                _phase_state["daily_halted"] = True
-                _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
-                _save_phase(_phase_state)
+            _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
             msg = (
-                f"🔴 <b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${daily_floor:,.2f}\n"
-                f"Day-start: ${day_start:,.2f}  |  Max daily loss: ${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)\n\n"
+                f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
+                f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${overall_floor:,.2f}\n"
+                f"Overall DD: {dd_overall_pct:.1f}%  |  Baseline: ${baseline:,.2f}\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"All positions force-closed. System halted for today.\n\n"
-                f"Overall DD floor: ${overall_floor:,.2f}\n\n"
-                f"System auto-resumes at next session (12:00 SGT).\n"
-                f"/changepropfirm to switch to a new challenge"
+                f"All positions force-closed. Permanent halt.\n\n"
+                f"<b>Next steps:</b>\n"
+                f"/changepropfirm → /phase1 → /resume to start a new challenge."
             )
-            logger.warning("KILL1: equity=%.2f daily_floor=%.2f day_start=%.2f",
-                           prop_equity, daily_floor, day_start)
+            logger.warning("KILL2: equity=%.2f floor=%.2f", prop_equity, overall_floor)
             _alert_sync(msg)
             return
 
-    # Kill 3 — daily profit cap (all phases)
-    # Purpose: protect the consistency rule (no single day > X% of total profit).
-    # Level = day_start_equity + (baseline × daily_profit_cap_pct).
-    # Resets every session — NOT cumulative across days.
-    if layer_cap_amt > 0 and day_start > 0:
-        daily_cap_level = day_start + layer_cap_amt
-        if prop_equity >= daily_cap_level:
-            pos_str = _snapshot_positions_str()
-            _dispatch_force_close("daily_profit_cap", halt=True)
-            with _state_lock:
-                _phase_state["daily_halted"] = True
-                _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
-                _save_phase(_phase_state)
-            msg = (
-                f"🟡 <b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Cap level: ${daily_cap_level:,.2f}\n"
-                f"Day-start: ${day_start:,.2f}  |  Cap: +${layer_cap_amt:,.2f}\n\n"
-                f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"All positions force-closed. System halted for today.\n\n"
-                f"System auto-resumes at next session (12:00 SGT)."
-            )
-            logger.warning("KILL3: equity=%.2f cap_level=%.2f day_start=%.2f",
-                           prop_equity, daily_cap_level, day_start)
-            _alert_sync(msg)
-            return
-
-    # Kill 4 — profit target reached (all phases) — cumulative from baseline
-    if baseline > 0:
-        overall_pct = (prop_equity - baseline) / baseline * 100
-        target      = pf.get("profit_target_pct", 0.0)
-        if target > 0 and overall_pct >= target:
-            pos_str = _snapshot_positions_str()
-            _dispatch_force_close("profit_target", halt=True, permanent=True)
-            if phase == 1:
-                msg = (
-                    f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
-                    f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
-                    f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                    f"All positions force-closed. System halted.\n\n"
-                    f"/phase2 to configure and start the funded phase\n"
-                    f"/changepropfirm to start a new challenge instead"
-                )
-            else:
-                msg = (
-                    f"🏆 <b>KILL 4 — Phase {phase} Profit Target Reached</b>\n\n"
-                    f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
-                    f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                    f"All positions force-closed. System halted.\n\n"
-                    f"/phase2 to start a new cycle\n"
-                    f"/stop to end trading on this account"
-                )
-            logger.warning(msg)
-            _alert_sync(msg)
-            return
-
-    # Kill 5 — Consistency Rule (Phase 2 only)
-    # Fires when the largest single profitable day falls below the threshold % of total profit.
-    # Includes today's live running P&L so positions are closed the moment the rule is satisfied.
-    if phase == 2:
-        cons_threshold = pf.get("consistency_threshold_pct", 0.0)
-        if cons_threshold > 0:
-            with _cons_lock:
-                locked_days = list(_consistency_log.get("days", []))
-            today_running = prop_equity - day_start if day_start > 0 else 0.0
-            today_date_str = _propfirm_day(now_sgt)
-
-            table_str, total, max_day_val, ratio_pct, rule_met = _build_consistency_table(
-                locked_days, today_running, today_date_str,
-                baseline, cons_threshold,
-            )
-
-            if rule_met:
-                overall_pct = total / baseline * 100 if baseline > 0 else 0.0
+        # Kill 1 — dynamic daily drawdown floor (all phases)
+        # Floor = day_start_equity × (1 - dd_daily_pct/100). Resets each session.
+        # Dollar limit grows/shrinks with the account — NOT fixed from baseline.
+        if daily_loss_amt > 0 and day_start > 0:
+            daily_floor = day_start - daily_loss_amt
+            if prop_equity <= daily_floor:
                 pos_str = _snapshot_positions_str()
-                _dispatch_force_close("consistency_rule", halt=True, permanent=True)
+                _dispatch_force_close("daily_loss_limit", halt=True)
+                with _state_lock:
+                    _phase_state["daily_halted"] = True
+                    _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
+                    _save_phase(_phase_state)
                 msg = (
-                    f"🏆 <b>KILL 5 — Consistency Rule Met</b>\n\n"
-                    f"<pre>{table_str}</pre>\n\n"
-                    f"Overall profit: <b>{overall_pct:.1f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
+                    f"🔴 <b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
+                    f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${daily_floor:,.2f}\n"
+                    f"Day-start: ${day_start:,.2f}  |  Max daily loss: ${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)\n\n"
                     f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                    f"All positions force-closed. Trading halted.\n\n"
-                    f"Log in to your prop account and submit the profit share withdrawal claim.\n\n"
-                    f"/phase2 + /resume to start a new cycle."
+                    f"All positions force-closed. System halted for today.\n\n"
+                    f"Overall DD floor: ${overall_floor:,.2f}\n\n"
+                    f"System auto-resumes at next session (12:00 SGT).\n"
+                    f"/changepropfirm to switch to a new challenge"
                 )
-                logger.warning("KILL 5 — consistency rule met: %.1f%% < %.1f%%", ratio_pct, cons_threshold)
+                logger.warning("KILL1: equity=%.2f daily_floor=%.2f day_start=%.2f",
+                               prop_equity, daily_floor, day_start)
                 _alert_sync(msg)
+                return
+
+        # Kill 3 — daily profit cap (all phases)
+        # Purpose: protect the consistency rule (no single day > X% of total profit).
+        # Level = day_start_equity + (baseline × daily_profit_cap_pct).
+        # Resets every session — NOT cumulative across days.
+        if layer_cap_amt > 0 and day_start > 0:
+            daily_cap_level = day_start + layer_cap_amt
+            if prop_equity >= daily_cap_level:
+                pos_str = _snapshot_positions_str()
+                _dispatch_force_close("daily_profit_cap", halt=True)
+                with _state_lock:
+                    _phase_state["daily_halted"] = True
+                    _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
+                    _save_phase(_phase_state)
+                msg = (
+                    f"🟡 <b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
+                    f"Equity: <b>${prop_equity:,.2f}</b>  |  Cap level: ${daily_cap_level:,.2f}\n"
+                    f"Day-start: ${day_start:,.2f}  |  Cap: +${layer_cap_amt:,.2f}\n\n"
+                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
+                    f"All positions force-closed. System halted for today.\n\n"
+                    f"System auto-resumes at next session (12:00 SGT)."
+                )
+                logger.warning("KILL3: equity=%.2f cap_level=%.2f day_start=%.2f",
+                               prop_equity, daily_cap_level, day_start)
+                _alert_sync(msg)
+                return
+
+        # Kill 4 — profit target reached (all phases) — cumulative from baseline
+        if baseline > 0:
+            overall_pct = (prop_equity - baseline) / baseline * 100
+            target      = pf.get("profit_target_pct", 0.0)
+            if target > 0 and overall_pct >= target:
+                pos_str = _snapshot_positions_str()
+                _dispatch_force_close("profit_target", halt=True, permanent=True)
+                if phase == 1:
+                    msg = (
+                        f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
+                        f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
+                        f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
+                        f"<b>Positions at close:</b>\n{pos_str}\n\n"
+                        f"All positions force-closed. System halted.\n\n"
+                        f"/phase2 to configure and start the funded phase\n"
+                        f"/changepropfirm to start a new challenge instead"
+                    )
+                else:
+                    msg = (
+                        f"🏆 <b>KILL 4 — Phase {phase} Profit Target Reached</b>\n\n"
+                        f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
+                        f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
+                        f"<b>Positions at close:</b>\n{pos_str}\n\n"
+                        f"All positions force-closed. System halted.\n\n"
+                        f"/phase2 to start a new cycle\n"
+                        f"/stop to end trading on this account"
+                    )
+                logger.warning(msg)
+                _alert_sync(msg)
+                return
+
+        # Kill 5 — Consistency Rule (Phase 2 only)
+        # Fires when the largest single profitable day falls below the threshold % of total profit.
+        # Includes today's live running P&L so positions are closed the moment the rule is satisfied.
+        if phase == 2:
+            cons_threshold = pf.get("consistency_threshold_pct", 0.0)
+            if cons_threshold > 0:
+                with _cons_lock:
+                    locked_days = list(_consistency_log.get("days", []))
+                today_running = prop_equity - day_start if day_start > 0 else 0.0
+                today_date_str = _propfirm_day(now_sgt)
+
+                table_str, total, max_day_val, ratio_pct, rule_met = _build_consistency_table(
+                    locked_days, today_running, today_date_str,
+                    baseline, cons_threshold,
+                )
+
+                if rule_met:
+                    overall_pct = total / baseline * 100 if baseline > 0 else 0.0
+                    pos_str = _snapshot_positions_str()
+                    _dispatch_force_close("consistency_rule", halt=True, permanent=True)
+                    msg = (
+                        f"🏆 <b>KILL 5 — Consistency Rule Met</b>\n\n"
+                        f"<pre>{table_str}</pre>\n\n"
+                        f"Overall profit: <b>{overall_pct:.1f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
+                        f"<b>Positions at close:</b>\n{pos_str}\n\n"
+                        f"All positions force-closed. Trading halted.\n\n"
+                        f"Log in to your prop account and submit the profit share withdrawal claim.\n\n"
+                        f"/phase2 + /resume to start a new cycle."
+                    )
+                    logger.warning("KILL 5 — consistency rule met: %.1f%% < %.1f%%", ratio_pct, cons_threshold)
+                    _alert_sync(msg)
 
 
 # ── Module startup ────────────────────────────────────────────────────────

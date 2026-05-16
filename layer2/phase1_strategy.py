@@ -176,3 +176,52 @@ def compute_geometry(
         "active_stage": active_stage,
         "reward_gap": reward_prop,
     }
+
+
+def evaluate_kills(
+    *,
+    prop_equity: float,
+    baseline: float,
+    day_start: float,
+    dd_daily_pct: float,
+    dd_overall_pct: float,
+    stages: list[float],
+    active_index: int,
+) -> dict | None:
+    """Phase 1 kill decision (pure). Priority: K2 > K1 > stage-win > K4.
+
+    Returns None or {reason, permanent, stage_value?}.
+      - overall_drawdown_limit (K2)  permanent
+      - daily_loss_limit       (K1)  not permanent (auto-resume next session)
+      - phase1_stage_reached         not permanent (day halt; ratchet advances)
+      - profit_target          (K4)  permanent (final stage reached)
+    No K3 (daily profit cap) and no K5 (consistency) in Phase 1.
+    """
+    # K2 — static overall floor (permanent)
+    if dd_overall_pct > 0 and baseline > 0:
+        overall_floor = baseline - round(baseline * dd_overall_pct / 100.0, 2)
+        if prop_equity <= overall_floor:
+            return {"reason": "overall_drawdown_limit", "permanent": True,
+                    "overall_floor": overall_floor}
+
+    # K1 — dynamic daily floor (not permanent)
+    if dd_daily_pct > 0 and day_start > 0:
+        daily_floor = day_start - round(day_start * dd_daily_pct / 100.0, 2)
+        if prop_equity <= daily_floor:
+            return {"reason": "daily_loss_limit", "permanent": False,
+                    "daily_floor": daily_floor}
+
+    if not stages:
+        return None
+
+    # K4 — final stage (funded line) reached -> permanent
+    if prop_equity >= stages[-1]:
+        return {"reason": "profit_target", "permanent": True,
+                "stage_value": stages[-1]}
+
+    # Stage-win day-halt — reached the active stage (not the final one)
+    if 0 <= active_index < len(stages) and prop_equity >= stages[active_index]:
+        return {"reason": "phase1_stage_reached", "permanent": False,
+                "stage_value": stages[active_index]}
+
+    return None
