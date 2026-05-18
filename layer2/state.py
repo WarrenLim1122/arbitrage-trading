@@ -107,8 +107,27 @@ def _load_phase() -> dict:
 
 
 def _save_phase(data: dict) -> None:
-    with PHASE_CONFIG_PATH.open("w") as f:
+    # The nested 'phase1' block is owned by the _phase1_* subsystem, not by the
+    # in-memory _phase_state dict. Callers that serialize _phase_state (/resume,
+    # /stop, /phase2, closepair, the startup migration, …) never carry 'phase1'
+    # and would otherwise silently wipe the reward:risk/stages block written by
+    # _phase1_init(). Carry the on-disk block forward whenever the caller isn't
+    # managing it; top-level keys stay caller-authoritative so intentional pops
+    # (e.g. /resume popping daily_halted) still persist.
+    if "phase1" not in data:
+        try:
+            with PHASE_CONFIG_PATH.open() as f:
+                existing = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if existing.get("phase1"):
+            data = {**data, "phase1": existing["phase1"]}
+    # Atomic write: a torn read by a concurrent _load_phase/_save_phase could
+    # otherwise re-trigger the exact phase1 wipe this guard prevents.
+    tmp = PHASE_CONFIG_PATH.parent / (PHASE_CONFIG_PATH.name + ".tmp")
+    with tmp.open("w") as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp, PHASE_CONFIG_PATH)
 
 
 # ── Phase 1 strategy state (nested 'phase1' block in phase_config.json) ────
