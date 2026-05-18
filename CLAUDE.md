@@ -73,7 +73,7 @@ VPS #1 layers run as systemd services (auto-restart). VPS #2/#3 workers run in P
 |---|---|---|
 | 0 — Signal Engine | `layer0/1D-15m Breakout INDICATOR.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `news_filter.py`, `ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
-| 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
+| 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). **Critical phase1-persistence fix shipped session 13** (see Current State). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
 | 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — pending `/update layer3` option 1 for immediate screenshot architecture (session 12) |
 
 ## Covered Instruments
@@ -117,10 +117,17 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ---
 
-## Current State (as of 2026-05-13, session 12)
+## Current State (as of 2026-05-19, session 13)
 
 All four layers deployed and operational. Gate D demo run started 2026-04-25 (7-day window passed; proceed to live when ready).
 
 Phase 1/Phase 2 strategy modules split: Phase 1 uses dynamic reward-targeting with a −0.5pp daily buffer; Phase 2 logic unchanged. Trade Opened alert is now phase-aware (Phase 1 shows active stage; Phase 2 alert text byte-identical).
 
-**Next action**: Run `/update layer2` on VPS #1 (Trade Opened format), then `/update layer3` → option 1 (Personal) on VPS #2 (immediate screenshot + `SCREENSHOT_ONLY_FOR_TP_SL` fix). Then switch to real Fusion Markets + FundingPips accounts when ready.
+**Critical fix shipped (session 13, commits `a354119` + `a3fdb2f`)**: Phase 1 signals were being blocked with *"Phase 1 not configured — run /phase1 to set reward:risk first"* even though `/phase1` had been confirmed and `/status` showed Phase 1 Active. Root cause: `state._save_phase()` overwrote the whole `phase_config.json` with the in-memory `_phase_state` dict, which does not own the nested `phase1` block — `/resume` (the bot's own prescribed next step after `/phase1`) and ~12 other `_save_phase(_phase_state)` sites silently deleted the reward:risk/stages block (and, after a service restart, reverted the live ratchet from a stale snapshot). Fix: `_save_phase` now has explicit `owns_phase1` ownership; only `_phase1_init/_active_stage/_record_stage_day` write `phase1`, all other sites preserve the on-disk block; atomic temp+rename write; phase1 snapshot stripped from `_phase_state` at import. Covered by 3 regression tests in `tests/layer2/test_phase1_state.py`.
+
+**Recovery required after deploy** — the live `config/phase_config.json` no longer has a `phase1` block (already wiped). The code fix prevents future loss but cannot resurrect it. Warren must reconfigure once after updating.
+
+**Next action**:
+1. `/update layer2` on VPS #1 (ships this phase1 fix + Trade Opened format; no `uv sync` — `pyproject.toml` unchanged).
+2. In Telegram: `/phase1` → send `reward:risk` → `CONFIRM` → `/resume`. The block now survives `/resume`, all state writes, and service restarts. Verify with `/status`.
+3. Then `/update layer3` → option 1 (Personal) on VPS #2 (immediate screenshot + `SCREENSHOT_ONLY_FOR_TP_SL` fix). Then switch to real Fusion Markets + FundingPips accounts when ready.
