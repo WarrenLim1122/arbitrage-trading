@@ -106,22 +106,27 @@ def _load_phase() -> dict:
         return json.load(f)
 
 
-def _save_phase(data: dict) -> None:
-    # The nested 'phase1' block is owned by the _phase1_* subsystem, not by the
-    # in-memory _phase_state dict. Callers that serialize _phase_state (/resume,
-    # /stop, /phase2, closepair, the startup migration, …) never carry 'phase1'
-    # and would otherwise silently wipe the reward:risk/stages block written by
-    # _phase1_init(). Carry the on-disk block forward whenever the caller isn't
-    # managing it; top-level keys stay caller-authoritative so intentional pops
-    # (e.g. /resume popping daily_halted) still persist.
-    if "phase1" not in data:
+def _save_phase(data: dict, *, owns_phase1: bool = False) -> None:
+    # The nested 'phase1' block is owned solely by the _phase1_* subsystem.
+    # ~12 sites serialize the in-memory _phase_state dict (/resume, /stop,
+    # /phase2, closepair, the signal path, the startup migration, …). That dict
+    # never legitimately owns 'phase1': fresh from import it lacks the key
+    # (wiping the reward:risk/stages block), and after a service restart it
+    # carries a STALE snapshot frozen at startup (reverting the live ratchet /
+    # profitable-day count). So for every non-owner write we strip any caller
+    # 'phase1' and re-attach the authoritative on-disk block. Top-level keys
+    # stay caller-authoritative, so intentional pops (e.g. /resume dropping
+    # daily_halted) still persist. Only _phase1_init/_active_stage/
+    # _record_stage_day pass owns_phase1=True and write 'phase1' for real.
+    if not owns_phase1:
         try:
             with PHASE_CONFIG_PATH.open() as f:
                 existing = json.load(f)
         except (OSError, json.JSONDecodeError):
             existing = {}
+        data = {k: v for k, v in data.items() if k != "phase1"}
         if existing.get("phase1"):
-            data = {**data, "phase1": existing["phase1"]}
+            data["phase1"] = existing["phase1"]
     # Atomic write: a torn read by a concurrent _load_phase/_save_phase could
     # otherwise re-trigger the exact phase1 wipe this guard prevents.
     tmp = PHASE_CONFIG_PATH.parent / (PHASE_CONFIG_PATH.name + ".tmp")
@@ -154,7 +159,7 @@ def _phase1_init(first_reward: float, fixed_risk: float, stages: list[float]) ->
             "profitable_days": 0,
             "last_stage_day": "never",
         }
-        _save_phase(data)
+        _save_phase(data, owns_phase1=True)
 
 
 def _phase1_active_stage(stages: list[float], current_equity: float) -> int:
@@ -168,7 +173,7 @@ def _phase1_active_stage(stages: list[float], current_equity: float) -> int:
         if idx != prev:
             p1["active_stage_index"] = idx
             data["phase1"] = p1
-            _save_phase(data)
+            _save_phase(data, owns_phase1=True)
         return idx
 
 
@@ -181,7 +186,7 @@ def _phase1_record_stage_day(day_str: str) -> None:
             p1["profitable_days"] = int(p1.get("profitable_days", 0)) + 1
             p1["last_stage_day"] = day_str
             data["phase1"] = p1
-            _save_phase(data)
+            _save_phase(data, owns_phase1=True)
 
 
 def _load_propfirm() -> dict:
@@ -303,6 +308,10 @@ def _build_consistency_table(
 
 
 _phase_state: dict = _load_phase()
+# _phase_state owns only top-level keys; the 'phase1' block belongs to the
+# _phase1_* subsystem. Drop any snapshot read at import so this dict can never
+# write a stale phase1 back via the ~12 _save_phase(_phase_state) sites.
+_phase_state.pop("phase1", None)
 _propfirm:    dict = _load_propfirm()
 
 # Migrate old key name on first load

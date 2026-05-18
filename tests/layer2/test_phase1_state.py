@@ -60,6 +60,33 @@ def test_save_phase_still_drops_caller_removed_toplevel_keys(tmp_path, monkeypat
     assert on_disk["phase1"]["stages"] == [109000.0, 109500.0, 110000.0]  # block kept
 
 
+def test_save_phase_ignores_stale_phase1_snapshot_after_restart(tmp_path, monkeypatch):
+    """Regression: after a service restart, _phase_state = _load_phase() carries a
+    frozen 'phase1' snapshot. A _phase_state save (/resume, signal path, …) must
+    NOT write that stale snapshot over a ratchet the running bot has advanced."""
+    pc = tmp_path / "phase_config.json"
+    pc.write_text(json.dumps({"phase": 1, "active": True}))
+    monkeypatch.setattr(state, "PHASE_CONFIG_PATH", pc)
+    state._phase1_init(9000.0, 2000.0, [109000.0, 109500.0, 110000.0])
+
+    # Bot runs: ratchet advances on disk to stage 1.
+    assert state._phase1_active_stage([109000.0, 109500.0, 110000.0], 109000.0) == 1
+    assert json.loads(pc.read_text())["phase1"]["active_stage_index"] == 1
+
+    # Service restarts: _phase_state reloaded earlier still holds the OLD snapshot.
+    stale_phase_state = {
+        "phase": 1, "active": True,
+        "phase1": {"first_reward": 9000.0, "fixed_risk": 2000.0,
+                   "stages": [109000.0, 109500.0, 110000.0],
+                   "active_stage_index": 0, "max_prop_lots": 0.0,
+                   "profitable_days": 0, "last_stage_day": "never"},
+    }
+    state._save_phase(stale_phase_state)   # e.g. /resume
+
+    # The ratchet must NOT revert.
+    assert json.loads(pc.read_text())["phase1"]["active_stage_index"] == 1
+
+
 def test_phase1_active_stage_ratchets_and_persists(tmp_path, monkeypatch):
     pc = tmp_path / "phase_config.json"
     pc.write_text(json.dumps({"phase": 1, "active": True}))
