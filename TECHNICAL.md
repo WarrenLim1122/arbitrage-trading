@@ -554,8 +554,9 @@ Gate D — demo run (started 2026-04-25, target ≥7 days):
 
 ## Go-Live Checklist (after Gate D, ~2026-05-03)
 
-1. Log into MT5 on VPS #2 — switch to real **FundingPips** credentials
-2. Log into MT5 on VPS #3 — switch to real **Fusion Markets** credentials
+0. **Currency check (do this when opening the broker accounts):** both the real FundingPips and real Fusion Markets accounts MUST be **USD-denominated**. The engine has no multi-currency layer — it trusts MT5 `trade_tick_value` / `deal.profit` (returned in deposit currency) and labels all output `$`. A SGD personal account keeps lot sizing and kills correct (personal lots = `prop_lots × phase_ratio`; kills are prop-side only) but mislabels personal P&L/risk and makes the two legs non-comparable (SGD vs USD). Decided 2026-05-19. If a USD account is somehow not possible, a USD-normalization code layer + fresh demo soak is required *before* live capital.
+1. Log into MT5 on VPS #2 — switch to real **FundingPips** credentials (verify account currency = USD)
+2. Log into MT5 on VPS #3 — switch to real **Fusion Markets** credentials (verify account currency = USD)
 3. Send `/changepropfirm` — re-run wizard with real FundingPips limits. At Step 9/10 enter the prop firm's initial account balance (e.g. `100000`) — this becomes `baseline_equity`. At Step 10/10 enter the personal account starting balance — this becomes `pers_baseline_equity`.
 4. Send `/phase1` then `/resume`
 5. Verify first live signal dispatches correctly and appears in both MT5 accounts
