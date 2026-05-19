@@ -33,6 +33,8 @@ import MetaTrader5 as mt5
 import zmq
 from dotenv import load_dotenv
 
+from ._retry import run_market_retry, signal_bar_deadline_epoch
+
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────
@@ -534,57 +536,128 @@ def _execute_order(ticket: dict) -> None:
         if tick is None:
             logger.error("symbol_info_tick returned None for %s — aborting", resolved)
             return
-        price      = tick.ask if signal == "LONG" else tick.bid
-        order_type = mt5.ORDER_TYPE_BUY if signal == "LONG" else mt5.ORDER_TYPE_SELL
-        request = {
-            "action":       mt5.TRADE_ACTION_DEAL,
-            "symbol":       resolved,
-            "volume":       lots,
-            "type":         order_type,
-            "price":        price,
-            "sl":           sl,
-            "tp":           tp,
-            "deviation":    DEVIATION_POINTS,
-            "magic":        MT5_MAGIC,
-            "comment":      f"TEE-{WORKER_NAME}",
-            "type_time":    mt5.ORDER_TIME_GTC,
-            "type_filling": filling,
-        }
-        with _mt5_lock:
-            result = mt5.order_send(request)
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
-            logger.info("MARKET FILLED  %s %s  %.2f lots @ %.5f  order=%d",
-                        signal, ticker, lots, result.price, result.order)
-            if signal_id:
-                with _exec_results_lock:
-                    _execution_results[signal_id] = {
-                        "status":            "FILLED",
-                        "mt5_order_ticket":  result.order,
-                        "actual_fill_price": result.price,
-                        "actual_volume":     lots,
-                        "actual_sl":         sl,
-                        "actual_tp":         tp,
-                        "requested_entry":   entry,
-                        "requested_sl":      sl,
-                        "requested_tp":      tp,
-                        "entry_discrepancy": round(abs(result.price - entry), 6),
-                        "sl_discrepancy":    0.0,
-                        "tp_discrepancy":    0.0,
-                        "broker_comment":    result.comment,
-                        "timestamp":         datetime.now(timezone.utc).isoformat(),
-                    }
-        else:
-            rc = result.retcode if result else "None"
-            cm = result.comment if result else ""
-            logger.error("Market order rejected — retcode=%s  %s | %s %s", rc, cm, signal, ticker)
-            if signal_id:
-                with _exec_results_lock:
-                    _execution_results[signal_id] = {
-                        "status":         "REJECTED",
-                        "broker_retcode": str(rc),
-                        "broker_comment": cm,
-                        "timestamp":      datetime.now(timezone.utc).isoformat(),
-                    }
+
+        def _store(res: dict) -> None:
+            if not signal_id:
+                return
+            res = dict(res)
+            res.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+            with _exec_results_lock:
+                _execution_results[signal_id] = res
+
+        def _attempt() -> tuple:
+            """One market send. Returns the run_market_retry outcome protocol:
+            ('filled', dict) | ('retry', comment, retcode) | ('fatal', comment, retcode)."""
+            with _mt5_lock:
+                t = mt5.symbol_info_tick(resolved)
+            if t is None:
+                return ("retry", "no tick (symbol feed unavailable)", None)
+            px    = t.ask if signal == "LONG" else t.bid
+            otype = mt5.ORDER_TYPE_BUY if signal == "LONG" else mt5.ORDER_TYPE_SELL
+            req = {
+                "action":       mt5.TRADE_ACTION_DEAL,
+                "symbol":       resolved,
+                "volume":       lots,
+                "type":         otype,
+                "price":        px,
+                "sl":           sl,
+                "tp":           tp,
+                "deviation":    DEVIATION_POINTS,
+                "magic":        MT5_MAGIC,
+                "comment":      f"TEE-{WORKER_NAME}",
+                "type_time":    mt5.ORDER_TIME_GTC,
+                "type_filling": filling,
+            }
+            with _mt5_lock:
+                r = mt5.order_send(req)
+            if r and r.retcode == mt5.TRADE_RETCODE_DONE:
+                logger.info("MARKET FILLED  %s %s  %.2f lots @ %.5f  order=%d",
+                            signal, ticker, lots, r.price, r.order)
+                return ("filled", {
+                    "status":            "FILLED",
+                    "mt5_order_ticket":  r.order,
+                    "actual_fill_price": r.price,
+                    "actual_volume":     lots,
+                    "actual_sl":         sl,
+                    "actual_tp":         tp,
+                    "requested_entry":   entry,
+                    "requested_sl":      sl,
+                    "requested_tp":      tp,
+                    "entry_discrepancy": round(abs(r.price - entry), 6),
+                    "sl_discrepancy":    0.0,
+                    "tp_discrepancy":    0.0,
+                    "broker_comment":    r.comment,
+                    "timestamp":         datetime.now(timezone.utc).isoformat(),
+                })
+            rc = r.retcode if r else "None"
+            cm = (r.comment if r else "") or ""
+            if r is not None and r.retcode == mt5.TRADE_RETCODE_MARKET_CLOSED:
+                return ("retry", cm or "Market closed", rc)
+            return ("fatal", cm, rc)
+
+        kind, *rest = _attempt()
+        if kind == "filled":
+            _store(rest[0])
+            return
+        if kind == "fatal":
+            logger.error("Market order rejected — retcode=%s  %s | %s %s",
+                         rest[1], rest[0], signal, ticker)
+            _store({"status": "REJECTED",
+                    "broker_retcode": str(rest[1]), "broker_comment": rest[0]})
+            return
+
+        # kind == "retry": broker reports the symbol in its daily settlement
+        # break. Keep pursuing the MARKET order — but in a background thread so
+        # the PULL loop stays responsive to FORCE_CLOSE / kill-switch — until it
+        # fills or the signal's 15m entry bar ends (staleness guard).
+        if not signal_id:
+            logger.error("Market order rejected (no signal_id, not retried) — %s | %s %s",
+                          rest[0], signal, ticker)
+            return
+        deadline = signal_bar_deadline_epoch(int(ticket.get("timestamp_ms", 0)))
+        logger.warning(
+            "MARKET CLOSED (%s) — retrying %s %s until entry-bar end",
+            rest[0], signal, ticker,
+        )
+        _store({
+            "status":               "RETRYING_MARKET_CLOSED",
+            "broker_retcode":       str(rest[1]),
+            "broker_comment":       rest[0],
+            "retry_deadline_epoch": deadline,
+        })
+
+        def _should_abort():
+            with _dormant_lock:
+                if _dormant:
+                    return "worker dormant (curfew/kill)"
+            with _news_suppressed_lock:
+                until = _news_suppressed.get(ticker, 0.0)
+            if until > time.time():
+                return "news suppression"
+            return None
+
+        def _retry_worker() -> None:
+            final = run_market_retry(
+                deadline_epoch=deadline,
+                attempt=_attempt,
+                now=time.time,
+                sleep=time.sleep,
+                should_abort=_should_abort,
+                interval=15.0,
+            )
+            if final.get("status") == "FILLED":
+                logger.info("MARKET FILLED on retry  %s %s  (attempts=%s)",
+                            signal, ticker, final.get("retry_attempts"))
+            else:
+                logger.error("MARKET retry gave up  %s %s  %s (attempts=%s)",
+                             signal, ticker, final.get("broker_comment"),
+                             final.get("retry_attempts"))
+            _store(final)
+
+        threading.Thread(
+            target=_retry_worker, daemon=True,
+            name=f"mkt-retry-{signal_id}",
+        ).start()
         return
 
     # ── Limit-only execution (default) ────────────────────────────────────

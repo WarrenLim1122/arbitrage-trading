@@ -1243,10 +1243,32 @@ async def _verify_and_notify_inner(
     _prop_final: dict | None = prop_status if prop_state in TERMINAL else None
     _pers_final: dict | None = pers_status if pers_state in TERMINAL else None
 
-    POLL_INTERVAL = 5   # short: market orders fill almost immediately
-    MAX_POLLS     = 12  # 60 s maximum
+    POLL_INTERVAL = 5    # short: market orders fill almost immediately
+    BASE_SECONDS  = 60   # normal wait when no side is mid-retry
+    RETRY_GRACE   = 20   # let the worker's final attempt land before we judge
 
-    for _ in range(MAX_POLLS):
+    # A worker may report RETRYING_MARKET_CLOSED — it is re-attempting the
+    # market order through the broker's daily settlement break until the
+    # signal's 15m entry bar ends. Extend our poll horizon to that worker-
+    # provided deadline so we report the eventual fill, not a premature miss.
+    loop_deadline = time.monotonic() + BASE_SECONDS
+
+    async def _refresh(req_addr, signal_id, current):
+        nonlocal loop_deadline
+        if current is not None:
+            return current
+        s = await asyncio.to_thread(_query_order_status, req_addr, signal_id)
+        st = s.get("status")
+        if st in TERMINAL:
+            return s
+        if st == "RETRYING_MARKET_CLOSED":
+            rd = s.get("retry_deadline_epoch")
+            if rd:
+                extended = time.monotonic() + max(0.0, rd - time.time()) + RETRY_GRACE
+                loop_deadline = max(loop_deadline, extended)
+        return None
+
+    while time.monotonic() < loop_deadline:
         if _prop_final is not None and _pers_final is not None:
             break
         if _is_sgt_curfew():
@@ -1256,14 +1278,18 @@ async def _verify_and_notify_inner(
                 break
         await asyncio.sleep(POLL_INTERVAL)
 
-        if _prop_final is None:
-            s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PROP, prop_signal_id)
-            if s.get("status") in TERMINAL:
-                _prop_final = s
-        if _pers_final is None:
-            s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PERS, pers_signal_id)
-            if s.get("status") in TERMINAL:
-                _pers_final = s
+        _prop_final = await _refresh(ZMQ_REQ_PROP, prop_signal_id, _prop_final)
+        _pers_final = await _refresh(ZMQ_REQ_PERS, pers_signal_id, _pers_final)
+
+    # Final settle: a retry may have finalised just as the loop exited.
+    if _prop_final is None:
+        s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PROP, prop_signal_id)
+        if s.get("status") in TERMINAL:
+            _prop_final = s
+    if _pers_final is None:
+        s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PERS, pers_signal_id)
+        if s.get("status") in TERMINAL:
+            _pers_final = s
 
     prop_filled = _prop_final is not None and _prop_final.get("status") == "FILLED"
     pers_filled = _pers_final is not None and _pers_final.get("status") == "FILLED"
