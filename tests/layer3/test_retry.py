@@ -2,10 +2,13 @@
 
 This module has no MetaTrader5/zmq imports so it runs on the dev machine.
 The driver re-attempts a MARKET order while the broker reports the symbol
-transiently closed (gold's daily settlement break), giving up only at the
-end of the signal's 15m entry bar.
+transiently closed (gold's daily settlement break). On the worker side a
+1-minute / 15s-interval window is used; when it is exhausted the worker drops
+a resting LIMIT order at the signal entry. The driver tags every non-fill
+outcome with a ``reason`` so the worker can tell "deadline" (place the limit
+fallback) apart from "aborted" (curfew/kill — do nothing).
 """
-from layer3._retry import run_market_retry, signal_bar_deadline_epoch
+from layer3._retry import run_market_retry
 
 
 class FakeClock:
@@ -21,16 +24,6 @@ class FakeClock:
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.t += seconds
-
-
-def test_deadline_is_end_of_entry_bar():
-    # timestamp_ms is the signal bar's OPEN; alert fires at +15m (bar close);
-    # the trade enters on the next bar, which ends at +30m.
-    assert signal_bar_deadline_epoch(1779133500000) == 1779133500 + 1800
-
-
-def test_deadline_respects_custom_bar_length():
-    assert signal_bar_deadline_epoch(1_000_000, bar_seconds=60) == 1000 + 120
 
 
 def test_fills_on_first_attempt_no_retry():
@@ -53,6 +46,26 @@ def test_fills_on_first_attempt_no_retry():
     assert clock.sleeps == []
 
 
+def test_four_attempts_over_a_one_minute_window():
+    # Worker uses deadline = now + 60, interval = 15  ->  4 attempts.
+    clock = FakeClock()
+    calls = []
+
+    def attempt():
+        calls.append(1)
+        return ("retry", "Market closed", 10018)
+
+    result = run_market_retry(
+        deadline_epoch=60, attempt=attempt,
+        now=clock.now, sleep=clock.sleep, interval=15.0,
+    )
+
+    assert result["status"] == "REJECTED"
+    assert result["reason"] == "deadline"
+    assert len(calls) == 4
+    assert clock.sleeps == [15.0, 15.0, 15.0, 15.0]
+
+
 def test_retries_until_market_reopens_then_fills():
     clock = FakeClock()
     outcomes = [
@@ -71,10 +84,10 @@ def test_retries_until_market_reopens_then_fills():
 
     assert result["status"] == "FILLED"
     assert result["mt5_order_ticket"] == 99
-    assert clock.sleeps == [15.0, 15.0]  # slept between the two failed tries
+    assert clock.sleeps == [15.0, 15.0]
 
 
-def test_gives_up_at_deadline_with_last_broker_reason():
+def test_deadline_outcome_carries_reason_and_last_broker_reason():
     clock = FakeClock()
 
     def attempt():
@@ -86,6 +99,7 @@ def test_gives_up_at_deadline_with_last_broker_reason():
     )
 
     assert result["status"] == "REJECTED"
+    assert result["reason"] == "deadline"
     assert result["broker_comment"] == "Market closed"
     assert result["broker_retcode"] == "10018"
 
@@ -104,11 +118,12 @@ def test_deadline_already_passed_makes_no_attempt():
     )
 
     assert result["status"] == "REJECTED"
+    assert result["reason"] == "deadline"
     assert calls == []
     assert clock.sleeps == []
 
 
-def test_aborts_mid_retry_and_stops_attempting():
+def test_aborts_mid_retry_with_reason_aborted():
     clock = FakeClock()
     calls = []
     abort_calls = []
@@ -127,12 +142,12 @@ def test_aborts_mid_retry_and_stops_attempting():
     )
 
     assert result["status"] == "REJECTED"
-    assert "aborted" in result["broker_comment"]
+    assert result["reason"] == "aborted"
     assert "curfew" in result["broker_comment"]
     assert len(calls) == 1  # no further attempts after abort fired
 
 
-def test_fatal_rejection_is_not_retried():
+def test_fatal_rejection_is_not_retried_and_tagged_fatal():
     clock = FakeClock()
     calls = []
 
@@ -146,6 +161,7 @@ def test_fatal_rejection_is_not_retried():
     )
 
     assert result["status"] == "REJECTED"
+    assert result["reason"] == "fatal"
     assert result["broker_comment"] == "No money"
     assert result["broker_retcode"] == "10019"
     assert len(calls) == 1

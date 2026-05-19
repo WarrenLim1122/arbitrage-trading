@@ -1214,6 +1214,10 @@ async def _verify_and_notify_inner(
         return f"{label}: {_fp(actual)} (req {_fp(req)}, diff {diff_str})"
 
     TERMINAL = {"FILLED", "REJECTED", "CANCELLED", "EXPIRED", "UNSUPPORTED_LIMIT_SETUP", "ERROR"}
+    # PENDING_PLACED is a settled outcome too: the market-closed retry window
+    # was exhausted and the worker dropped a resting LIMIT order at the signal
+    # entry. We stop waiting and report it (it is not a failure).
+    SETTLED  = TERMINAL | {"PENDING_PLACED"}
 
     # Initial wait for Layer 3 to receive and process both tickets
     await asyncio.sleep(5)
@@ -1240,17 +1244,17 @@ async def _verify_and_notify_inner(
         return
 
     # Poll until both reach a terminal state — market orders fill in < 1 s
-    _prop_final: dict | None = prop_status if prop_state in TERMINAL else None
-    _pers_final: dict | None = pers_status if pers_state in TERMINAL else None
+    _prop_final: dict | None = prop_status if prop_state in SETTLED else None
+    _pers_final: dict | None = pers_status if pers_state in SETTLED else None
 
     POLL_INTERVAL = 5    # short: market orders fill almost immediately
     BASE_SECONDS  = 60   # normal wait when no side is mid-retry
     RETRY_GRACE   = 20   # let the worker's final attempt land before we judge
 
     # A worker may report RETRYING_MARKET_CLOSED — it is re-attempting the
-    # market order through the broker's daily settlement break until the
-    # signal's 15m entry bar ends. Extend our poll horizon to that worker-
-    # provided deadline so we report the eventual fill, not a premature miss.
+    # market order through the broker's daily settlement break (1-min window).
+    # Extend our poll horizon to that worker-provided deadline so we report the
+    # eventual fill or the LIMIT fallback, not a premature miss.
     loop_deadline = time.monotonic() + BASE_SECONDS
 
     async def _refresh(req_addr, signal_id, current):
@@ -1259,7 +1263,7 @@ async def _verify_and_notify_inner(
             return current
         s = await asyncio.to_thread(_query_order_status, req_addr, signal_id)
         st = s.get("status")
-        if st in TERMINAL:
+        if st in SETTLED:
             return s
         if st == "RETRYING_MARKET_CLOSED":
             rd = s.get("retry_deadline_epoch")
@@ -1281,14 +1285,14 @@ async def _verify_and_notify_inner(
         _prop_final = await _refresh(ZMQ_REQ_PROP, prop_signal_id, _prop_final)
         _pers_final = await _refresh(ZMQ_REQ_PERS, pers_signal_id, _pers_final)
 
-    # Final settle: a retry may have finalised just as the loop exited.
+    # Final settle: a retry / limit fallback may have finalised just as the loop exited.
     if _prop_final is None:
         s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PROP, prop_signal_id)
-        if s.get("status") in TERMINAL:
+        if s.get("status") in SETTLED:
             _prop_final = s
     if _pers_final is None:
         s = await asyncio.to_thread(_query_order_status, ZMQ_REQ_PERS, pers_signal_id)
-        if s.get("status") in TERMINAL:
+        if s.get("status") in SETTLED:
             _pers_final = s
 
     prop_filled = _prop_final is not None and _prop_final.get("status") == "FILLED"
@@ -1348,6 +1352,14 @@ async def _verify_and_notify_inner(
                 f"✅ Filled @ {fill}"
                 f"{f'  |  Ticket: {ticket_num}' if ticket_num else ''}"
             )
+        elif st == "PENDING_PLACED":
+            px = _fp(s.get("requested_entry", entry))
+            return (
+                f"<b>{label}</b>\n"
+                f"⏳ Limit order resting @ {px} (market was closed; "
+                f"fills when price returns)"
+                f"{f'  |  Ticket: {ticket_num}' if ticket_num else ''}"
+            )
         elif st == "UNSUPPORTED_LIMIT_SETUP":
             return f"<b>{label}</b>\n🚫 {st}\n{reason}"
         else:
@@ -1361,8 +1373,14 @@ async def _verify_and_notify_inner(
     pers_summary = _side_summary(_pers_final, "Personal Signal")
     prop_summary = _side_summary(_prop_final, "Prop Hedge")
 
+    _states  = {(_pers_final or {}).get("status"), (_prop_final or {}).get("status")}
+    _hard    = {"REJECTED", "ERROR", "UNSUPPORTED_LIMIT_SETUP", None}
+    _resting = "PENDING_PLACED" in _states and not (_states & _hard)
+    _header  = (f"⏳ <b>Limit Order Resting — {ticker}</b>" if _resting
+                else f"⚠️ <b>Order Not Filled — {ticker}</b>")
+
     await _telegram_alert(
-        f"⚠️ <b>Order Not Filled — {ticker}</b>\n\n"
+        f"{_header}\n\n"
         f"{pers_summary}\n\n"
         f"{prop_summary}\n\n"
         f"<b>Signal details</b>\n"

@@ -33,7 +33,7 @@ import MetaTrader5 as mt5
 import zmq
 from dotenv import load_dotenv
 
-from ._retry import run_market_retry, signal_bar_deadline_epoch
+from ._retry import run_market_retry
 
 load_dotenv()
 
@@ -52,6 +52,12 @@ MAX_RETRIES      = 3
 RETRY_DELAY      = 0.5
 DEVIATION_POINTS = 20
 RECONNECT_DELAY  = 5
+
+# Market-closed retry: re-send the MARKET order every 15s for up to 1 minute
+# (⇒ 4 attempts). If the broker is still closed after that, fall back to a
+# resting LIMIT order at the signal entry.
+MARKET_RETRY_WINDOW   = 60.0
+MARKET_RETRY_INTERVAL = 15.0
 
 SGT = ZoneInfo("Asia/Singapore")
 
@@ -496,6 +502,123 @@ def _monitor_pending_order(
         }
 
 
+def _place_limit_order(
+    *, signal_id: str, resolved: str, signal: str, lots: float,
+    entry: float, sl: float, tp: float, filling, ticker: str,
+) -> None:
+    """Place a resting LIMIT order at the signal entry.
+
+    Used as the default limit-only path and as the fallback after the
+    market-closed retry window is exhausted. Sets PENDING_PLACED (+ a monitor
+    thread) on success, or REJECTED / UNSUPPORTED_LIMIT_SETUP / ERROR.
+    """
+    with _mt5_lock:
+        tick = mt5.symbol_info_tick(resolved)
+    if tick is None:
+        logger.error("symbol_info_tick returned None for %s — aborting", resolved)
+        if signal_id:
+            with _exec_results_lock:
+                _execution_results[signal_id] = {
+                    "status": "ERROR", "error": "no_tick_data",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+        return
+
+    if signal == "LONG":
+        if entry >= tick.ask:
+            msg = (f"UNSUPPORTED_LIMIT: BUY entry {entry:.5f} >= ask {tick.ask:.5f} "
+                   f"for {ticker} — would need BUY STOP (not allowed in limit-only mode)")
+            logger.warning(msg)
+            if signal_id:
+                with _exec_results_lock:
+                    _execution_results[signal_id] = {
+                        "status":          "UNSUPPORTED_LIMIT_SETUP",
+                        "error":           msg,
+                        "requested_entry": entry,
+                        "current_price":   tick.ask,
+                        "timestamp":       datetime.now(timezone.utc).isoformat(),
+                    }
+            return
+        limit_type     = mt5.ORDER_TYPE_BUY_LIMIT
+        order_type_str = "BUY_LIMIT"
+    else:
+        if entry <= tick.bid:
+            msg = (f"UNSUPPORTED_LIMIT: SELL entry {entry:.5f} <= bid {tick.bid:.5f} "
+                   f"for {ticker} — would need SELL STOP (not allowed in limit-only mode)")
+            logger.warning(msg)
+            if signal_id:
+                with _exec_results_lock:
+                    _execution_results[signal_id] = {
+                        "status":          "UNSUPPORTED_LIMIT_SETUP",
+                        "error":           msg,
+                        "requested_entry": entry,
+                        "current_price":   tick.bid,
+                        "timestamp":       datetime.now(timezone.utc).isoformat(),
+                    }
+            return
+        limit_type     = mt5.ORDER_TYPE_SELL_LIMIT
+        order_type_str = "SELL_LIMIT"
+
+    request = {
+        "action":       mt5.TRADE_ACTION_PENDING,
+        "symbol":       resolved,
+        "volume":       lots,
+        "type":         limit_type,
+        "price":        entry,
+        "sl":           sl,
+        "tp":           tp,
+        "magic":        MT5_MAGIC,
+        "comment":      f"TEE-{WORKER_NAME}",
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": filling,
+    }
+
+    with _mt5_lock:
+        result = mt5.order_send(request)
+
+    success = result is not None and result.retcode in (
+        mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED,
+    )
+
+    if not success:
+        rc = result.retcode if result else "None"
+        cm = result.comment if result else "order_send returned None"
+        logger.error("Pending order REJECTED: retcode=%s  %s | %s %s %.2f lots @ %.5f",
+                     rc, cm, signal, ticker, lots, entry)
+        if signal_id:
+            with _exec_results_lock:
+                _execution_results[signal_id] = {
+                    "status":         "REJECTED",
+                    "broker_retcode": str(rc),
+                    "broker_comment": cm,
+                    "timestamp":      datetime.now(timezone.utc).isoformat(),
+                }
+        return
+
+    order_ticket = result.order
+    logger.info("Pending %s placed: %s %s %.2f lots @ %.5f  ticket=%d",
+                order_type_str, signal, ticker, lots, entry, order_ticket)
+
+    if signal_id:
+        with _exec_results_lock:
+            _execution_results[signal_id] = {
+                "status":           "PENDING_PLACED",
+                "mt5_order_type":   order_type_str,
+                "mt5_order_ticket": order_ticket,
+                "requested_entry":  entry,
+                "requested_sl":     sl,
+                "requested_tp":     tp,
+                "requested_volume": lots,
+                "timestamp":        datetime.now(timezone.utc).isoformat(),
+            }
+        threading.Thread(
+            target=_monitor_pending_order,
+            args=(signal_id, resolved, order_ticket, entry, sl, tp),
+            daemon=True,
+            name=f"monitor-{order_ticket}",
+        ).start()
+
+
 def _execute_order(ticket: dict) -> None:
     signal_id = ticket.get("signal_id", "")
     ticker    = ticket["ticker"]
@@ -607,17 +730,18 @@ def _execute_order(ticket: dict) -> None:
             return
 
         # kind == "retry": broker reports the symbol in its daily settlement
-        # break. Keep pursuing the MARKET order — but in a background thread so
-        # the PULL loop stays responsive to FORCE_CLOSE / kill-switch — until it
-        # fills or the signal's 15m entry bar ends (staleness guard).
+        # break. Re-attempt the MARKET order every 15s for up to 1 minute
+        # (4 tries) — in a background thread so the PULL loop stays responsive
+        # to FORCE_CLOSE / kill-switch. If still closed after that, fall back to
+        # a resting LIMIT order at the signal entry.
         if not signal_id:
             logger.error("Market order rejected (no signal_id, not retried) — %s | %s %s",
                           rest[0], signal, ticker)
             return
-        deadline = signal_bar_deadline_epoch(int(ticket.get("timestamp_ms", 0)))
+        deadline = time.time() + MARKET_RETRY_WINDOW
         logger.warning(
-            "MARKET CLOSED (%s) — retrying %s %s until entry-bar end",
-            rest[0], signal, ticker,
+            "MARKET CLOSED (%s) — retrying %s %s for up to %.0fs",
+            rest[0], signal, ticker, MARKET_RETRY_WINDOW,
         )
         _store({
             "status":               "RETRYING_MARKET_CLOSED",
@@ -643,15 +767,30 @@ def _execute_order(ticket: dict) -> None:
                 now=time.time,
                 sleep=time.sleep,
                 should_abort=_should_abort,
-                interval=15.0,
+                interval=MARKET_RETRY_INTERVAL,
             )
             if final.get("status") == "FILLED":
                 logger.info("MARKET FILLED on retry  %s %s  (attempts=%s)",
                             signal, ticker, final.get("retry_attempts"))
-            else:
-                logger.error("MARKET retry gave up  %s %s  %s (attempts=%s)",
-                             signal, ticker, final.get("broker_comment"),
-                             final.get("retry_attempts"))
+                _store(final)
+                return
+            if final.get("reason") == "deadline":
+                # Broker still closed after the 1-min window — fall back to a
+                # resting LIMIT order at the signal entry so the trade can
+                # still fill when price returns / the market reopens.
+                logger.warning(
+                    "MARKET retry exhausted (attempts=%s) — LIMIT fallback @ %.5f  %s %s",
+                    final.get("retry_attempts"), entry, signal, ticker,
+                )
+                _place_limit_order(
+                    signal_id=signal_id, resolved=resolved, signal=signal,
+                    lots=lots, entry=entry, sl=sl, tp=tp,
+                    filling=filling, ticker=ticker,
+                )
+                return
+            # aborted (curfew / kill / news) — do not place anything
+            logger.error("MARKET retry abandoned  %s %s  %s",
+                         signal, ticker, final.get("broker_comment"))
             _store(final)
 
         threading.Thread(
@@ -661,111 +800,10 @@ def _execute_order(ticket: dict) -> None:
         return
 
     # ── Limit-only execution (default) ────────────────────────────────────
-    with _mt5_lock:
-        tick = mt5.symbol_info_tick(resolved)
-    if tick is None:
-        logger.error("symbol_info_tick returned None for %s — aborting", resolved)
-        if signal_id:
-            with _exec_results_lock:
-                _execution_results[signal_id] = {
-                    "status": "ERROR", "error": "no_tick_data",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-        return
-
-    if signal == "LONG":
-        if entry >= tick.ask:
-            msg = (f"UNSUPPORTED_LIMIT: BUY entry {entry:.5f} >= ask {tick.ask:.5f} "
-                   f"for {ticker} — would need BUY STOP (not allowed in limit-only mode)")
-            logger.warning(msg)
-            if signal_id:
-                with _exec_results_lock:
-                    _execution_results[signal_id] = {
-                        "status":          "UNSUPPORTED_LIMIT_SETUP",
-                        "error":           msg,
-                        "requested_entry": entry,
-                        "current_price":   tick.ask,
-                        "timestamp":       datetime.now(timezone.utc).isoformat(),
-                    }
-            return
-        limit_type     = mt5.ORDER_TYPE_BUY_LIMIT
-        order_type_str = "BUY_LIMIT"
-    else:
-        if entry <= tick.bid:
-            msg = (f"UNSUPPORTED_LIMIT: SELL entry {entry:.5f} <= bid {tick.bid:.5f} "
-                   f"for {ticker} — would need SELL STOP (not allowed in limit-only mode)")
-            logger.warning(msg)
-            if signal_id:
-                with _exec_results_lock:
-                    _execution_results[signal_id] = {
-                        "status":          "UNSUPPORTED_LIMIT_SETUP",
-                        "error":           msg,
-                        "requested_entry": entry,
-                        "current_price":   tick.bid,
-                        "timestamp":       datetime.now(timezone.utc).isoformat(),
-                    }
-            return
-        limit_type     = mt5.ORDER_TYPE_SELL_LIMIT
-        order_type_str = "SELL_LIMIT"
-
-    request = {
-        "action":       mt5.TRADE_ACTION_PENDING,
-        "symbol":       resolved,
-        "volume":       lots,
-        "type":         limit_type,
-        "price":        entry,
-        "sl":           sl,
-        "tp":           tp,
-        "magic":        MT5_MAGIC,
-        "comment":      f"TEE-{WORKER_NAME}",
-        "type_time":    mt5.ORDER_TIME_GTC,
-        "type_filling": filling,
-    }
-
-    with _mt5_lock:
-        result = mt5.order_send(request)
-
-    success = result is not None and result.retcode in (
-        mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED,
+    _place_limit_order(
+        signal_id=signal_id, resolved=resolved, signal=signal,
+        lots=lots, entry=entry, sl=sl, tp=tp, filling=filling, ticker=ticker,
     )
-
-    if not success:
-        rc = result.retcode if result else "None"
-        cm = result.comment if result else "order_send returned None"
-        logger.error("Pending order REJECTED: retcode=%s  %s | %s %s %.2f lots @ %.5f",
-                     rc, cm, signal, ticker, lots, entry)
-        if signal_id:
-            with _exec_results_lock:
-                _execution_results[signal_id] = {
-                    "status":         "REJECTED",
-                    "broker_retcode": str(rc),
-                    "broker_comment": cm,
-                    "timestamp":      datetime.now(timezone.utc).isoformat(),
-                }
-        return
-
-    order_ticket = result.order
-    logger.info("Pending %s placed: %s %s %.2f lots @ %.5f  ticket=%d",
-                order_type_str, signal, ticker, lots, entry, order_ticket)
-
-    if signal_id:
-        with _exec_results_lock:
-            _execution_results[signal_id] = {
-                "status":           "PENDING_PLACED",
-                "mt5_order_type":   order_type_str,
-                "mt5_order_ticket": order_ticket,
-                "requested_entry":  entry,
-                "requested_sl":     sl,
-                "requested_tp":     tp,
-                "requested_volume": lots,
-                "timestamp":        datetime.now(timezone.utc).isoformat(),
-            }
-        threading.Thread(
-            target=_monitor_pending_order,
-            args=(signal_id, resolved, order_ticket, entry, sl, tp),
-            daemon=True,
-            name=f"monitor-{order_ticket}",
-        ).start()
 
 
 # ── Static drawdown guard (prop worker only) ──────────────────────────────
