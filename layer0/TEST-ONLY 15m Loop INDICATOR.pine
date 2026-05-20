@@ -1,0 +1,148 @@
+//@version=6
+indicator("TEST-ONLY 15m Loop (Webhook Pinger)", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ⚠️  TEST-ONLY — NOT A STRATEGY  ⚠️
+// ───────────────────────────────────────────────────────────────────────────
+//  Purpose: exercise the full Layer 1 → 2 → 3 pipeline on a DEMO account.
+//  It does NOT analyse the market. It fires a webhook, simulates a virtual
+//  trade purely as a *pacing clock*, and once that virtual trade touches its
+//  own SL or TP it waits a cooldown and fires again — direction alternating
+//  LONG / SHORT so both the personal leg and the prop inverse-hedge leg get
+//  tested.
+//
+//  The frozen production file (`1D-15m Breakout INDICATOR.pine`) is untouched.
+//
+//  DO NOT attach this to any chart once real capital is live. Attach only to
+//  a covered-pair 15m chart (EURUSD GBPUSD USDCHF USDCAD USDJPY NZDUSD XAUUSD
+//  XAGUSD NAS100). On metals/indices raise "SL distance (pips)" or the broker
+//  will reject the order as too tight (Layer 3 will surface that).
+//
+//  Note: TradingView never fires alerts on historical bars. The state machine
+//  replays history only to carry state continuity into the live bar; real
+//  webhooks start once you create the alert and a new 15m bar closes.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════
+bool   inEnabled    = input.bool(true,  "Enabled (master kill switch)")
+int    inMaxPerDay  = input.int(20,     "Max signals per UTC day", minval=1)
+int    inCooldown   = input.int(1,      "Bars to wait after close (1 = 15 min)", minval=1)
+float  inSlPips     = input.float(10.0, "SL distance (pips)", minval=0.1, step=0.1, tooltip="Tight = fast cycling. Raise for XAUUSD / XAGUSD / NAS100.")
+float  inRR         = input.float(0.27, "RR (TP = entry ± SL_dist × RR)", minval=0.01, step=0.01)
+string inOrderType  = input.string("MARKET", "Order type", options=["MARKET", "LIMIT"])
+bool   inShowTable  = input.bool(true,  "Show diagnostic table")
+
+float  pip_size  = syminfo.ticker == "USDJPY" ? 0.01 : 0.0001
+string pip_type  = syminfo.ticker == "USDJPY" ? "jpy" : "standard"
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE
+//   state: 0 = ARMED   1 = IN_TRADE   2 = COOLDOWN
+//   dirToggle: 0 → next signal is LONG, 1 → next signal is SHORT
+// ═══════════════════════════════════════════════════════════════════════════
+var int   state         = 0
+var int   dirToggle      = 0
+var int   vDir           = 0       // 1 = virtual long, -1 = virtual short
+var float vEntry         = na
+var float vSl            = na
+var float vTp            = na
+var int   cooldownCount  = 0
+var int   signalsToday   = 0
+var int   lastDay        = na
+
+bool fireLong      = false
+bool fireShort     = false
+bool closedThisBar = false
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATE MACHINE — advances only on a confirmed (closed) 15m bar so it stays
+// in lock-step with alert.freq_once_per_bar_close.
+// ═══════════════════════════════════════════════════════════════════════════
+if barstate.isconfirmed
+    // ── Daily cap reset (UTC) ──────────────────────────────────────────────
+    int curDay = int(math.floor(time / 86400000.0))
+    if na(lastDay) or curDay != lastDay
+        signalsToday := 0
+        lastDay      := curDay
+
+    // ── 1. IN_TRADE → check if this bar's range touched the virtual SL/TP ──
+    if state == 1
+        bool hit = vDir == 1 ? (low <= vSl or high >= vTp) : (high >= vSl or low <= vTp)
+        if hit
+            state         := 2
+            cooldownCount := 0
+            closedThisBar := true
+
+    // ── 2. COOLDOWN → tick down, then re-arm ───────────────────────────────
+    else if state == 2
+        cooldownCount += 1
+        if cooldownCount >= inCooldown
+            state := 0
+
+    // ── 3. ARMED → fire a new virtual trade + webhook ──────────────────────
+    if state == 0 and inEnabled and signalsToday < inMaxPerDay
+        int    dir     = dirToggle == 0 ? 1 : -1
+        float  slDist  = inSlPips * pip_size
+        float  entryPx = close
+        float  slPx    = dir == 1 ? entryPx - slDist : entryPx + slDist
+        float  tpPx    = dir == 1 ? entryPx + slDist * inRR : entryPx - slDist * inRR
+
+        vDir    := dir
+        vEntry  := entryPx
+        vSl     := slPx
+        vTp     := tpPx
+        state   := 1
+        signalsToday += 1
+        dirToggle    := dirToggle == 0 ? 1 : 0
+        fireLong  := dir == 1
+        fireShort := dir == -1
+
+        // Schema-identical to the production indicator so Layer 2/3 see
+        // exactly the field set they already parse. m15_swing_* are filled
+        // with the trigger bar's high/low as harmless context placeholders —
+        // this test tool has no swing logic.
+        string sigStr     = dir == 1 ? "LONG" : "SHORT"
+        string trendStr   = dir == 1 ? "BULLISH" : "BEARISH"
+        float  slPercent  = math.abs(entryPx - slPx) / entryPx * 100
+        string payload = '{"signal":"' + sigStr + '","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(time) + ',"timeframe":"15m","entry":' + str.tostring(entryPx) + ',"sl":' + str.tostring(slPx) + ',"tp":' + str.tostring(tpPx) + ',"sl_pips":' + str.tostring(inSlPips) + ',"sl_percent":' + str.tostring(slPercent) + ',"rr_ratio":' + str.tostring(inRR) + ',"order_type":"' + inOrderType + '","daily_trend":"' + trendStr + '","m15_swing_high":' + str.tostring(high) + ',"m15_swing_low":' + str.tostring(low) + ',"pip_type":"' + pip_type + '"}'
+        alert(payload, alert.freq_once_per_bar_close)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VISUALS
+// ═══════════════════════════════════════════════════════════════════════════
+plotshape(fireLong,      title="LONG fired",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, text="L")
+plotshape(fireShort,     title="SHORT fired", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small, text="S")
+plotshape(closedThisBar, title="Virtual close", style=shape.xcross,     location=location.absolute, color=color.gray)
+
+plot(state == 1 ? vEntry : na, "Virtual Entry", color=color.white, style=plot.style_linebr)
+plot(state == 1 ? vSl    : na, "Virtual SL",    color=color.red,   style=plot.style_linebr)
+plot(state == 1 ? vTp    : na, "Virtual TP",    color=color.green, style=plot.style_linebr)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DIAGNOSTIC TABLE
+// ═══════════════════════════════════════════════════════════════════════════
+var table panel = table.new(position.top_right, 2, 6, border_width=1, border_color=color.gray)
+
+if barstate.islast and inShowTable
+    string stateStr = not inEnabled ? "DISABLED" : state == 0 ? "ARMED" : state == 1 ? "IN TRADE" : "COOLDOWN"
+    color  stateBg  = not inEnabled ? color.new(color.gray, 40) : state == 1 ? color.new(color.aqua, 40) : state == 2 ? color.new(color.orange, 40) : color.new(color.green, 40)
+
+    table.cell(panel, 0, 0, "TEST-ONLY Loop", bgcolor=color.new(color.black, 10), text_color=color.yellow, text_size=size.small)
+    table.cell(panel, 1, 0, stateStr, bgcolor=stateBg, text_color=color.white, text_size=size.small)
+
+    table.cell(panel, 0, 1, "Next direction", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 1, dirToggle == 0 ? "LONG" : "SHORT", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 2, "Signals today", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 2, str.tostring(signalsToday) + " / " + str.tostring(inMaxPerDay), bgcolor=color.new(color.black, 20), text_color=signalsToday >= inMaxPerDay ? color.orange : color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 3, "Cooldown left", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 3, state == 2 ? str.tostring(math.max(inCooldown - cooldownCount, 0)) + " bar(s)" : "—", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 4, "Virtual E / SL / TP", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 4, state == 1 ? str.tostring(vEntry, format.mintick) + " / " + str.tostring(vSl, format.mintick) + " / " + str.tostring(vTp, format.mintick) : "—", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 5, "Order type", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 5, inOrderType, bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
