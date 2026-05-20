@@ -6,20 +6,24 @@ indicator("TEST-ONLY 15m Loop (Webhook Pinger)", overlay=true, max_labels_count=
 // ───────────────────────────────────────────────────────────────────────────
 //  Purpose: exercise the full Layer 1 → 2 → 3 pipeline on a DEMO account.
 //
-//  Behavior (no market analysis, no edge):
-//    1. Fire a webhook + open a virtual trade in a random direction.
-//    2. Wait until that virtual trade touches its own SL or TP (price action).
-//    3. Remember which one was hit (TP / SL — the "memory placeholder").
-//    4. Wait a random 1–5 bar gap, then fire the next trade. Repeat.
+//  Behavior (no edge, no market analysis):
+//    1. Watch for swing pivots using the SAME logic as the production
+//       indicator (`ta.pivothigh` / `ta.pivotlow` with N = inPivotN, default
+//       6 — matches the production HL / HH / LH / LL labels).
+//    2. When ARMED + the latest swing pair brackets price
+//       (lastSwingLow < close < lastSwingHigh), fire a webhook in a random
+//       direction. Anchor SL and TP directly to the swings:
+//         LONG  → SL = lastSwingLow,  TP = lastSwingHigh
+//         SHORT → SL = lastSwingHigh, TP = lastSwingLow
+//    3. Wait for the virtual trade to touch SL or TP, remember which
+//       (the "memory placeholder" → diag table 'Last close' = TP / SL / —).
+//    4. After close, wait a random 1–5 bar gap, then try again.
+//    5. If price breaks outside the latest swing range, the indicator stays
+//       silent until a new confirmed swing brings it back inside.
 //
-//  SL distance is sized as a % of price so it auto-scales across every
-//  covered instrument (EURUSD GBPUSD USDCHF USDCAD USDJPY NZDUSD XAUUSD
-//  XAGUSD NAS100) without per-chart tuning. The frozen production file
+//  RR is no longer an input — it's implicit (whatever the swing geometry
+//  gives at the moment of entry). The frozen production file
 //  (`1D-15m Breakout INDICATOR.pine`) is untouched.
-//
-//  Reward/risk boxes are created at entry with width=1 bar and *extend
-//  forward each bar while the trade is open*, freezing the moment SL or TP
-//  is touched. That keeps the chart readable even when trades cycle fast.
 //
 //  DO NOT attach this to any chart once real capital is live.
 //  Note: TradingView never fires alerts on historical bars — webhooks start
@@ -31,8 +35,9 @@ indicator("TEST-ONLY 15m Loop (Webhook Pinger)", overlay=true, max_labels_count=
 // ═══════════════════════════════════════════════════════════════════════════
 bool   inEnabled    = input.bool(true,   "Enabled (master kill switch)")
 int    inMaxPerDay  = input.int(20,      "Max signals per UTC day", minval=1)
-float  inSlPercent  = input.float(0.10,  "SL distance (% of price)", minval=0.01, step=0.01, tooltip="0.10% ≈ 10 pips on EURUSD, ≈ $4.5 on XAUUSD at 4500, ≈ 22 pts on NAS100 at 22000. Auto-scales across instruments.")
-float  inRR         = input.float(0.27,  "RR (TP = entry ± SL_dist × RR)", minval=0.01, step=0.01)
+int    inPivotN     = input.int(6,       "Pivot length (bars on each side)", minval=1, tooltip="Defines a swing. 6 matches the production indicator's HL/HH/LH/LL labels. Smaller = more frequent swings = more frequent test trades.")
+float  inMinSlPct   = input.float(0.02,  "Safety: min SL distance (% of price)", minval=0.0, step=0.01, tooltip="If the swing-based SL is closer than this %, the trade is skipped to avoid broker rejection of a too-tight stop. Set 0 to disable.")
+bool   inShowPivots = input.bool(true,   "Show swing pivot labels (HH HL LH LL)")
 string inOrderType  = input.string("MARKET", "Order type", options=["MARKET", "LIMIT"])
 bool   inShowTable  = input.bool(true,   "Show diagnostic table")
 
@@ -40,9 +45,36 @@ string pip_type = syminfo.ticker == "USDJPY" ? "jpy" : "standard"
 float  pip_size = syminfo.ticker == "USDJPY" ? 0.01 : 0.0001
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SWING (LTF PIVOT) DETECTION — mirrors the production indicator exactly
+// ═══════════════════════════════════════════════════════════════════════════
+float pivHigh = ta.pivothigh(high, inPivotN, inPivotN)
+float pivLow  = ta.pivotlow(low,   inPivotN, inPivotN)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+var float prevSwingHigh = na
+var float prevSwingLow  = na
+
+if not na(pivHigh)
+    float newSh = high[inPivotN]
+    string lbl  = na(prevSwingHigh) ? "SH" : (newSh > prevSwingHigh ? "HH" : "LH")
+    if inShowPivots
+        label.new(bar_index[inPivotN], newSh, lbl, color=color.new(color.orange, 40), style=label.style_label_down, textcolor=color.white, size=size.small)
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := newSh
+
+if not na(pivLow)
+    float newSl = low[inPivotN]
+    string lbl  = na(prevSwingLow) ? "SL" : (newSl > prevSwingLow ? "HL" : "LL")
+    if inShowPivots
+        label.new(bar_index[inPivotN], newSl, lbl, color=color.new(color.aqua, 40), style=label.style_label_up, textcolor=color.white, size=size.small)
+    prevSwingLow := lastSwingLow
+    lastSwingLow := newSl
+
+// ═══════════════════════════════════════════════════════════════════════════
 // STATE
 //   state: 0 = ARMED   1 = IN_TRADE   2 = COOLDOWN
-//   lastCloseType: "TP" / "SL" / "—"  ← the requested memory placeholder
+//   lastCloseType: "TP" / "SL" / "—"   ← memory placeholder
 //   nextGap: bars to wait this cooldown (re-rolled per close, 1–5 inclusive)
 // ═══════════════════════════════════════════════════════════════════════════
 var int    state          = 0
@@ -97,44 +129,50 @@ if barstate.isconfirmed
         if cooldownCount >= nextGap
             state := 0
 
-    // ── 3. ARMED → fire a webhook + open a new virtual trade ──────────────
+    // ── 3. ARMED → fire only if the latest swing pair brackets price ──────
     if state == 0 and inEnabled and signalsToday < inMaxPerDay
-        int    dir     = math.random(0, 1) < 0.5 ? 1 : -1
-        float  entryPx = close
-        float  slDist  = entryPx * inSlPercent / 100.0
-        float  slPx    = dir == 1 ? entryPx - slDist : entryPx + slDist
-        float  tpPx    = dir == 1 ? entryPx + slDist * inRR : entryPx - slDist * inRR
+        bool haveSwings = not na(lastSwingHigh) and not na(lastSwingLow)
+        bool inRange    = haveSwings and lastSwingLow < close and lastSwingHigh > close
+        if inRange
+            int   dir     = math.random(0, 1) < 0.5 ? 1 : -1
+            float entryPx = close
+            float slPx    = dir == 1 ? lastSwingLow  : lastSwingHigh
+            float tpPx    = dir == 1 ? lastSwingHigh : lastSwingLow
+            float slDist  = math.abs(entryPx - slPx)
+            float minDist = entryPx * inMinSlPct / 100.0
+            if inMinSlPct == 0 or slDist >= minDist
+                vDir     := dir
+                vEntry   := entryPx
+                vSl      := slPx
+                vTp      := tpPx
+                state    := 1
+                signalsToday += 1
+                fireLong  := dir == 1
+                fireShort := dir == -1
 
-        vDir     := dir
-        vEntry   := entryPx
-        vSl      := slPx
-        vTp      := tpPx
-        state    := 1
-        signalsToday += 1
-        fireLong  := dir == 1
-        fireShort := dir == -1
+                // Visualization — start 1 bar wide; the IN_TRADE branch
+                // extends the right edge each bar until SL/TP touches.
+                lnEntry := line.new(bar_index, entryPx, bar_index + 1, entryPx, color=color.white, style=line.style_solid)
+                lnSl    := line.new(bar_index, slPx,    bar_index + 1, slPx,    color=color.red,   style=line.style_dashed)
+                lnTp    := line.new(bar_index, tpPx,    bar_index + 1, tpPx,    color=color.green, style=line.style_dashed)
+                if dir == 1
+                    bxReward := box.new(bar_index, tpPx,    bar_index + 1, entryPx, border_color=na, bgcolor=color.new(color.green, 85))
+                    bxRisk   := box.new(bar_index, entryPx, bar_index + 1, slPx,    border_color=na, bgcolor=color.new(color.red,   85))
+                else
+                    bxReward := box.new(bar_index, entryPx, bar_index + 1, tpPx,    border_color=na, bgcolor=color.new(color.green, 85))
+                    bxRisk   := box.new(bar_index, slPx,    bar_index + 1, entryPx, border_color=na, bgcolor=color.new(color.red,   85))
 
-        // Visualization — start as a 1-bar-wide marker; the IN_TRADE branch
-        // above extends the right edge each subsequent bar until close.
-        lnEntry := line.new(bar_index, entryPx, bar_index + 1, entryPx, color=color.white, style=line.style_solid)
-        lnSl    := line.new(bar_index, slPx,    bar_index + 1, slPx,    color=color.red,   style=line.style_dashed)
-        lnTp    := line.new(bar_index, tpPx,    bar_index + 1, tpPx,    color=color.green, style=line.style_dashed)
-        if dir == 1
-            bxReward := box.new(bar_index, tpPx,    bar_index + 1, entryPx, border_color=na, bgcolor=color.new(color.green, 85))
-            bxRisk   := box.new(bar_index, entryPx, bar_index + 1, slPx,    border_color=na, bgcolor=color.new(color.red,   85))
-        else
-            bxReward := box.new(bar_index, entryPx, bar_index + 1, tpPx,    border_color=na, bgcolor=color.new(color.green, 85))
-            bxRisk   := box.new(bar_index, slPx,    bar_index + 1, entryPx, border_color=na, bgcolor=color.new(color.red,   85))
-
-        // Webhook payload — schema-identical to the production indicator so
-        // Layer 2/3 see exactly the field set they already parse.
-        // m15_swing_* are filled with the trigger bar's high/low as harmless
-        // context placeholders; this test tool has no swing logic.
-        string sigStr     = dir == 1 ? "LONG" : "SHORT"
-        string trendStr   = dir == 1 ? "BULLISH" : "BEARISH"
-        float  slPipsOut  = slDist / pip_size
-        string payload = '{"signal":"' + sigStr + '","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(time) + ',"timeframe":"15m","entry":' + str.tostring(entryPx) + ',"sl":' + str.tostring(slPx) + ',"tp":' + str.tostring(tpPx) + ',"sl_pips":' + str.tostring(slPipsOut) + ',"sl_percent":' + str.tostring(inSlPercent) + ',"rr_ratio":' + str.tostring(inRR) + ',"order_type":"' + inOrderType + '","daily_trend":"' + trendStr + '","m15_swing_high":' + str.tostring(high) + ',"m15_swing_low":' + str.tostring(low) + ',"pip_type":"' + pip_type + '"}'
-        alert(payload, alert.freq_once_per_bar_close)
+                // Webhook payload — schema-identical to the production
+                // indicator. rr_ratio is computed from the swing geometry
+                // (implicit, not an input), so downstream lot-sizing logic
+                // still sees a numeric value for the field it expects.
+                string sigStr   = dir == 1 ? "LONG" : "SHORT"
+                string trendStr = dir == 1 ? "BULLISH" : "BEARISH"
+                float  slPips   = slDist / pip_size
+                float  slPct    = slDist / entryPx * 100.0
+                float  rrOut    = math.abs(tpPx - entryPx) / slDist
+                string payload = '{"signal":"' + sigStr + '","ticker":"' + syminfo.ticker + '","timestamp_ms":' + str.tostring(time) + ',"timeframe":"15m","entry":' + str.tostring(entryPx) + ',"sl":' + str.tostring(slPx) + ',"tp":' + str.tostring(tpPx) + ',"sl_pips":' + str.tostring(slPips) + ',"sl_percent":' + str.tostring(slPct) + ',"rr_ratio":' + str.tostring(rrOut) + ',"order_type":"' + inOrderType + '","daily_trend":"' + trendStr + '","m15_swing_high":' + str.tostring(lastSwingHigh) + ',"m15_swing_low":' + str.tostring(lastSwingLow) + ',"pip_type":"' + pip_type + '"}'
+                alert(payload, alert.freq_once_per_bar_close)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // VISUALS — entry-bar markers
@@ -145,26 +183,34 @@ plotshape(fireShort, title="SHORT fired", style=shape.triangledown, location=loc
 // ═══════════════════════════════════════════════════════════════════════════
 // DIAGNOSTIC TABLE
 // ═══════════════════════════════════════════════════════════════════════════
-var table panel = table.new(position.top_right, 2, 6, border_width=1, border_color=color.gray)
+var table panel = table.new(position.top_right, 2, 7, border_width=1, border_color=color.gray)
 
 if barstate.islast and inShowTable
     string stateStr = not inEnabled ? "DISABLED" : state == 0 ? "ARMED" : state == 1 ? "IN TRADE" : "COOLDOWN"
     color  stateBg  = not inEnabled ? color.new(color.gray, 40) : state == 1 ? color.new(color.aqua, 40) : state == 2 ? color.new(color.orange, 40) : color.new(color.green, 40)
 
+    bool   haveSwings = not na(lastSwingHigh) and not na(lastSwingLow)
+    bool   inRange    = haveSwings and lastSwingLow < close and lastSwingHigh > close
+    string rangeStr   = not haveSwings ? "waiting…" : inRange ? "YES" : "NO (outside)"
+    color  rangeBg    = not haveSwings ? color.new(color.gray, 40) : inRange ? color.new(color.green, 60) : color.new(color.red, 60)
+
     table.cell(panel, 0, 0, "TEST-ONLY Loop", bgcolor=color.new(color.black, 10), text_color=color.yellow, text_size=size.small)
     table.cell(panel, 1, 0, stateStr, bgcolor=stateBg, text_color=color.white, text_size=size.small)
 
-    table.cell(panel, 0, 1, "Last close", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(panel, 1, 1, lastCloseType, bgcolor=color.new(color.black, 20), text_color=lastCloseType == "TP" ? color.lime : lastCloseType == "SL" ? color.red : color.silver, text_size=size.tiny)
+    table.cell(panel, 0, 1, "Inside swing range", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 1, rangeStr, bgcolor=rangeBg, text_color=color.white, text_size=size.tiny)
 
-    table.cell(panel, 0, 2, "Signals today", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(panel, 1, 2, str.tostring(signalsToday) + " / " + str.tostring(inMaxPerDay), bgcolor=color.new(color.black, 20), text_color=signalsToday >= inMaxPerDay ? color.orange : color.white, text_size=size.tiny)
+    table.cell(panel, 0, 2, "Last close", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 2, lastCloseType, bgcolor=color.new(color.black, 20), text_color=lastCloseType == "TP" ? color.lime : lastCloseType == "SL" ? color.red : color.silver, text_size=size.tiny)
 
-    table.cell(panel, 0, 3, "Cooldown left", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(panel, 1, 3, state == 2 ? str.tostring(math.max(nextGap - cooldownCount, 0)) + " / " + str.tostring(nextGap) + " bar(s)" : "—", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 3, "Signals today", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 3, str.tostring(signalsToday) + " / " + str.tostring(inMaxPerDay), bgcolor=color.new(color.black, 20), text_color=signalsToday >= inMaxPerDay ? color.orange : color.white, text_size=size.tiny)
 
-    table.cell(panel, 0, 4, "Virtual E / SL / TP", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(panel, 1, 4, state == 1 ? str.tostring(vEntry, format.mintick) + " / " + str.tostring(vSl, format.mintick) + " / " + str.tostring(vTp, format.mintick) : "—", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 4, "Cooldown left", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 4, state == 2 ? str.tostring(math.max(nextGap - cooldownCount, 0)) + " / " + str.tostring(nextGap) + " bar(s)" : "—", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
 
-    table.cell(panel, 0, 5, "Order type", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
-    table.cell(panel, 1, 5, inOrderType, bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+    table.cell(panel, 0, 5, "Virtual E / SL / TP", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 5, state == 1 ? str.tostring(vEntry, format.mintick) + " / " + str.tostring(vSl, format.mintick) + " / " + str.tostring(vTp, format.mintick) : "—", bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
+
+    table.cell(panel, 0, 6, "Order type", bgcolor=color.new(color.black, 20), text_color=color.silver, text_size=size.tiny)
+    table.cell(panel, 1, 6, inOrderType, bgcolor=color.new(color.black, 20), text_color=color.white, text_size=size.tiny)
