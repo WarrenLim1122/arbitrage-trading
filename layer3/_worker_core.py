@@ -6,9 +6,10 @@ VPS #3 (personal — Fusion Markets). Configured entirely via env vars.
 
 New in v2:
   - FORCE_CLOSE message type: closes all open positions on this MT5 account.
-  - SGT kill switch thread: force-closes at midnight SGT, dormant until 12:00 SGT.
-    Dormant window also covers weekends (Sat–Sun full day).
-  - Weekday guard: incoming execution tickets are silently dropped while dormant.
+  - SGT scheduler: force-closes once on weekend entry and stays dormant Sat–Sun.
+    Weekday trading-window enforcement (curfew) lives in Layer 2 and is fully
+    driven by config/trading_window.json (set via Telegram /setwindow).
+  - Dormant guard: incoming execution tickets are silently dropped while dormant.
 
 Environment variables:
   WORKER_NAME    — "prop" or "personal"
@@ -251,8 +252,39 @@ def _get_filling_mode(resolved: str) -> int:
 
 # ── Force-close all open positions ───────────────────────────────────────
 
+# Map raw force-close reasons (sent from Layer 2 / internal guards) → label
+# stamped on each position's snapshot so the journal pipeline can render a
+# meaningful close reason in the dashboard and decide whether to screenshot.
+# Anything not in this map falls back to "FORCE_CLOSE".
+_FORCE_CLOSE_REASON_MAP = {
+    "daily_loss_limit":         "KILL_1",
+    "overall_drawdown_limit":   "KILL_2",
+    "daily_profit_cap":         "KILL_3",
+    "profit_target":            "KILL_4",
+    "consistency_rule":         "KILL_5",
+    "phase1_stage_reached":     "STAGE_REACHED",
+    "sgt_curfew":               "SGT_CURFEW",
+    "sgt_weekend":              "SGT_WEEKEND",
+    "static_drawdown":          "KILL_2",
+    "emergency":                "EMERGENCY",
+}
+
+
+def _label_force_close_reason(raw_reason: str) -> str:
+    return _FORCE_CLOSE_REASON_MAP.get(raw_reason, "FORCE_CLOSE")
+
+
 def _force_close_all(reason: str) -> None:
     _ensure_connected()
+    # Stamp close_reason_override on all known positions before closing them.
+    # The position-close watcher copies this into pos_snapshot, which the
+    # journaling pipeline uses for both the screenshot guard and the dashboard
+    # EXIT column. Without this, force-closes appear as "MANUAL" (the deal
+    # reason for any algo-initiated close is DEAL_REASON_EXPERT → MANUAL).
+    label = _label_force_close_reason(reason)
+    with _known_positions_lock:
+        for ticket in _known_positions:
+            _known_positions[ticket]["close_reason_override"] = label
     # Cancel any pending orders (FORCE_CLOSE should abort waiting limit orders too)
     with _mt5_lock:
         pending = mt5.orders_get() or []
@@ -327,12 +359,13 @@ def _force_close_ticker(canonical_ticker: str, reason: str) -> None:
         logger.info("CLOSE_TICKER(%s): no open positions for %s", reason, resolved)
         return
 
-    # Tag positions as NEWS close so the journal pipeline knows the reason.
-    if reason.startswith("pre_news"):
-        with _known_positions_lock:
-            for pos in positions:
-                if pos.ticket in _known_positions:
-                    _known_positions[pos.ticket]["close_reason_override"] = "NEWS"
+    # Tag positions with the system-driven close reason so the journal pipeline
+    # surfaces it correctly (dashboard EXIT column + screenshot eligibility).
+    label = "NEWS" if reason.startswith("pre_news") else _label_force_close_reason(reason)
+    with _known_positions_lock:
+        for pos in positions:
+            if pos.ticket in _known_positions:
+                _known_positions[pos.ticket]["close_reason_override"] = label
 
     closed = 0
     for pos in positions:

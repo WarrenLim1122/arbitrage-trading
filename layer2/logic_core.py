@@ -120,6 +120,52 @@ def _maybe_block_alert(ticker: str, reason_tag: str) -> bool:
         return True
     return False
 
+
+# ── Dynamic session-time helpers (no static "12:00 SGT" anywhere) ─────────
+# Auto-resume actually happens at max(prop-firm day rollover @ 11:00 SGT,
+# trading-window start). The text shown to the user must reflect the
+# live trading_window config so /setwindow takes effect immediately.
+
+_PROPFIRM_DAY_ROLL_MIN = 11 * 60  # 11:00 SGT = FundingPips daily reset
+
+
+def _effective_window_text() -> tuple[str, str]:
+    """Return (current_start, current_end) HH:MM strings from the live window."""
+    with _window_lock:
+        win = dict(_trading_window["current_window"])
+    return win.get("start", "12:00"), win.get("end", "00:00")
+
+
+def _next_session_resume_text() -> str:
+    """Format the next auto-resume time as 'HH:MM SGT'.
+
+    Auto-resume = max(prop-firm day roll @ 11:00 SGT, trading-window start).
+    Uses next_window if scheduled (it swaps to current at the day roll).
+    """
+    with _window_lock:
+        nxt  = _trading_window.get("next_window") or _trading_window["current_window"]
+        start = nxt.get("start", "12:00")
+    h, m = map(int, start.split(":"))
+    win_min = h * 60 + m
+    resume_min = max(win_min, _PROPFIRM_DAY_ROLL_MIN)
+    return f"{resume_min // 60:02d}:{resume_min % 60:02d} SGT"
+
+
+def _curfew_range_text() -> str:
+    """Format the currently-closed range as 'end–start SGT' from the live window."""
+    start, end = _effective_window_text()
+    return f"{end}–{start} SGT"
+
+
+def _soft_kill_overridden(now_sgt: datetime) -> bool:
+    """True when the user issued /resume earlier today — suppresses re-fires of
+    same-day soft kills (K1, K3, Phase 1 stage_reached) until the prop-firm day rolls.
+    Permanent kills (K2, K4, K5) are NEVER suppressed.
+    """
+    with _state_lock:
+        override_day = _phase_state.get("soft_kill_override_day", "")
+    return bool(override_day) and override_day == _propfirm_day(now_sgt)
+
 # ── Position close tracking (detects TP/SL exits between equity monitor polls) ─
 _prev_prop_pos: dict[tuple[str, int], dict] = {}
 _prev_pers_pos: dict[tuple[str, int], dict] = {}
@@ -693,12 +739,10 @@ def _run_equity_check() -> None:
             logger.info("Monitor: SGT curfew transition — dispatching force-close (positions only)")
             pos_str = _snapshot_positions_str()
             _dispatch_force_close("sgt_curfew", halt=False)
-            with _window_lock:
-                _win_start = _trading_window["current_window"].get("start", "12:00")
             _alert_sync(
                 f"🌙 <b>Curfew — All positions closed</b>\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"Resumes {_win_start} SGT next weekday."
+                f"Resumes at next session ({_next_session_resume_text()})."
             )
             _last_curfew_close_date = today
         _pos_tracking_initialized = False
@@ -816,6 +860,8 @@ def _run_equity_check() -> None:
                 _phase_state["active"] = True
                 _phase_state.pop("daily_halted", None)
                 _phase_state.pop("daily_halted_date", None)
+                # Stale override from yesterday — clear so today's kills are armed normally
+                _phase_state.pop("soft_kill_override_day", None)
                 _save_phase(_phase_state)
             active = True
             _alert_sync("🟢 <b>New Session — Auto-Resumed</b>\n\nDaily halt cleared. System is armed and accepting signals.")
@@ -881,6 +927,11 @@ def _run_equity_check() -> None:
             return
         reason     = decision["reason"]
         permanent  = decision["permanent"]
+        # User /resume earlier today overrides same-day soft kills.
+        # Permanent kills (K2 overall_drawdown_limit, K4 profit_target) still fire.
+        if not permanent and _soft_kill_overridden(now_sgt):
+            logger.info("Phase1 kill suppressed by /resume override: reason=%s", reason)
+            return
         pos_str    = _snapshot_positions_str()
         _dispatch_force_close(reason, halt=True, permanent=permanent)
         if not permanent:
@@ -896,7 +947,7 @@ def _run_equity_check() -> None:
                 f"🎯 <b>Phase 1 — Stage Reached</b>\n\n"
                 f"Prop equity: <b>${prop_equity:,.2f}</b> ≥ stage ${decision['stage_value']:,.2f}\n"
                 f"Profitable day locked. Positions force-closed.\n\n"
-                f"System auto-resumes next session; next target is the following stage."
+                f"System auto-resumes at next session ({_next_session_resume_text()}); next target is the following stage."
             )
         elif reason == "daily_loss_limit":
             df = decision["daily_floor"]
@@ -904,7 +955,7 @@ def _run_equity_check() -> None:
                 f"🔴 <b>KILL 1 — Daily Loss Limit Hit (Phase 1)</b>\n\n"
                 f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${df:,.2f}\n"
                 f"Day-start: ${day_start:,.2f}\n\n"
-                f"All positions force-closed. Auto-resumes next session."
+                f"All positions force-closed. System auto-resumes at next session ({_next_session_resume_text()}), or /resume to restart now."
             )
         elif reason == "overall_drawdown_limit":
             of = decision["overall_floor"]
@@ -947,7 +998,7 @@ def _run_equity_check() -> None:
         # Dollar limit grows/shrinks with the account — NOT fixed from baseline.
         if daily_loss_amt > 0 and day_start > 0:
             daily_floor = day_start - daily_loss_amt
-            if prop_equity <= daily_floor:
+            if prop_equity <= daily_floor and not _soft_kill_overridden(now_sgt):
                 pos_str = _snapshot_positions_str()
                 _dispatch_force_close("daily_loss_limit", halt=True)
                 with _state_lock:
@@ -961,7 +1012,7 @@ def _run_equity_check() -> None:
                     f"<b>Positions at close:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. System halted for today.\n\n"
                     f"Overall DD floor: ${overall_floor:,.2f}\n\n"
-                    f"System auto-resumes at next session (12:00 SGT).\n"
+                    f"System auto-resumes at next session ({_next_session_resume_text()}), or /resume to restart now.\n"
                     f"/changepropfirm to switch to a new challenge"
                 )
                 logger.warning("KILL1: equity=%.2f daily_floor=%.2f day_start=%.2f",
@@ -975,7 +1026,7 @@ def _run_equity_check() -> None:
         # Resets every session — NOT cumulative across days.
         if layer_cap_amt > 0 and day_start > 0:
             daily_cap_level = day_start + layer_cap_amt
-            if prop_equity >= daily_cap_level:
+            if prop_equity >= daily_cap_level and not _soft_kill_overridden(now_sgt):
                 pos_str = _snapshot_positions_str()
                 _dispatch_force_close("daily_profit_cap", halt=True)
                 with _state_lock:
@@ -988,7 +1039,7 @@ def _run_equity_check() -> None:
                     f"Day-start: ${day_start:,.2f}  |  Cap: +${layer_cap_amt:,.2f}\n\n"
                     f"<b>Positions at close:</b>\n{pos_str}\n\n"
                     f"All positions force-closed. System halted for today.\n\n"
-                    f"System auto-resumes at next session (12:00 SGT)."
+                    f"System auto-resumes at next session ({_next_session_resume_text()}), or /resume to restart now."
                 )
                 logger.warning("KILL3: equity=%.2f cap_level=%.2f day_start=%.2f",
                                prop_equity, daily_cap_level, day_start)
@@ -1402,7 +1453,7 @@ async def receive_signal(request: Request):
     # SGT curfew / weekend gate — no state change, just reject inline
     if _is_sgt_curfew():
         now_sgt = _sgt_now()
-        reason  = "weekend" if now_sgt.weekday() >= 5 else "SGT curfew 00:00–12:00"
+        reason  = "weekend" if now_sgt.weekday() >= 5 else f"SGT curfew {_curfew_range_text()}"
         logger.info("GATE %s %s — %s", payload.signal, payload.ticker, reason)
         return JSONResponse({"status": "rejected", "reason": reason})
 

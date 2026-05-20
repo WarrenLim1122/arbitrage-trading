@@ -1049,10 +1049,20 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             parse_mode="HTML",
         )
         return
+    now_sgt = _sgt_now()
+    today_day = _propfirm_day(now_sgt)
     with _state_lock:
+        had_daily_halt = _phase_state.get("daily_halted", False)
         _phase_state["active"] = True
         _phase_state.pop("daily_halted", None)
         _phase_state.pop("daily_halted_date", None)
+        # User /resume is a manual override of today's soft kills (K1/K3, Phase 1
+        # stage_reached). Without this, the monitor's next tick would immediately
+        # re-fire whichever kill is still tripped (e.g. K3 cap still breached) and
+        # silently undo this resume. Permanent kills (K2/K4/K5) are NOT suppressed
+        # — they still execute. The override naturally expires at the next
+        # prop-firm day rollover (11:00 SGT).
+        _phase_state["soft_kill_override_day"] = today_day
         _save_phase(_phase_state)
 
     try:
@@ -1073,6 +1083,10 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
     curfew_note = "\n\n<i>Trading window is currently closed. Signals resume when the window opens.</i>" if _is_sgt_curfew() else ""
+    override_note = (
+        "\n\n<i>Today's daily-loss / profit-cap kills are suppressed until the next session — manual override active.</i>"
+        if had_daily_halt else ""
+    )
     lines: list[str] = [
         f"🟢 <b>Signal Processing Resumed</b>",
         "",
@@ -1081,21 +1095,25 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Personal Signal: {_pos_line(pers_pos)}",
         f"Prop Hedge: {_pos_line(prop_pos)}",
     ]
+    if override_note:
+        lines.append(override_note)
     if curfew_note:
         lines.append(curfew_note)
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
-    logger.info("Telegram: resumed by user")
+    logger.info("Telegram: resumed by user — soft_kill_override_day=%s", today_day)
 
 
 async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     with _state_lock:
-        phase   = _phase_state.get("phase", "?")
-        active  = _phase_state.get("active", False)
-        last_ts = _phase_state.get("last_signal_ts", "never")
-        p_halt  = _phase_state.get("permanently_halted", False)
-        max_pos = _phase_state.get("max_open_positions", 2)
+        phase    = _phase_state.get("phase", "?")
+        active   = _phase_state.get("active", False)
+        last_ts  = _phase_state.get("last_signal_ts", "never")
+        p_halt   = _phase_state.get("permanently_halted", False)
+        max_pos  = _phase_state.get("max_open_positions", 2)
+        ovr_day  = _phase_state.get("soft_kill_override_day", "")
+    soft_override_active = bool(ovr_day) and ovr_day == _propfirm_day(_sgt_now())
     with _manual_suppress_lock:
         manual_blocks = len(_manual_suppressed_pairs)
     with _news_suppressed_lock:
@@ -1119,6 +1137,11 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if win_next:
         win_line += f" | Next: {win_next['start']}–{win_next['end']}"
 
+    override_line = (
+        f"Soft-kill override: 🟠 Active (K1/K3 suppressed until next session)\n"
+        if soft_override_active else ""
+    )
+
     await update.message.reply_text(
         f"📊 <b>System Status</b>\n\n"
         f"<b>Trading</b>\n"
@@ -1126,8 +1149,9 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Status: {'🟢 Active' if active else '🟡 Halted'}\n"
         f"Permanent halt: {'Yes' if p_halt else 'No'}\n"
         f"Trading window: {win_line}\n"
-        f"Curfew: {'Yes — dormant' if curfew else 'No'}\n\n"
-        f"<b>Risk Control</b>\n"
+        f"Curfew: {'Yes — dormant' if curfew else 'No'}\n"
+        f"{override_line}"
+        f"\n<b>Risk Control</b>\n"
         f"Max positions: {max_pos}\n"
         f"Manual blocks: {manual_blocks}\n"
         f"News blocks: {news_blocks}\n\n"

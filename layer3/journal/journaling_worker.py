@@ -315,11 +315,46 @@ def handle_closed_position(
             if risk > 0:
                 rr_ratio = round(reward / risk, 2)
 
-        # ── 4. Screenshot — use Phase 1 result (already captured immediately) ──
-        screenshot_fields = pos_snapshot.get("_screenshot_fields", {
-            "outcomeScreenshotStatus": "failed",
-            "outcomeScreenshotSource": "python_script",
-        })
+        # ── 4. Screenshot — use Phase 1 result, OR retry now that we have deal history ──
+        # Recovery case: the initial immediate capture may have failed (no candle
+        # data yet, transient upload error, etc.) and the failed result was cached
+        # in pos_snapshot. Now that deal history is available we have the real
+        # close_price/close_time/close_reason/net_pnl — retry the capture so the
+        # dashboard isn't permanently stuck on "No Image".
+        cached_fields = pos_snapshot.get("_screenshot_fields") or {}
+        cached_ok     = cached_fields.get("outcomeScreenshotStatus") == "success"
+
+        if cached_ok:
+            screenshot_fields = cached_fields
+        else:
+            try:
+                from .screenshot_capture import capture_outcome_screenshot
+                screenshot_fields = capture_outcome_screenshot(
+                    symbol=symbol, direction=direction,
+                    entry_price=entry_price, sl_price=sl_price, tp_price=tp_price,
+                    close_price=close_price, close_time=close_time, open_time=open_time,
+                    outcome=outcome,
+                    net_pnl=round(net_pnl, 2),
+                    volume=volume,
+                    ticket=position_ticket, account_type=JOURNAL_ACCOUNT_TYPE,
+                    mt5_account_id=mt5_account_id, close_reason=close_reason,
+                    mt5_lock=mt5_lock, rr_ratio=rr_ratio,
+                )
+                logger.info(
+                    "Journal: screenshot retry %s for ticket=%d (cached was %s)",
+                    screenshot_fields.get("outcomeScreenshotStatus", "failed"),
+                    position_ticket,
+                    cached_fields.get("outcomeScreenshotStatus", "none"),
+                )
+            except Exception as exc:
+                logger.error(
+                    "Journal: screenshot retry failed (ticket=%d): %s — falling back to cached",
+                    position_ticket, exc,
+                )
+                screenshot_fields = cached_fields or {
+                    "outcomeScreenshotStatus": "failed",
+                    "outcomeScreenshotSource": "python_script",
+                }
 
         ss_status_raw = screenshot_fields.get("outcomeScreenshotStatus", "failed")
         screenshot_status = (

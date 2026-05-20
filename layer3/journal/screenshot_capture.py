@@ -19,6 +19,18 @@ SCREENSHOT_TIMEFRAME      = os.getenv("SCREENSHOT_TIMEFRAME",      "M15")
 SCREENSHOT_LOOKBACK_BARS  = int(os.getenv("SCREENSHOT_LOOKBACK_BARS", "120"))
 SCREENSHOT_BUFFER_BARS    = 20   # bars after close time
 
+# "SCREENSHOT_ONLY_FOR_TP_SL=true" means: skip screenshots only for truly
+# user-initiated manual closes. System-driven closes (force-close, kills,
+# curfew, news, stage win) still produce a chart so post-mortem analysis works.
+_SCREENSHOT_ELIGIBLE_REASONS = {
+    "TP", "SL",
+    "FORCE_CLOSE", "EMERGENCY",
+    "KILL_1", "KILL_2", "KILL_3", "KILL_4", "KILL_5",
+    "STAGE_REACHED",
+    "SGT_CURFEW", "SGT_WEEKEND",
+    "NEWS",
+}
+
 
 _TF_MAP = {
     "M1":  1,  "M5":  5,  "M15": 15, "M30": 30,
@@ -90,7 +102,7 @@ def capture_outcome_screenshot(
         base["outcomeScreenshotStatus"] = "failed"
         return base
 
-    if SCREENSHOT_ONLY_FOR_TP_SL and close_reason not in ("TP", "SL"):
+    if SCREENSHOT_ONLY_FOR_TP_SL and close_reason not in _SCREENSHOT_ELIGIBLE_REASONS:
         base["outcomeScreenshotStatus"] = "failed"
         return base
 
