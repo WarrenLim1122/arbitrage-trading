@@ -1,5 +1,5 @@
 //@version=6
-indicator("TEST-ONLY 15m Loop (Webhook Pinger)", overlay=true, max_labels_count=500, max_lines_count=500)
+indicator("TEST-ONLY 15m Loop (Webhook Pinger)", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=500)
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  ⚠️  TEST-ONLY — NOT A STRATEGY  ⚠️
@@ -52,9 +52,8 @@ var int   cooldownCount  = 0
 var int   signalsToday   = 0
 var int   lastDay        = na
 
-bool fireLong      = false
-bool fireShort     = false
-bool closedThisBar = false
+bool fireLong  = false
+bool fireShort = false
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STATE MACHINE — advances only on a confirmed (closed) 15m bar so it stays
@@ -73,7 +72,6 @@ if barstate.isconfirmed
         if hit
             state         := 2
             cooldownCount := 0
-            closedThisBar := true
 
     // ── 2. COOLDOWN → tick down, then re-arm ───────────────────────────────
     else if state == 2
@@ -99,6 +97,19 @@ if barstate.isconfirmed
         fireLong  := dir == 1
         fireShort := dir == -1
 
+        // Mirror the production indicator's trade visualization: dashed TP /
+        // solid entry / dashed SL lines extending forward, plus a green
+        // reward box and a red risk box around the trade zone.
+        line.new(bar_index, tpPx,    bar_index + 10, tpPx,    color=color.green, style=line.style_dashed)
+        line.new(bar_index, entryPx, bar_index + 10, entryPx, color=color.white, style=line.style_solid)
+        line.new(bar_index, slPx,    bar_index + 10, slPx,    color=color.red,   style=line.style_dashed)
+        if dir == 1
+            box.new(bar_index, tpPx,    bar_index + 10, entryPx, border_color=na, bgcolor=color.new(color.green, 85))
+            box.new(bar_index, entryPx, bar_index + 10, slPx,    border_color=na, bgcolor=color.new(color.red,   85))
+        else
+            box.new(bar_index, entryPx, bar_index + 10, tpPx,    border_color=na, bgcolor=color.new(color.green, 85))
+            box.new(bar_index, slPx,    bar_index + 10, entryPx, border_color=na, bgcolor=color.new(color.red,   85))
+
         // Schema-identical to the production indicator so Layer 2/3 see
         // exactly the field set they already parse. m15_swing_* are filled
         // with the trigger bar's high/low as harmless context placeholders —
@@ -112,13 +123,8 @@ if barstate.isconfirmed
 // ═══════════════════════════════════════════════════════════════════════════
 // VISUALS
 // ═══════════════════════════════════════════════════════════════════════════
-plotshape(fireLong,      title="LONG fired",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, text="L")
-plotshape(fireShort,     title="SHORT fired", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small, text="S")
-plotshape(closedThisBar, title="Virtual close", style=shape.xcross,     location=location.absolute, color=color.gray)
-
-plot(state == 1 ? vEntry : na, "Virtual Entry", color=color.white, style=plot.style_linebr)
-plot(state == 1 ? vSl    : na, "Virtual SL",    color=color.red,   style=plot.style_linebr)
-plot(state == 1 ? vTp    : na, "Virtual TP",    color=color.green, style=plot.style_linebr)
+plotshape(fireLong,  title="LONG fired",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small, text="L")
+plotshape(fireShort, title="SHORT fired", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small, text="S")
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DIAGNOSTIC TABLE
