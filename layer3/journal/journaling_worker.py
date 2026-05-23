@@ -83,6 +83,32 @@ def _price_digits(symbol: str) -> int:
     return 5
 
 
+_account_currency_cache = {"ccy": None}
+
+
+def _account_currency(mt5_lock) -> str:
+    """MT5 account deposit currency (e.g. 'SGD' for the personal account, 'USD' for prop).
+
+    Stored on the journal trade as accountCurrency so the dashboard renders P&L in the
+    right currency (Issue 7). Env override JOURNAL_ACCOUNT_CURRENCY wins; otherwise read
+    from MT5 account_info().currency (cached). Falls back to 'USD'."""
+    env = os.getenv("JOURNAL_ACCOUNT_CURRENCY")
+    if env:
+        return env.upper()
+    if _account_currency_cache["ccy"]:
+        return _account_currency_cache["ccy"]
+    try:
+        import MetaTrader5 as mt5
+        with mt5_lock:
+            acct = mt5.account_info()
+        if acct and getattr(acct, "currency", None):
+            _account_currency_cache["ccy"] = acct.currency.upper()
+            return _account_currency_cache["ccy"]
+    except Exception as exc:
+        logger.warning("account currency detect failed: %s", exc)
+    return "USD"
+
+
 def _round_price(symbol: str, price):
     """Round a price to its symbol's natural digits; pass through None / bad input."""
     if price is None:
@@ -489,7 +515,7 @@ def handle_closed_position(
             "swap":           round(swap_total, 2),
             "netPnl":         round(net_pnl,    2),
             "pnlAmount":      round(net_pnl,    2),         # legacy field
-            "accountCurrency": "USD",
+            "accountCurrency": _account_currency(mt5_lock),
 
             # ── Risk/Reward ───────────────────────────────────────────────
             "rrRatio":         rr_ratio,

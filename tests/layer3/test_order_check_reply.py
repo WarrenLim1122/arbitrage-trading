@@ -126,3 +126,28 @@ def test_bad_params_reject(wc):
     module, _ = wc
     out = module._build_order_check_reply({"ticker": "EURUSD", "signal": "LONG", "lots": "x"})
     assert out["verdict"] == "reject"
+
+
+# ── Issue 7: USD→account-currency rate ────────────────────────────────────────
+
+def test_usd_rate_is_one_for_usd_account(wc):
+    module, _ = wc
+    assert module._usd_to_account_rate("USD") == 1.0
+    assert module._usd_to_account_rate("usd") == 1.0
+
+
+def test_usd_rate_derived_for_sgd_account(wc, monkeypatch):
+    module, _ = wc
+    # EURUSD: tick_value(SGD)=1.35, tick_size=0.00001, contract=100000
+    # rate = 1.35 / (0.00001 * 100000) = 1.35
+    monkeypatch.setattr(module, "_contract_info",
+                        lambda sym: (0.00001, 100000.0, 0.00001, 1.35, 5))
+    assert module._usd_to_account_rate("SGD") == 1.35
+
+
+def test_usd_rate_falls_back_to_one_on_error(wc, monkeypatch):
+    module, _ = wc
+    def _boom(sym):
+        raise RuntimeError("no symbol")
+    monkeypatch.setattr(module, "_contract_info", _boom)
+    assert module._usd_to_account_rate("SGD") == 1.0

@@ -54,7 +54,7 @@ from layer2.state import (
     _record_day_profit, _build_consistency_table,
     _invert, _load_consistency_log,
     _trading_window, _window_lock, _apply_next_window,
-    _fmt_price,
+    _fmt_price, _money,
     _phase1_load, _phase1_active_stage, _phase1_record_stage_day,
 )
 from layer2.zmq_helpers import (
@@ -356,6 +356,29 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
             _send_close_alert(symbol, entry["pers_data"], entry["prop_data"])
 
 
+def _split_pers_amount(ticker: str, pers_value: float, usd_to_acct_rate: float) -> tuple[float, float]:
+    """Recover (usd, account_ccy) from a personal figure produced by geometry.
+
+    Geometry computes USD-quote pairs (ticker endswith USD) in USD via the contract
+    method, and all other pairs in the account currency via the tick_value method.
+    Mirror that split so we can show both currencies. (Issue 7)
+    """
+    rate = usd_to_acct_rate if (usd_to_acct_rate and usd_to_acct_rate > 0) else 1.0
+    if ticker.endswith("USD"):
+        return round(pers_value, 2), round(pers_value * rate, 2)
+    return round(pers_value / rate, 2), round(pers_value, 2)
+
+
+def _pers_money_dual(ticker: str, pers_value: float, currency: str, rate: float,
+                     signed: bool = False) -> str:
+    """Personal money as USD with a parenthetical account-currency (e.g. SGD)
+    equivalent. Collapses to plain USD when the personal account is USD. (Issue 7)"""
+    if (currency or "USD").upper() == "USD":
+        return _money(pers_value, "USD", signed)
+    usd, acct = _split_pers_amount(ticker, pers_value, rate)
+    return f"{_money(usd, 'USD', signed)} (≈ {_money(acct, currency, signed)})"
+
+
 def _order_check_leg_line(label: str, chk: dict) -> str:
     """Per-leg status line for the pre-flight 'Signal Not Placed' alert (Issue 2)."""
     verdict = chk.get("verdict", "?")
@@ -470,7 +493,8 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     sections.append(title)
 
     # ── Helper to build one side block ───────────────────────────────────────
-    def _side_block(label: str, pos_data: dict | None, deal: dict | None, reason_label: str) -> str:
+    def _side_block(label: str, pos_data: dict | None, deal: dict | None,
+                    reason_label: str, currency: str = "USD") -> str:
         if not pos_data:
             return f"<b>{label}</b>\nNo matching position — already closed"
         dir_str = "↑ LONG" if pos_data["type"] == 0 else "↓ SHORT"
@@ -478,8 +502,8 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
             pnl        = deal["net_pnl"]
             exit_price = _fmt_price(symbol, deal["close_price"])
             commission = deal["commission"]
-            pnl_line   = f"Trade P&amp;L: ${pnl:+,.2f}"
-            comm_line  = f"Commission: ${commission:+,.2f}"
+            pnl_line   = f"Trade P&amp;L: {_money(pnl, currency, signed=True)}"
+            comm_line  = f"Commission: {_money(commission, currency, signed=True)}"
         else:
             pnl = pos_data["profit"]
             # No deal data → fall back to theoretical exit level
@@ -487,7 +511,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
                 _fmt_price(symbol, pos_data["tp"]) if pnl >= 0
                 else _fmt_price(symbol, pos_data["sl"])
             )
-            pnl_line  = f"Trade P&amp;L: ${pnl:+,.2f} (est.)"
+            pnl_line  = f"Trade P&amp;L: {_money(pnl, currency, signed=True)} (est.)"
             comm_line = None
         lines = [
             f"<b>{label} — {dir_str}</b>",
@@ -503,8 +527,17 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
             lines.append(f"Ticket: {pos_data['ticket']}")
         return "\n".join(lines)
 
-    sections.append(_side_block("Personal Signal", pers_pos_data, pers_deal, pers_reason))
-    sections.append(_side_block("Prop Hedge",      prop_pos_data, prop_deal, prop_reason))
+    # Personal account currency (Issue 7) — its P&L/equity come from MT5 in this
+    # currency (e.g. SGD); the prop account is always USD. Fetched once and reused
+    # for the Equity section below.
+    try:
+        _pers_eq_reply = _query_equity(ZMQ_REQ_PERS, "")
+    except Exception:
+        _pers_eq_reply = {}
+    pers_currency = _pers_eq_reply.get("account_currency", "USD")
+
+    sections.append(_side_block("Personal Signal", pers_pos_data, pers_deal, pers_reason, pers_currency))
+    sections.append(_side_block("Prop Hedge",      prop_pos_data, prop_deal, prop_reason, "USD"))
 
     # ── After Close ──────────────────────────────────────────────────────────
     sections.append(
@@ -514,10 +547,10 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     )
 
     # ── Equity ───────────────────────────────────────────────────────────────
-    try:
-        pers_eq = _query_equity(ZMQ_REQ_PERS, "")["equity"]
-        pers_eq_str = f"${pers_eq:,.2f}"
-    except Exception:
+    # Personal equity reuses the reply fetched above (in its own currency, e.g. SGD).
+    if "equity" in _pers_eq_reply:
+        pers_eq_str = _money(_pers_eq_reply["equity"], pers_currency)
+    else:
         pers_eq_str = "OFFLINE"
     try:
         prop_eq = _query_equity(ZMQ_REQ_PROP, "")["equity"]
@@ -1222,6 +1255,8 @@ async def _verify_and_notify(
     pers_reward_in: float = 0.0,
     prop_rr_in: float = 0.0,
     pers_rr_in: float = 0.0,
+    pers_currency: str = "USD",
+    pers_usd_to_acct_rate: float = 1.0,
 ) -> None:
     try:
         await _verify_and_notify_inner(
@@ -1233,6 +1268,7 @@ async def _verify_and_notify(
             sl_distance=sl_distance, tp_distance=tp_distance,
             prop_reward_in=prop_reward_in, pers_reward_in=pers_reward_in,
             prop_rr_in=prop_rr_in, pers_rr_in=pers_rr_in,
+            pers_currency=pers_currency, pers_usd_to_acct_rate=pers_usd_to_acct_rate,
         )
     except Exception as exc:
         logger.error("_verify_and_notify crashed for %s: %s", ticker, exc, exc_info=True)
@@ -1268,6 +1304,8 @@ async def _verify_and_notify_inner(
     pers_reward_in: float = 0.0,
     prop_rr_in: float = 0.0,
     pers_rr_in: float = 0.0,
+    pers_currency: str = "USD",
+    pers_usd_to_acct_rate: float = 1.0,
 ) -> None:
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
     pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
@@ -1397,8 +1435,8 @@ async def _verify_and_notify_inner(
             f"Entry: {_fp(ef.get('actual_fill_price', entry))}\n"
             f"SL: {_fp(ef.get('actual_sl', pers_sl))}\n"
             f"TP: {_fp(ef.get('actual_tp', pers_tp))}\n"
-            f"Risk: ${pers_dollar_risk:,.2f}\n"
-            f"Reward: ${pers_reward:,.2f}\n"
+            f"Risk: {_pers_money_dual(ticker, pers_dollar_risk, pers_currency, pers_usd_to_acct_rate)}\n"
+            f"Reward: {_pers_money_dual(ticker, pers_reward, pers_currency, pers_usd_to_acct_rate)}\n"
             f"RR: {pers_rr:.2f}\n"
             f"Ticket: {ef.get('mt5_order_ticket', '?')}\n\n"
             f"<b>Prop Hedge — {prop_arrow}</b>\n"
@@ -1841,6 +1879,8 @@ async def receive_signal(request: Request):
         pers_reward_in=g.get("pers_reward", 0.0),
         prop_rr_in=g.get("prop_rr", 0.0),
         pers_rr_in=g.get("pers_rr", 0.0),
+        pers_currency=pers_info.get("account_currency", "USD"),
+        pers_usd_to_acct_rate=pers_info.get("usd_to_acct_rate", 1.0),
     ))
 
     with _state_lock:

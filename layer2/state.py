@@ -442,6 +442,18 @@ def _fmt_price(symbol: str, price: float) -> str:
     return f"{price:.{digits}f}"
 
 
+def _ccy_prefix(currency: str) -> str:
+    """'$' for USD, otherwise the ISO code + space (e.g. 'SGD ') — Issue 7 label choice."""
+    cur = (currency or "USD").upper()
+    return "$" if cur == "USD" else f"{cur} "
+
+
+def _money(amount: float, currency: str = "USD", signed: bool = False) -> str:
+    """Format a money amount with its account currency. signed=True keeps the +/- sign."""
+    pfx = _ccy_prefix(currency)
+    return f"{pfx}{amount:+,.2f}" if signed else f"{pfx}{amount:,.2f}"
+
+
 # ── Phase 2 field definitions (used by telegram_handlers wizard) ───────────
 
 # Ordered field definitions used to display and collect Phase 2 settings.

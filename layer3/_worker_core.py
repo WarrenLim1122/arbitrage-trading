@@ -1006,6 +1006,25 @@ def _build_positions_reply() -> dict:
         return {"positions": [], "error": str(exc)}
 
 
+def _usd_to_account_rate(account_currency: str) -> float:
+    """Account-currency units per 1 USD (e.g. ~1.35 for an SGD account; 1.0 for USD).
+
+    Derived from EURUSD contract data: the value of one tick per lot is
+    `tick_size * contract_size` USD (quote currency) and `trade_tick_value` in the
+    account currency, so rate = tick_value / (tick_size * contract_size). No
+    external FX feed required. Returns 1.0 on any failure (treat as USD)."""
+    if not account_currency or account_currency.upper() == "USD":
+        return 1.0
+    try:
+        _point, c_size, t_size, t_val, _digits = _contract_info("EURUSD")
+        denom = t_size * c_size
+        if denom > 0 and t_val > 0:
+            return round(t_val / denom, 6)
+    except Exception as exc:
+        logger.warning("usd_to_acct_rate derive failed: %s", exc)
+    return 1.0
+
+
 def _build_equity_reply(ticker: str) -> dict:
     try:
         with _mt5_lock:
@@ -1032,6 +1051,14 @@ def _build_equity_reply(ticker: str) -> dict:
             except Exception as exc:
                 logger.warning("contract_info failed for %s: %s", ticker, exc)
 
+        # Account deposit currency + USD→account-currency rate (Issue 7). The rate
+        # lets Layer 2 show personal (e.g. SGD) account figures alongside the USD
+        # risk math without an external FX feed: for any USD-quote pair the value of
+        # one tick per lot is `tick_size * contract_size` USD and `trade_tick_value`
+        # in the account currency, so rate = tick_value / (tick_size * contract_size).
+        account_currency = (acct.currency if acct and getattr(acct, "currency", None) else "USD")
+        usd_to_acct_rate = _usd_to_account_rate(account_currency)
+
         return {
             "balance":            balance,
             "equity":             equity,
@@ -1042,6 +1069,8 @@ def _build_equity_reply(ticker: str) -> dict:
             "trade_tick_size":    tick_size,
             "trade_tick_value":   tick_value,
             "digits":             digits,
+            "account_currency":   account_currency,
+            "usd_to_acct_rate":   usd_to_acct_rate,
             "account_login":      acct.login  if acct else None,
             "account_server":     acct.server if acct else None,
             "account_name":       acct.name   if acct else None,
@@ -1054,6 +1083,7 @@ def _build_equity_reply(ticker: str) -> dict:
             "trade_allowed": True,
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,
+            "account_currency": "USD", "usd_to_acct_rate": 1.0,
             "account_login": None, "account_server": None, "account_name": None,
         }
 

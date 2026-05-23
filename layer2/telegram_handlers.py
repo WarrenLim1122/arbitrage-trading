@@ -30,7 +30,7 @@ from layer2.state import (
     _p2_display, _p2_settings_block,
     _P2_FIELD_DEFS, _P2_FIELD_BY_IDX,
     _is_sgt_curfew, _sgt_now, _propfirm_day,
-    _apply_buffers, _pnl_bar, _fmt_price,
+    _apply_buffers, _pnl_bar, _fmt_price, _money,
     _trading_window, _window_lock, _save_trading_window, _window_minutes,
     _phase1_init, _phase1_load,
 )
@@ -1168,6 +1168,12 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         pf = dict(_propfirm)
     prop_b = pf.get("baseline_equity", 0.0)
     pers_b = pf.get("pers_baseline_equity", 0.0)
+    # Best-effort personal account currency so an SGD baseline isn't mislabelled $.
+    try:
+        _pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        pers_ccy = _pers.get("account_currency", "USD")
+    except Exception:
+        pers_ccy = "USD"
     await update.message.reply_text(
         f"📊 <b>Prop Account Rules</b>\n\n"
         f"<b>Targets</b>\n"
@@ -1184,7 +1190,7 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         f"Consistency: {pf.get('consistency_threshold_pct', 0):.1f}% (↓1pp)\n\n"
         f"<b>Baselines</b>\n"
         f"Prop: ${prop_b:,.2f}\n"
-        f"Personal: {f'${pers_b:,.2f}' if pers_b > 0 else 'Not set'}",
+        f"Personal: {_money(pers_b, pers_ccy) if pers_b > 0 else 'Not set'}",
         parse_mode="HTML",
     )
 
@@ -1198,32 +1204,32 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     pers_baseline = pf.get("pers_baseline_equity", 0.0)
     prop_baseline = pf.get("baseline_equity",       0.0)
 
-    def _account_block(label: str, data: dict, baseline: float) -> str:
+    def _account_block(label: str, data: dict, baseline: float, currency: str = "USD") -> str:
         bal     = data["balance"]
         eq      = data["equity"]
         floating = data.get("profit", eq - bal)
         lines = [
             f"<b>{label}</b>",
-            f"Baseline: ${baseline:,.2f}" if baseline > 0 else "Baseline: Not set — run /changepropfirm",
-            f"Balance: ${bal:,.2f}",
-            f"Equity: ${eq:,.2f}",
-            f"Floating: ${floating:+,.2f}",
+            f"Baseline: {_money(baseline, currency)}" if baseline > 0 else "Baseline: Not set — run /changepropfirm",
+            f"Balance: {_money(bal, currency)}",
+            f"Equity: {_money(eq, currency)}",
+            f"Floating: {_money(floating, currency, signed=True)}",
         ]
         if baseline > 0:
             overall = eq - baseline
             overall_pct = overall / baseline * 100
-            lines.append(f"Overall: ${overall:+,.2f} ({overall_pct:+.2f}%)")
+            lines.append(f"Overall: {_money(overall, currency, signed=True)} ({overall_pct:+.2f}%)")
         return "\n".join(lines)
 
     try:
         pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
-        pers_block = _account_block("Personal Signal", pers, pers_baseline)
+        pers_block = _account_block("Personal Signal", pers, pers_baseline, pers.get("account_currency", "USD"))
     except Exception as exc:
         pers_block = f"<b>Personal Signal</b>\nOffline — {exc}"
 
     try:
         prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
-        prop_block = _account_block("Prop Hedge", prop, prop_baseline)
+        prop_block = _account_block("Prop Hedge", prop, prop_baseline, "USD")
     except Exception as exc:
         prop_block = f"<b>Prop Hedge</b>\nOffline — {exc}"
 
@@ -1293,7 +1299,7 @@ async def _emergency_execute(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
         prop_eq  = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         pers_eq  = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
         eq_lines = (
-            f"Personal: ${pers_eq['equity']:,.2f}\n"
+            f"Personal: {_money(pers_eq['equity'], pers_eq.get('account_currency', 'USD'))}\n"
             f"Prop: ${prop_eq['equity']:,.2f}"
         )
     except Exception:
@@ -1649,7 +1655,7 @@ async def _closepair_execute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
         prop_eq  = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
         pers_eq  = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
         eq_lines = (
-            f"Personal: ${pers_eq['equity']:,.2f}\n"
+            f"Personal: {_money(pers_eq['equity'], pers_eq.get('account_currency', 'USD'))}\n"
             f"Prop: ${prop_eq['equity']:,.2f}"
         )
     except Exception:

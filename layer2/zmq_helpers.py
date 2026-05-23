@@ -44,6 +44,8 @@ def _query_equity(zmq_url: str, ticker: str) -> dict:
             "trade_tick_size":    float(reply.get("trade_tick_size",    0.0)),
             "trade_tick_value":   float(reply.get("trade_tick_value",   0.0)),
             "digits":             int(reply.get("digits",               5)),
+            "account_currency":   (reply.get("account_currency") or "USD"),
+            "usd_to_acct_rate":   float(reply.get("usd_to_acct_rate",   1.0) or 1.0),
             "account_login":      reply.get("account_login"),
             "account_server":     reply.get("account_server"),
             "account_name":       reply.get("account_name"),
