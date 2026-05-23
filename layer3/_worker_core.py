@@ -1065,6 +1065,100 @@ def _build_order_status_reply(signal_id: str) -> dict:
         return dict(_execution_results.get(signal_id, {"status": "UNKNOWN"}))
 
 
+def _build_order_check_reply(msg: dict) -> dict:
+    """Pre-flight feasibility check for a proposed market order via mt5.order_check().
+
+    Layer 2 calls this for BOTH legs before dispatching either, so a leg that
+    cannot fill (e.g. 'Not enough money') blocks the whole trade instead of
+    orphaning the other leg. Returns a verdict:
+      "ok"        — order_check passed, margin is sufficient
+      "reject"    — definitive failure (no money / invalid volume / stops / disabled)
+      "transient" — market closed / requote / no tick — let normal retry handle it
+    """
+    ticker = msg.get("ticker", "")
+    signal = msg.get("signal", "")
+    try:
+        lots = float(msg.get("lots", 0.0))
+        sl   = float(msg.get("sl",   0.0))
+        tp   = float(msg.get("tp",   0.0))
+    except (TypeError, ValueError):
+        return {"verdict": "reject", "comment": "bad order_check parameters", "retcode": None}
+
+    resolved = _resolve_symbol(ticker)
+    try:
+        _ensure_connected()
+    except Exception as exc:
+        return {"verdict": "transient", "comment": f"MT5 not connected: {exc}", "retcode": None}
+
+    with _mt5_lock:
+        term = mt5.terminal_info()
+        tick = mt5.symbol_info_tick(resolved)
+    if term is not None and not term.trade_allowed:
+        return {"verdict": "reject", "comment": "algo trading disabled", "retcode": None}
+    if tick is None:
+        return {"verdict": "transient", "comment": "no tick (symbol feed unavailable)", "retcode": None}
+
+    px      = tick.ask if signal == "LONG" else tick.bid
+    otype   = mt5.ORDER_TYPE_BUY if signal == "LONG" else mt5.ORDER_TYPE_SELL
+    filling = _get_filling_mode(resolved)
+    request = {
+        "action":       mt5.TRADE_ACTION_DEAL,
+        "symbol":       resolved,
+        "volume":       lots,
+        "type":         otype,
+        "price":        px,
+        "sl":           sl,
+        "tp":           tp,
+        "deviation":    DEVIATION_POINTS,
+        "magic":        MT5_MAGIC,
+        "comment":      f"TEE-{WORKER_NAME}-chk",
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": filling,
+    }
+    with _mt5_lock:
+        result = mt5.order_check(request)
+    if result is None:
+        with _mt5_lock:
+            err = mt5.last_error()
+        return {"verdict": "transient", "comment": f"order_check returned None: {err}", "retcode": None}
+
+    def _rc(name: str, default: int) -> int:
+        return int(getattr(mt5, name, default))
+
+    retcode     = int(result.retcode)
+    margin      = float(getattr(result, "margin",      0.0))
+    margin_free = float(getattr(result, "margin_free", 0.0))
+    comment     = (result.comment or "").strip()
+
+    ok_codes        = {0, _rc("TRADE_RETCODE_DONE", 10009)}
+    transient_codes = {
+        _rc("TRADE_RETCODE_MARKET_CLOSED", 10018),
+        _rc("TRADE_RETCODE_REQUOTE",       10004),
+        _rc("TRADE_RETCODE_PRICE_OFF",     10021),
+        _rc("TRADE_RETCODE_PRICE_CHANGED", 10020),
+    }
+
+    if retcode in ok_codes and margin_free >= 0:
+        verdict = "ok"
+    elif retcode in transient_codes:
+        verdict = "transient"
+    else:
+        verdict = "reject"
+
+    return {
+        "verdict":     verdict,
+        "retcode":     retcode,
+        "comment":     comment,
+        "margin":      round(margin,      2),
+        "margin_free": round(margin_free, 2),
+        "balance":     round(float(getattr(result, "balance", 0.0)), 2),
+        "equity":      round(float(getattr(result, "equity",  0.0)), 2),
+        "lots":        lots,
+        "signal":      signal,
+        "symbol":      resolved,
+    }
+
+
 def _build_account_mode_reply() -> dict:
     """Return cached MT5 account mode (queried from account_info.trade_mode at connect)."""
     return {"account_mode": _account_mode}
@@ -1154,6 +1248,8 @@ def _rep_loop(ctx: zmq.Context) -> None:
             reply = _build_order_status_reply(msg.get("signal_id", ""))
         elif query == "deal_pnl":
             reply = _build_deal_pnl_reply(msg.get("symbol", ""))
+        elif query == "order_check":
+            reply = _build_order_check_reply(msg)
         elif query == "account_mode":
             reply = _build_account_mode_reply()
         else:

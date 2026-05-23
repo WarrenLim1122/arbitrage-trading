@@ -38,9 +38,12 @@ def _stub_external_modules(monkeypatch):
 def _import_worker():
     # Force JOURNAL_ENABLED so handle_closed_position runs the real path
     os.environ["FIREBASE_JOURNAL_ENABLED"] = "true"
+    # importlib.import_module (not `from pkg import sub`) forces re-execution after
+    # the pop — `from pkg import sub` returns the stale parent attribute if another
+    # test imported the module first, leaving JOURNAL_ENABLED at its old value.
+    import importlib
     sys.modules.pop("layer3.journal.journaling_worker", None)
-    from layer3.journal import journaling_worker
-    return journaling_worker
+    return importlib.import_module("layer3.journal.journaling_worker")
 
 
 def _fake_deal(ticket, position_id, *, entry, price, time_ts,

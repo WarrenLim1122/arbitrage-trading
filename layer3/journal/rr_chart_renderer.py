@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 SCREENSHOT_WIDTH  = int(os.getenv("SCREENSHOT_WIDTH",  "1600"))
 SCREENSHOT_HEIGHT = int(os.getenv("SCREENSHOT_HEIGHT", "900"))
 
+def _price_digits(symbol: str) -> int:
+    """Natural decimal digits for a symbol's price (JPY=3, Gold=2, Silver=4, FX=5)."""
+    sym = (symbol or "").upper()
+    if "JPY" in sym:
+        return 3
+    if sym.startswith("XAU"):
+        return 2
+    if sym.startswith("XAG"):
+        return 4
+    return 5
+
+
 # Bars to show before entry and after close in the cropped view
 _CTX_BARS  = 20   # context bars before entry
 _AFT_BARS  = 2    # candles after close (just enough to show the close bar fully)
@@ -198,11 +210,12 @@ def render_rr_chart(
     # Sort top → bottom by nominal price, then shift any label that is too close
     # to the one above it. A thin connector line links label to its true price.
     MIN_LABEL_GAP = price_range * 0.045   # ~4.5% of visible range
+    _d = _price_digits(symbol)            # fixed digits → no float artefacts, consistent dp
     raw = sorted([
-        (tp_price,    _UP,    f"TP     {tp_price}"),
-        (entry_price, _ENTRY, f"Entry {entry_price}"),
-        (close_price, _CLOSE, f"Close {close_price}"),
-        (sl_price,    _DOWN,  f"SL     {sl_price}"),
+        (tp_price,    _UP,    f"TP     {tp_price:.{_d}f}"),
+        (entry_price, _ENTRY, f"Entry {entry_price:.{_d}f}"),
+        (close_price, _CLOSE, f"Close {close_price:.{_d}f}"),
+        (sl_price,    _DOWN,  f"SL     {sl_price:.{_d}f}"),
     ], key=lambda x: x[0], reverse=True)  # descending
 
     adj_ys = [raw[0][0]]

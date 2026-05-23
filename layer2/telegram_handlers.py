@@ -1424,8 +1424,8 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"Daily limit: ${daily_loss_amt:,.2f} ({daily_dd:.1f}% of day-start)  |  {k1_status}",
             f"Daily floor: <b>${daily_floor:,.2f}</b>  (resets each session)",
             f"Overall DD floor: ${overall_floor:,.2f}  (static from baseline)",
-            f"<code>{_pnl_bar(k1_bar_pct)}</code>  {k1_bar_pct:.1f}% of daily limit used",
-            f"<code>{_pnl_bar(k2_bar_pct)}</code>  {k2_bar_pct:.1f}% of overall DD consumed",
+            f"<code>{_pnl_bar(k1_bar_pct)}</code> of daily limit used",
+            f"<code>{_pnl_bar(k2_bar_pct)}</code> of overall DD consumed",
         ]
     if daily_cap_amt > 0:
         k3_status = "🔴 CAP HIT" if equity >= daily_cap_level else "🟢 Active"
@@ -1436,7 +1436,7 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"Daily cap level: <b>${daily_cap_level:,.2f}</b>  |  {k3_status}",
             f"Current equity: ${equity:,.2f}",
             f"Remaining today: <b>${daily_remaining:,.2f}</b>",
-            f"<code>{_pnl_bar(k3_bar_pct)}</code>  {k3_bar_pct:.1f}% of daily cap used",
+            f"<code>{_pnl_bar(k3_bar_pct)}</code> of daily cap used",
         ]
     if target_amt > 0:
         lines += [
@@ -1444,7 +1444,7 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"Target: {target_pct:.1f}% of baseline  =  ${target_amt:,.2f}",
             f"Target level: <b>${k4_target:,.2f}</b>",
             f"Progress: ${max(0.0, overall_pnl):,.2f} / ${target_amt:,.2f}",
-            f"<code>{_pnl_bar(k4_bar_pct)}</code>  {k4_bar_pct:.1f}%",
+            f"<code>{_pnl_bar(k4_bar_pct)}</code>",
         ]
 
     lines.append(

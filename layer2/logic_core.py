@@ -63,7 +63,7 @@ from layer2.zmq_helpers import (
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
     _update_day_start, _update_pers_day_start, _push_ticket,
-    _query_order_status,
+    _query_order_status, _query_order_check,
 )
 from layer2 import telegram_handlers
 from layer2 import phase1_strategy, phase2_strategy
@@ -356,6 +356,34 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
             _send_close_alert(symbol, entry["pers_data"], entry["prop_data"])
 
 
+def _order_check_leg_line(label: str, chk: dict) -> str:
+    """Per-leg status line for the pre-flight 'Signal Not Placed' alert (Issue 2)."""
+    verdict = chk.get("verdict", "?")
+    if verdict == "ok":
+        return f"<b>{label}</b>\nStatus: ✅ Can fill"
+    if verdict == "transient":
+        c = chk.get("comment") or "temporarily unavailable"
+        return f"<b>{label}</b>\nStatus: ⚠️ {c}"
+    # verdict == "reject" — explain why it would not fill
+    rc      = chk.get("retcode")
+    comment = (chk.get("comment") or "").strip()
+    mf      = chk.get("margin_free")
+    mneed   = chk.get("margin")
+    if rc == 10019 or (isinstance(mf, (int, float)) and mf < 0):
+        detail = "Not enough money"
+        if isinstance(mneed, (int, float)) and isinstance(mf, (int, float)):
+            detail += f" (needs ${mneed:,.2f} margin, free ${mf:,.2f})"
+        return f"<b>{label}</b>\nStatus: 🚫 REJECTED — {detail}"
+    reason_map = {
+        10014: "Invalid volume (lot size)",
+        10015: "Invalid price",
+        10016: "Invalid stops — SL/TP too close to price",
+        10017: "Trading disabled on this account",
+    }
+    reason = reason_map.get(rc) or comment or f"order_check retcode {rc}"
+    return f"<b>{label}</b>\nStatus: 🚫 REJECTED — {reason}"
+
+
 def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: dict | None) -> None:
     """Build and send the Position Closed Telegram alert for one symbol.
 
@@ -450,7 +478,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
             pnl        = deal["net_pnl"]
             exit_price = _fmt_price(symbol, deal["close_price"])
             commission = deal["commission"]
-            pnl_line   = f"P&amp;L: ${pnl:+,.2f}"
+            pnl_line   = f"Trade P&amp;L: ${pnl:+,.2f}"
             comm_line  = f"Commission: ${commission:+,.2f}"
         else:
             pnl = pos_data["profit"]
@@ -459,7 +487,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
                 _fmt_price(symbol, pos_data["tp"]) if pnl >= 0
                 else _fmt_price(symbol, pos_data["sl"])
             )
-            pnl_line  = f"P&amp;L: ${pnl:+,.2f} (est.)"
+            pnl_line  = f"Trade P&amp;L: ${pnl:+,.2f} (est.)"
             comm_line = None
         lines = [
             f"<b>{label} — {dir_str}</b>",
@@ -497,7 +525,7 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     except Exception:
         prop_eq_str = "OFFLINE"
     sections.append(
-        f"<b>Equity</b>\n"
+        f"<b>Account Equity</b>  <i>(whole account, not this trade)</i>\n"
         f"Personal Signal: {pers_eq_str}\n"
         f"Prop Hedge: {prop_eq_str}"
     )
@@ -1727,6 +1755,49 @@ async def receive_signal(request: Request):
     # Both tickets sent as market orders simultaneously
     prop_ticket["order_type"] = "market"
     pers_ticket["order_type"] = "market"
+
+    # ── Pre-flight feasibility check (Issue 2) ───────────────────────────────
+    # Confirm BOTH legs can actually fill BEFORE sending EITHER. A leg that would
+    # be rejected (e.g. personal "Not enough money") blocks the whole trade, so we
+    # never orphan the other leg and waste commission force-closing it afterwards.
+    # The orphan watcher stays in place purely as an emergency fallback.
+    prop_chk, pers_chk = await asyncio.gather(
+        asyncio.to_thread(
+            _query_order_check, ZMQ_REQ_PROP,
+            {"ticker": payload.ticker, "signal": prop_signal,
+             "lots": prop_lots, "sl": prop_sl, "tp": prop_tp},
+        ),
+        asyncio.to_thread(
+            _query_order_check, ZMQ_REQ_PERS,
+            {"ticker": payload.ticker, "signal": pers_signal,
+             "lots": pers_lots, "sl": pers_sl, "tp": pers_tp},
+        ),
+    )
+
+    if prop_chk.get("verdict") == "reject" or pers_chk.get("verdict") == "reject":
+        logger.warning(
+            "PRE-CHECK BLOCK %s — placing nothing | prop=%s(%s) pers=%s(%s)",
+            payload.ticker,
+            prop_chk.get("verdict"), prop_chk.get("comment"),
+            pers_chk.get("verdict"), pers_chk.get("comment"),
+        )
+        pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
+        await _telegram_alert(
+            f"🚫 <b>Signal Not Placed — {payload.ticker}</b>\n\n"
+            f"One leg cannot fill, so <b>no order was placed on either account</b> "
+            f"(prevents an orphaned trade + wasted commission).\n\n"
+            f"{_order_check_leg_line('Personal Signal', pers_chk)}\n\n"
+            f"{_order_check_leg_line('Prop Hedge', prop_chk)}\n\n"
+            f"<b>Signal</b>\n"
+            f"{pers_arrow} · Entry {_fmt_price(payload.ticker, payload.entry)} "
+            f"| SL {_fmt_price(payload.ticker, pers_sl)} | TP {_fmt_price(payload.ticker, pers_tp)}"
+        )
+        return JSONResponse({
+            "status": "rejected",
+            "reason": "preflight_order_check_failed",
+            "prop":   prop_chk,
+            "pers":   pers_chk,
+        })
 
     try:
         await asyncio.to_thread(_push_ticket, ZMQ_PUSH_PROP, prop_ticket)

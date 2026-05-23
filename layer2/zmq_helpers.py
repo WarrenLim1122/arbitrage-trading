@@ -314,6 +314,29 @@ def _query_account_mode(zmq_url: str) -> str:
         sock.close()
 
 
+def _query_order_check(zmq_url: str, order: dict) -> dict:
+    """Ask a Layer 3 worker whether a proposed market order would be accepted.
+
+    `order` keys: ticker, signal ("LONG"/"SHORT"), lots, sl, tp.
+    Returns the worker's verdict dict: {verdict: "ok"|"reject"|"transient", retcode,
+    comment, margin, margin_free, ...}. On transport error returns verdict="transient"
+    so a slow/unreachable check does not block a legitimate trade — the post-dispatch
+    verify + orphan watcher remain as the safety net.
+    """
+    sock = _zmq_ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.connect(zmq_url)
+    try:
+        sock.send_json({"query": "order_check", **order})
+        if not sock.poll(EQUITY_TIMEOUT):
+            return {"verdict": "transient", "comment": "order_check timed out", "retcode": None}
+        return sock.recv_json()
+    except Exception as exc:
+        return {"verdict": "transient", "comment": str(exc), "retcode": None}
+    finally:
+        sock.close()
+
+
 def _query_order_status(zmq_url: str, signal_id: str) -> dict:
     """Query Layer 3 for execution status of a pending/filled order by signal_id."""
     sock = _zmq_ctx.socket(zmq.REQ)

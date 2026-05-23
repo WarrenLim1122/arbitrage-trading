@@ -66,6 +66,83 @@ _DEAL_ENTRY_IN  = 0
 _DEAL_ENTRY_OUT = 1
 
 
+def _price_digits(symbol: str) -> int:
+    """Natural decimal digits for a symbol's price (mirrors layer2 _fmt_price).
+
+    JPY pairs = 3, Gold = 2, Silver = 4, all other FX = 5. Used to round price
+    fields before they are written to Firestore so float artefacts such as
+    1.3465500000000001 never reach the journal.
+    """
+    sym = (symbol or "").upper()
+    if "JPY" in sym:
+        return 3
+    if sym.startswith("XAU"):
+        return 2
+    if sym.startswith("XAG"):
+        return 4
+    return 5
+
+
+def _round_price(symbol: str, price):
+    """Round a price to its symbol's natural digits; pass through None / bad input."""
+    if price is None:
+        return price
+    try:
+        return round(float(price), _price_digits(symbol))
+    except (TypeError, ValueError):
+        return price
+
+
+# Last successfully-detected MT5 server→UTC offset, in hours. MT5 deal.time /
+# position.time are Unix timestamps expressed in the *trade server's* timezone
+# (e.g. MetaQuotes Demo = UTC+3 in summer), NOT true UTC. We subtract this
+# offset so the journal stores genuine UTC and the dashboard can render the
+# real exit time in Malaysia/SGT (UTC+8) without being hours off.
+_server_offset_cache = {"hours": None}
+
+
+def _mt5_server_utc_offset_hours(mt5_lock) -> float:
+    """Best-effort MT5 trade-server UTC offset (server_time = UTC + offset).
+
+    Resolution order:
+      1. MT5_SERVER_UTC_OFFSET_HOURS env var (per-worker override — most reliable
+         for a known broker; set it if auto-detect is unavailable).
+      2. Auto-detect from a fresh EURUSD/XAUUSD tick (handles DST while the
+         market is open).
+      3. Last value detected this process run.
+      4. 0.0 (treat server time as UTC).
+    """
+    env = os.getenv("MT5_SERVER_UTC_OFFSET_HOURS")
+    if env not in (None, ""):
+        try:
+            return float(env)
+        except ValueError:
+            logger.warning("MT5_SERVER_UTC_OFFSET_HOURS=%r is not a number — ignoring", env)
+
+    try:
+        import MetaTrader5 as mt5
+        with mt5_lock:
+            tick = mt5.symbol_info_tick("EURUSD") or mt5.symbol_info_tick("XAUUSD")
+        if tick and getattr(tick, "time", 0):
+            server_naive = datetime.utcfromtimestamp(tick.time)   # server clock, read as naive
+            real_utc     = datetime.utcnow()
+            diff_h       = (server_naive - real_utc).total_seconds() / 3600.0
+            offset       = round(diff_h)
+            # Trust only a FRESH tick: diff must sit within ~20 min of a whole hour
+            # and be a plausible magnitude. A stale weekend tick is hours off and rejected.
+            if abs(diff_h - offset) < 0.34 and abs(offset) <= 14:
+                if _server_offset_cache["hours"] != float(offset):
+                    logger.info("MT5 server UTC offset detected: %+d h", offset)
+                _server_offset_cache["hours"] = float(offset)
+                return float(offset)
+    except Exception as exc:
+        logger.warning("MT5 server offset auto-detect failed: %s", exc)
+
+    if _server_offset_cache["hours"] is not None:
+        return _server_offset_cache["hours"]
+    return 0.0
+
+
 def _get_deals(mt5_lock, position_ticket: int, open_time: datetime):
     """Return (entry_deals, exit_deals) for the given position ticket."""
     import MetaTrader5 as mt5
@@ -124,9 +201,9 @@ def _take_screenshot_immediate(
 
     symbol       = pos_snapshot.get("symbol", "")
     direction    = "LONG" if pos_snapshot.get("type") == 0 else "SHORT"
-    entry_price  = pos_snapshot.get("price_open", 0.0)
-    sl_price     = pos_snapshot.get("sl",         0.0) or 0.0
-    tp_price     = pos_snapshot.get("tp",         0.0) or 0.0
+    entry_price  = _round_price(symbol, pos_snapshot.get("price_open", 0.0))
+    sl_price     = _round_price(symbol, pos_snapshot.get("sl",         0.0) or 0.0)
+    tp_price     = _round_price(symbol, pos_snapshot.get("tp",         0.0) or 0.0)
     open_time    = pos_snapshot.get("open_time",  datetime.now(timezone.utc))
     volume       = pos_snapshot.get("volume",     0.0)
     close_reason = pos_snapshot.get("close_reason_override", "MARKET")
@@ -292,8 +369,8 @@ def handle_closed_position(
 
         # ── 3. Actual MT5 values ──────────────────────────────────────────
         direction   = "LONG" if pos_snapshot.get("type") == 0 else "SHORT"
-        entry_price = entry_deal.price if entry_deal else pos_snapshot.get("price_open", 0.0)
-        close_price = exit_deal.price
+        entry_price = _round_price(symbol, entry_deal.price if entry_deal else pos_snapshot.get("price_open", 0.0))
+        close_price = _round_price(symbol, exit_deal.price)
         volume      = round(exit_deal.volume, 2)
         close_time  = datetime.fromtimestamp(exit_deal.time, tz=timezone.utc)
 
@@ -305,8 +382,8 @@ def handle_closed_position(
 
         outcome = "WIN" if net_pnl >= 0 else "LOSS"
 
-        sl_price = pos_snapshot.get("sl", 0.0) or 0.0
-        tp_price = pos_snapshot.get("tp", 0.0) or 0.0
+        sl_price = _round_price(symbol, pos_snapshot.get("sl", 0.0) or 0.0)
+        tp_price = _round_price(symbol, pos_snapshot.get("tp", 0.0) or 0.0)
 
         rr_ratio = None
         if sl_price and tp_price and entry_price:
@@ -367,8 +444,14 @@ def handle_closed_position(
         )
 
         now_iso   = datetime.now(timezone.utc).isoformat()
-        open_iso  = (open_time if isinstance(open_time, datetime) else datetime.now(timezone.utc)).isoformat()
-        close_iso = close_time.isoformat()
+        # MT5 deal.time / position.time are server-tz Unix timestamps (not true UTC).
+        # Subtract the detected server offset so openTime/closeTime are genuine UTC —
+        # the trade's ACTUAL exit time, which the dashboard renders in UTC+8. Without
+        # this the journal would be hours off (and look like the journaling time).
+        server_offset = _mt5_server_utc_offset_hours(mt5_lock)
+        open_dt   = open_time if isinstance(open_time, datetime) else datetime.now(timezone.utc)
+        open_iso  = (open_dt    - timedelta(hours=server_offset)).isoformat()
+        close_iso = (close_time - timedelta(hours=server_offset)).isoformat()
         doc_id    = build_document_id(JOURNAL_ACCOUNT_TYPE, mt5_account_id, position_ticket)
 
         payload = {
