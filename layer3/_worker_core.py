@@ -43,6 +43,10 @@ WORKER_NAME  = os.getenv("WORKER_NAME", "worker")
 MT5_LOGIN    = int(os.environ["MT5_LOGIN"])
 MT5_PASSWORD = os.environ["MT5_PASSWORD"]
 MT5_SERVER   = os.environ["MT5_SERVER"]
+# Path to terminal64.exe. The MetaTrader5 library must LAUNCH its own terminal
+# instance — on the Windows VPS it cannot attach to a manually-opened terminal
+# (returns -10005 IPC timeout). Override per-VPS via .env if installed elsewhere.
+MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", r"C:\Program Files\MetaTrader 5\terminal64.exe")
 PULL_ADDR    = os.getenv("ZMQ_PULL_ADDR", "tcp://0.0.0.0:5555")
 REP_ADDR     = os.getenv("ZMQ_REP_ADDR",  "tcp://0.0.0.0:5556")
 MT5_MAGIC    = int(os.getenv("MT5_MAGIC", "20250001"))
@@ -190,7 +194,13 @@ def _connect_mt5() -> None:
     global _account_mode
     while True:
         with _mt5_lock:
-            ok = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
+            # Pass the explicit path so the library launches and owns the terminal.
+            # Attaching to a manually-opened terminal fails with -10005 IPC timeout
+            # on the VPS, so no MT5 terminal may be running when the worker starts.
+            ok = mt5.initialize(
+                MT5_TERMINAL_PATH,
+                login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER,
+            )
         if ok:
             with _mt5_lock:
                 acct     = mt5.account_info()
@@ -204,7 +214,11 @@ def _connect_mt5() -> None:
                     "Enable via Tools → Options → Expert Advisors → Allow automated trading."
                 )
             return
-        logger.error("MT5 init failed (%s) — retrying in %ds", mt5.last_error(), RECONNECT_DELAY)
+        logger.error(
+            "MT5 init failed (%s) — retrying in %ds. If this is IPC timeout, close "
+            "any manually-opened MT5: the worker must launch its own (path=%s).",
+            mt5.last_error(), RECONNECT_DELAY, MT5_TERMINAL_PATH,
+        )
         time.sleep(RECONNECT_DELAY)
 
 
