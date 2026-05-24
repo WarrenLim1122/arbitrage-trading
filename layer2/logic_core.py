@@ -122,9 +122,13 @@ def _maybe_block_alert(ticker: str, reason_tag: str) -> bool:
 
 
 # ── Dynamic session-time helpers (no static "12:00 SGT" anywhere) ─────────
-# Auto-resume actually happens at max(prop-firm day rollover @ 11:00 SGT,
-# trading-window start). The text shown to the user must reflect the
-# live trading_window config so /setwindow takes effect immediately.
+# Two distinct resume semantics — do NOT collapse them into one helper:
+#   • Kill auto-resume  → max(prop-firm day roll @ 11:00 SGT, window start).
+#       Gated by the monitor on _propfirm_day() rolling AND not-curfew, so the
+#       11:00 floor is real here.  Use _next_session_resume_text().
+#   • Curfew resume     → trading-window start only (+ weekend), NO 11:00 floor.
+#       Gated purely by _is_sgt_curfew(). Use _next_window_open_text().
+# Both reflect the live trading_window so /setwindow takes effect immediately.
 
 _PROPFIRM_DAY_ROLL_MIN = 11 * 60  # 11:00 SGT = FundingPips daily reset
 
@@ -137,7 +141,7 @@ def _effective_window_text() -> tuple[str, str]:
 
 
 def _next_session_resume_text() -> str:
-    """Format the next auto-resume time as 'HH:MM SGT'.
+    """Format the next kill auto-resume time as 'HH:MM SGT'.
 
     Auto-resume = max(prop-firm day roll @ 11:00 SGT, trading-window start).
     Uses next_window if scheduled (it swaps to current at the day roll).
@@ -149,6 +153,21 @@ def _next_session_resume_text() -> str:
     win_min = h * 60 + m
     resume_min = max(win_min, _PROPFIRM_DAY_ROLL_MIN)
     return f"{resume_min // 60:02d}:{resume_min % 60:02d} SGT"
+
+
+def _next_window_open_text() -> str:
+    """Format the next trading-window open as 'HH:MM SGT' (curfew resume).
+
+    Curfew lifts purely on the trading window + weekend (see _is_sgt_curfew),
+    with NO prop-firm 11:00 floor — unlike _next_session_resume_text(). So this
+    reflects the live window start verbatim: a 00:00–00:00 window resumes at
+    00:00 SGT, not 11:00. Uses next_window if scheduled.
+    """
+    with _window_lock:
+        nxt   = _trading_window.get("next_window") or _trading_window["current_window"]
+        start = nxt.get("start", "12:00")
+    h, m = map(int, start.split(":"))
+    return f"{h:02d}:{m:02d} SGT"
 
 
 def _curfew_range_text() -> str:
@@ -803,7 +822,7 @@ def _run_equity_check() -> None:
             _alert_sync(
                 f"🌙 <b>Curfew — All positions closed</b>\n\n"
                 f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"Resumes at next session ({_next_session_resume_text()})."
+                f"Resumes at next session ({_next_window_open_text()})."
             )
             _last_curfew_close_date = today
         _pos_tracking_initialized = False

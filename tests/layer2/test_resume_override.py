@@ -93,3 +93,37 @@ def test_window_minutes_treats_zero_end_as_eod():
     assert state._window_minutes("00:00", is_end=True)  == 1440   # end-of-day
     assert state._window_minutes("12:00", is_end=False) == 720
     assert state._window_minutes("12:30", is_end=True)  == 750
+
+
+def test_curfew_resume_text_has_no_11sgt_floor(tmp_path, monkeypatch):
+    """The curfew message must show the live window start, not a prop-firm 11:00 floor.
+
+    Regression: the curfew "Resumes at next session (…)" alert reused
+    _next_session_resume_text(), whose max(window_start, 11:00) floor belongs to
+    *kill* auto-resume (gated on the prop-firm day roll). Curfew is governed
+    purely by _is_sgt_curfew (window + weekend), so a 00:00–00:00 window actually
+    resumes at 00:00 SGT — the message used to claim 11:00.
+    """
+    from layer2 import logic_core
+
+    monkeypatch.setattr(state, "TRADING_WINDOW_PATH", tmp_path / "trading_window.json")
+
+    # 24-hour window: curfew lifts at the window start (00:00), no 11:00 floor.
+    state._trading_window["current_window"] = {"start": "00:00", "end": "00:00"}
+    state._trading_window["next_window"] = None
+    assert logic_core._next_window_open_text() == "00:00 SGT"
+    # Kill-resume still floors at the prop-firm 11:00 roll for the same window.
+    assert logic_core._next_session_resume_text() == "11:00 SGT"
+
+    # A window opening after 11:00 reads identically on both helpers.
+    state._trading_window["current_window"] = {"start": "12:00", "end": "00:00"}
+    assert logic_core._next_window_open_text() == "12:00 SGT"
+    assert logic_core._next_session_resume_text() == "12:00 SGT"
+
+    # A scheduled next_window takes precedence (swaps in at the rollover).
+    state._trading_window["next_window"] = {"start": "08:00", "end": "20:00"}
+    assert logic_core._next_window_open_text() == "08:00 SGT"
+
+    # Restore defaults so other tests aren't affected.
+    state._trading_window["current_window"] = {"start": "12:00", "end": "00:00"}
+    state._trading_window["next_window"] = None
