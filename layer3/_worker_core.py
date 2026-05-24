@@ -24,6 +24,8 @@ Environment variables:
 import json
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -190,13 +192,34 @@ def _resolve_account_mode(acct) -> str:
     return "unknown"
 
 
+def _kill_stray_terminals() -> None:
+    """Terminate any running MT5 terminal so the library can launch a fresh
+    instance it owns. On the VPS the Python<->MT5 IPC only works for a terminal
+    the library started itself — attaching to a leftover or manually-opened one
+    returns -10005 IPC timeout. These VPSes run a single MT5 dedicated to this
+    worker, so killing terminal64.exe on (re)connect is safe and intended."""
+    if sys.platform != "win32":
+        return
+    exe = os.path.basename(MT5_TERMINAL_PATH)  # e.g. terminal64.exe
+    try:
+        res = subprocess.run(["taskkill", "/F", "/IM", exe],
+                             capture_output=True, text=True, timeout=15)
+        if res.returncode == 0:
+            logger.info("Killed stray %s so the worker can launch its own terminal", exe)
+            time.sleep(2)  # let Windows release the process before relaunch
+    except Exception as e:  # pragma: no cover - best-effort cleanup
+        logger.warning("Could not kill stray %s: %s", exe, e)
+
+
 def _connect_mt5() -> None:
     global _account_mode
     while True:
+        _kill_stray_terminals()
         with _mt5_lock:
             # Pass the explicit path so the library launches and owns the terminal.
             # Attaching to a manually-opened terminal fails with -10005 IPC timeout
-            # on the VPS, so no MT5 terminal may be running when the worker starts.
+            # on the VPS, so we kill any stray terminal first (above) and let the
+            # library start its own instance here.
             ok = mt5.initialize(
                 MT5_TERMINAL_PATH,
                 login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER,
