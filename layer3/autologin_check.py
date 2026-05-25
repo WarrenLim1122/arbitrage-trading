@@ -1,17 +1,21 @@
-"""One-off validation for the dynamic auto-login design.
+"""One-off validation for the dynamic auto-login design (two-phase).
 
-Proves we can connect to the account specified in `.env` WITHOUT a runtime
-account switch (which kills the Python<->terminal IPC pipe, see -10005 timeout).
+Problem recap:
+  * Switching accounts at runtime kills the Python<->terminal IPC (-10005).
+  * The MetaTrader5 library can only attach to a terminal IT launched itself,
+    not one launched by a separate process. So we can't just launch with
+    /config and attach.
 
-Mechanism:
-  1. Read MT5_LOGIN / MT5_PASSWORD / MT5_SERVER from `.env`.
-  2. Write a tiny MT5 startup .ini ([Common] Login/Password/Server).
-  3. Kill any running terminal, then launch terminal64.exe WITH that .ini so it
-     auto-logs straight into the target account (no demo first -> no switch).
-  4. Attach with mt5.initialize() (no creds) and verify we landed on the right
-     account with a live connection.
+Two-phase solution (driven entirely by .env):
+  Phase 1 — launch terminal64.exe WITH a /config startup .ini built from
+            MT5_LOGIN/PASSWORD/SERVER, so MT5 logs into the target account and
+            saves it as the terminal's default. Then close it (gracefully, so
+            the default persists).
+  Phase 2 — let mt5.initialize(path) launch its OWN terminal. It auto-logs into
+            the now-saved default (= target account). The library owns this
+            terminal, so the IPC works. No account switch ever happens.
 
-Run on the VPS:
+Run on the VPS (do NOT click inside the window while it runs — that freezes it):
     cd C:\\arbitrage
     uv run --extra layer3 python layer3/autologin_check.py
 """
@@ -33,8 +37,6 @@ LOGIN = int(os.environ["MT5_LOGIN"])
 PASSWORD = os.environ["MT5_PASSWORD"]
 SERVER = os.environ["MT5_SERVER"]
 
-# Resolve terminal path: env override, else auto-discover. The wildcard avoids
-# the 'MetaTrader 5' space getting mangled on paste.
 term = os.getenv("MT5_TERMINAL_PATH")
 if not term or not os.path.exists(term):
     matches = glob.glob(r"C:\Program Files\MetaTrader*\terminal64.exe")
@@ -44,7 +46,6 @@ print(f"terminal path = {term}")
 if not term or not os.path.exists(term):
     sys.exit("ERROR: could not find terminal64.exe")
 
-# Write the startup config next to the project config dir.
 ini_path = Path(__file__).resolve().parent.parent / "config" / "mt5_autologin.ini"
 ini_path.write_text(
     "[Common]\n"
@@ -53,35 +54,45 @@ ini_path.write_text(
     f"Server={SERVER}\n",
     encoding="utf-8",
 )
-print(f"wrote ini  = {ini_path}")
-print(f"target     = login {LOGIN} on {SERVER}")
+print(f"target        = login {LOGIN} on {SERVER}")
 
-# Kill any running terminal so our ini-launch is the only instance.
-subprocess.run(["taskkill", "/F", "/IM", "terminal64.exe"], capture_output=True, text=True)
+
+def kill_terminals(graceful: bool) -> None:
+    args = ["taskkill", "/IM", "terminal64.exe"] if graceful else ["taskkill", "/F", "/IM", "terminal64.exe"]
+    subprocess.run(args, capture_output=True, text=True)
+
+
+# ── Phase 1: set the target account as the terminal's saved default ──────────
+print("\n[Phase 1] launching with /config to set the default account ...")
+kill_terminals(graceful=False)
 time.sleep(2)
-
-# Launch the terminal ourselves WITH the startup config -> direct auto-login.
-print("launching terminal with /config ...")
 subprocess.Popen([term, f"/config:{ini_path}"])
+print("[Phase 1] waiting 35s for login + config persist ...")
+time.sleep(35)
+print("[Phase 1] closing the config-launched terminal (graceful, so it saves) ...")
+kill_terminals(graceful=True)
+time.sleep(8)
+kill_terminals(graceful=False)
+time.sleep(3)
 
-# Poll: attach, then wait until it's connected on the right account.
-deadline = time.time() + 180
+# ── Phase 2: library launches its OWN terminal -> auto-login to saved default ─
+print("\n[Phase 2] library launching its own terminal (auto-login to default) ...")
+deadline = time.time() + 120
 ok = False
 ai = ti = None
 while time.time() < deadline:
+    if mt5.initialize(term):
+        ti = mt5.terminal_info()
+        ai = mt5.account_info()
+        acct = ai.login if ai else None
+        conn = ti.connected if ti else None
+        print(f"  ... init ok: account={acct} connected={conn}")
+        if ai and ai.login == LOGIN and ti and ti.connected:
+            ok = True
+            break
+    else:
+        print(f"  ... init not ready ({mt5.last_error()})")
     time.sleep(5)
-    attached = mt5.initialize() or mt5.initialize(term)
-    if not attached:
-        print(f"  ... not attached yet ({mt5.last_error()})")
-        continue
-    ti = mt5.terminal_info()
-    ai = mt5.account_info()
-    acct = ai.login if ai else None
-    conn = ti.connected if ti else None
-    print(f"  ... attached: account={acct} connected={conn}")
-    if ai and ai.login == LOGIN and ti and ti.connected:
-        ok = True
-        break
 
 print("-" * 50)
 print(f"last_error = {mt5.last_error()}")
