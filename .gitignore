@@ -13,6 +13,9 @@ dist/
 secrets/
 serviceAccountKey.json
 firebase-service-account.json
+
+# MT5 startup config — generated at runtime, contains plaintext password
+config/mt5_autologin.ini
 *.service-account.json
 
 # Journal runtime files
