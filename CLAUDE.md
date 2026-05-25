@@ -74,7 +74,7 @@ VPS #1 layers run as systemd services (auto-restart). VPS #2/#3 workers run in P
 | 0 — Signal Engine | `layer0/1D-15m Breakout INDICATOR.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `news_filter.py`, `ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
 | 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). **Critical phase1-persistence fix shipped session 13** (see Current State). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
-| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ LIVE — pending `/update layer3` option 1 for immediate screenshot architecture (session 12) |
+| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ⚠️ **Live cutover BLOCKED (2026-05-25)** — both broker accounts authenticate but receive **no price feed** → MT5 never IPC-ready → `-10005`. Account-side, not code. Connection code reverted to clean baseline `dca600f`. See Current State. |
 
 ## Covered Instruments
 
@@ -95,6 +95,7 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 - `baseline_equity` and `pers_baseline_equity` are **immutable** — only written by `/changepropfirm` wizard or `/phase2` wizard. Never auto-set from MT5 balance.
 - **Both live MT5 accounts MUST be USD-denominated.** The system has no multi-currency support: it reads MT5 `trade_tick_value` and `deal.profit/commission/swap` (broker returns these in account deposit currency) and labels everything `$`. A SGD personal account would not break lot sizing or kills (personal lots = `prop_lots × phase_ratio`; all kills are prop-side) but would mislabel personal P&L/risk in every alert and silently mix SGD+USD when comparing the two legs. Decided 2026-05-19: open the real Fusion Markets account in **USD**, not SGD. **If Warren re-asks the SGD/USD question, answer from `docs/Account_Currency_Decision.md` — restate its one-line conclusion + workflow, do not re-derive from the code.**
 - Phase switching: Telegram-only (`/phase1`, `/phase2`).
+- **MT5 connection (Layer 3):** the `MetaTrader5` lib only gets IPC for a terminal **it self-launches**; a runtime account switch (creds in `initialize()` or `login()` off the saved default) kills the pipe (`-10005`); and a terminal with **no incoming price feed never becomes IPC-ready** (`-10005`). Make the target the terminal's saved default via a one-time MT5 UI login with **"Save password"** ticked, then `initialize(path)` + a hard guard `account_info().login == MT5_LOGIN`; never switch at runtime. Full detail: `mt5-python-integration-constraints` memory + `handoff/SESSION-HANDOFF.md`.
 - ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open between VPS #1 and VPS #2/#3.
 - TradingView Premium required for webhook delivery.
 - One TradingView chart per instrument — 8 charts, 8 pairs.
@@ -118,17 +119,17 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ---
 
-## Current State (as of 2026-05-19, session 13)
+## Current State (as of 2026-05-25)
 
-All four layers deployed and operational. Gate D demo run started 2026-04-25 (7-day window passed; proceed to live when ready).
+**Live-account cutover is BLOCKED — and the blocker is account-side, not code.** Full thread in `handoff/SESSION-HANDOFF.md`; durable MT5 facts in the `mt5-python-integration-constraints` memory.
 
-Phase 1/Phase 2 strategy modules split: Phase 1 uses dynamic reward-targeting with a −0.5pp daily buffer; Phase 2 logic unchanged. Trade Opened alert is now phase-aware (Phase 1 shows active stage; Phase 2 alert text byte-identical).
+**Root cause (confirmed):** both real broker accounts — personal `459166` (FusionMarkets-Live) and prop `12250900` (FundingPips2-SIM) — **authenticate but receive no market-data feed** (prices frozen at ~2015 values). A MT5 terminal with no incoming ticks never becomes IPC-ready, so the `MetaTrader5` Python lib times out with `-10005`. The MetaQuotes demo on the same VPS streams live and connects in ~6s, proving VPS + MT5 + symbols + code are fine. Conclusion: the two accounts are **not actually streaming → almost certainly not funded / not activated** with their brokers. Warren confirmed prices are not moving on both.
 
-**Critical fix shipped (session 13, commits `a354119` + `a3fdb2f`)**: Phase 1 signals were being blocked with *"Phase 1 not configured — run /phase1 to set reward:risk first"* even though `/phase1` had been confirmed and `/status` showed Phase 1 Active. Root cause: `state._save_phase()` overwrote the whole `phase_config.json` with the in-memory `_phase_state` dict, which does not own the nested `phase1` block — `/resume` (the bot's own prescribed next step after `/phase1`) and ~12 other `_save_phase(_phase_state)` sites silently deleted the reward:risk/stages block (and, after a service restart, reverted the live ratchet from a stale snapshot). Fix: `_save_phase` now has explicit `owns_phase1` ownership; only `_phase1_init/_active_stage/_record_stage_day` write `phase1`, all other sites preserve the on-disk block; atomic temp+rename write; phase1 snapshot stripped from `_phase_state` at import. Covered by 3 regression tests in `tests/layer2/test_phase1_state.py`.
+**Code state:** reverted to clean pre-issue baseline **`dca600f`**. `_connect_mt5()` is back to original `mt5.initialize(login, password, server)`; the prior IPC-debug churn (force-kill stray terminal + explicit-path launch) and the throwaway diagnostic script were removed so they don't confound future work. The proper self-launch + account-guard rewrite is **deferred until the accounts actually stream prices**.
 
-**Recovery required after deploy** — the live `config/phase_config.json` no longer has a `phase1` block (already wiped). The code fix prevents future loss but cannot resurrect it. Warren must reconfigure once after updating.
+**Next action:**
+1. **Broker side (the gate):** fund/activate FusionMarkets `459166`; verify FundingPips `12250900` is active (not breached/expired/reset) with current creds. In each MT5: bottom-right status (red "No connection" vs green-but-frozen) tells connection-vs-data. **Done when prices MOVE.**
+2. **Once an account streams**, implement `_connect_mt5()` = `mt5.initialize(MT5_TERMINAL_PATH)` self-launch + hard guard `account_info().login == MT5_LOGIN` (never switch at runtime); one-time MT5 UI "Save password" login per account makes it the terminal default. Validate, deploy, `/health` → green.
+3. **Housekeeping:** delete leftover `C:\arbitrage\config\mt5_autologin.ini` on both VPSes (plaintext password, unused); `git pull` on both VPSes to get `dca600f`.
 
-**Next action**:
-1. `/update layer2` on VPS #1 (ships this phase1 fix + Trade Opened format; no `uv sync` — `pyproject.toml` unchanged).
-2. In Telegram: `/phase1` → send `reward:risk` → `CONFIRM` → `/resume`. The block now survives `/resume`, all state writes, and service restarts. Verify with `/status`.
-3. Then `/update layer3` → option 1 (Personal) on VPS #2 (immediate screenshot + `SCREENSHOT_ONLY_FOR_TP_SL` fix). Then switch to real Fusion Markets + FundingPips accounts when ready.
+**Still pending from before this blocker (carryover — verify status):** `/update layer2` for the session-13 phase1-persistence fix (+ Trade Opened reformat) and the post-deploy `/phase1`→`reward:risk`→`CONFIRM`→`/resume` reconfigure; Issues 1–7 deploy via `/update layer2` then `/update layer3` opt 1+2; the Telegram close-alert P&L breakdown (see Pending Changes above).
