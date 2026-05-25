@@ -1,30 +1,25 @@
-"""One-off validation for the dynamic auto-login design (two-phase).
+"""Diagnostic: determine how to get the MT5 Python library connected to the
+.env account on THIS VPS.
 
-Problem recap:
-  * Switching accounts at runtime kills the Python<->terminal IPC (-10005).
-  * The MetaTrader5 library can only attach to a terminal IT launched itself,
-    not one launched by a separate process. So we can't just launch with
-    /config and attach.
+Known so far:
+  * Switching accounts at runtime kills the IPC (-10005).
+  * Library self-launch boots into a sticky MetaQuotes demo (not our target).
+  * /config subprocess launch reaches the target, but it's unknown whether the
+    library can attach to a terminal it didn't launch.
 
-Two-phase solution (driven entirely by .env):
-  Phase 1 — launch terminal64.exe WITH a /config startup .ini built from
-            MT5_LOGIN/PASSWORD/SERVER, so MT5 logs into the target account and
-            saves it as the terminal's default. Then close it (gracefully, so
-            the default persists).
-  Phase 2 — let mt5.initialize(path) launch its OWN terminal. It auto-logs into
-            the now-saved default (= target account). The library owns this
-            terminal, so the IPC works. No account switch ever happens.
+This runs two tests and writes everything to config/autologin_diag.txt so a
+frozen ("Select") console can't lose the result.
 
-Run on the VPS (do NOT click inside the window while it runs — that freezes it):
+Run on the VPS (don't click inside the window), then show me the file:
     cd C:\\arbitrage
     uv run --extra layer3 python layer3/autologin_check.py
+    type config\\autologin_diag.txt
 """
 from __future__ import annotations
 
 import glob
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -32,7 +27,6 @@ from dotenv import load_dotenv
 import MetaTrader5 as mt5
 
 load_dotenv()
-
 LOGIN = int(os.environ["MT5_LOGIN"])
 PASSWORD = os.environ["MT5_PASSWORD"]
 SERVER = os.environ["MT5_SERVER"]
@@ -42,67 +36,78 @@ if not term or not os.path.exists(term):
     matches = glob.glob(r"C:\Program Files\MetaTrader*\terminal64.exe")
     if matches:
         term = matches[0]
-print(f"terminal path = {term}")
-if not term or not os.path.exists(term):
-    sys.exit("ERROR: could not find terminal64.exe")
 
-ini_path = Path(__file__).resolve().parent.parent / "config" / "mt5_autologin.ini"
-ini_path.write_text(
-    "[Common]\n"
-    f"Login={LOGIN}\n"
-    f"Password={PASSWORD}\n"
-    f"Server={SERVER}\n",
-    encoding="utf-8",
-)
-print(f"target        = login {LOGIN} on {SERVER}")
+base = Path(__file__).resolve().parent.parent / "config"
+out = base / "autologin_diag.txt"
+ini = base / "mt5_autologin.ini"
+_lines: list[str] = []
 
 
-def kill_terminals(graceful: bool) -> None:
-    args = ["taskkill", "/IM", "terminal64.exe"] if graceful else ["taskkill", "/F", "/IM", "terminal64.exe"]
+def log(s: str = "") -> None:
+    print(s)
+    _lines.append(s)
+    out.write_text("\n".join(_lines), encoding="utf-8")
+
+
+def kill(force: bool = True) -> None:
+    args = ["taskkill"] + (["/F"] if force else []) + ["/IM", "terminal64.exe"]
     subprocess.run(args, capture_output=True, text=True)
 
 
-# ── Phase 1: set the target account as the terminal's saved default ──────────
-print("\n[Phase 1] launching with /config to set the default account ...")
-kill_terminals(graceful=False)
+def running() -> bool:
+    r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq terminal64.exe"],
+                       capture_output=True, text=True)
+    return "terminal64.exe" in r.stdout
+
+
+def acct_line(tag: str, ok) -> None:
+    ai = mt5.account_info()
+    ti = mt5.terminal_info()
+    log(f"{tag}: ok={ok} err={mt5.last_error()} "
+        f"account={ai.login if ai else None} connected={ti.connected if ti else None}")
+    if ai and ai.login == LOGIN:
+        log(f"    --> ON TARGET ({LOGIN})")
+
+
+log(f"target   = {LOGIN} on {SERVER}")
+log(f"terminal = {term}")
+ini.write_text(f"[Common]\nLogin={LOGIN}\nPassword={PASSWORD}\nServer={SERVER}\n",
+               encoding="utf-8")
+
+kill()
 time.sleep(2)
-subprocess.Popen([term, f"/config:{ini_path}"])
-print("[Phase 1] waiting 35s for login + config persist ...")
-time.sleep(35)
-print("[Phase 1] closing the config-launched terminal (graceful, so it saves) ...")
-kill_terminals(graceful=True)
-time.sleep(8)
-kill_terminals(graceful=False)
-time.sleep(3)
 
-# ── Phase 2: library launches its OWN terminal -> auto-login to saved default ─
-print("\n[Phase 2] library launching its own terminal (auto-login to default) ...")
-deadline = time.time() + 120
-ok = False
-ai = ti = None
-while time.time() < deadline:
-    if mt5.initialize(term):
-        ti = mt5.terminal_info()
-        ai = mt5.account_info()
-        acct = ai.login if ai else None
-        conn = ti.connected if ti else None
-        print(f"  ... init ok: account={acct} connected={conn}")
-        if ai and ai.login == LOGIN and ti and ti.connected:
-            ok = True
-            break
-    else:
-        print(f"  ... init not ready ({mt5.last_error()})")
-    time.sleep(5)
-
-print("-" * 50)
-print(f"last_error = {mt5.last_error()}")
-if ai:
-    print(f"account    = {ai.login}")
-    print(f"server     = {ai.server}")
-    print(f"balance    = {ai.balance}")
-if ti:
-    print(f"connected     = {ti.connected}")
-    print(f"trade_allowed = {ti.trade_allowed}")
-print("=" * 50)
-print("RESULT:", "MATCH - auto-login works" if ok else "NO MATCH - needs adjustment")
+# ── TEST 1: can the library ATTACH to a /config-launched terminal? ───────────
+log("\n=== TEST 1: attach to a /config-launched terminal (already on target) ===")
+subprocess.Popen([term, f"/config:{ini}"])
+log("launched with /config; waiting 40s to settle on target...")
+time.sleep(40)
+ok = mt5.initialize()          # no path -> pure attach to the running terminal
+acct_line("initialize() no-path", ok)
 mt5.shutdown()
+time.sleep(3)
+ok = mt5.initialize(term)      # path -> attach to running instance
+acct_line("initialize(path)   ", ok)
+mt5.shutdown()
+
+# ── TEST 2: does /config persist as the default after a CLEAN close? ─────────
+log("\n=== TEST 2: does /config persist as default after a clean close ===")
+kill(force=False)              # graceful WM_CLOSE so it can save
+exited = False
+for _ in range(30):
+    if not running():
+        exited = True
+        break
+    time.sleep(2)
+log(f"graceful close: clean_exit={exited}")
+kill()
+time.sleep(3)
+ok = mt5.initialize(term)      # library self-launch -> auto-login to its default
+acct_line("library self-launch", ok)
+mt5.shutdown()
+kill()
+
+log("\n=== READS ===")
+log("TEST 1 ON TARGET  -> attach works -> simplest fix (launch /config, attach).")
+log("TEST 2 ON TARGET  -> set-default sticks -> set via /config, then self-launch.")
+log("Neither ON TARGET -> need a dedicated data dir / persistent config; tell Claude.")
