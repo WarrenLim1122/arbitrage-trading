@@ -105,6 +105,8 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 
 ## VPS MT5 Setup (one-time per account — the workflow that wasted weeks)
 
+> Full debugging journey + diagnostic checklist + what NOT to chase next time: `docs/MT5_VPS_Connection_Postmortem.md`.
+
 **Success signal: bottom-right of MT5 turns green + shows a data rate (e.g. `22.0/0.0 Mb`) AND prices in Market Watch are ticking.** If still "n/a" or "0/0 Kb" after login, the connection is dead, not just slow — try the other workflow option below.
 
 ### Option 2 (RECOMMENDED — try this first; desktop-only)
