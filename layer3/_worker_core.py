@@ -198,19 +198,28 @@ def _resolve_account_mode(acct) -> str:
 
 def _resolve_terminal_path() -> str:
     """Find terminal64.exe. MT5_TERMINAL_PATH wins if set + exists; otherwise
-    glob C:\\Program Files\\MetaTrader*\\terminal64.exe (handles both
-    "MetaTrader 5" and the space-eaten "MetaTrader5" form noVNC can produce).
+    glob C:\\Program Files\\*MetaTrader*\\terminal64.exe — catches the
+    branded installs (e.g. "Fusion Markets MetaTrader 5", "FundingPips
+    MetaTrader 5") plus the generic "MetaTrader 5" and space-eaten
+    "MetaTrader5" forms. If multiple installs match, warns and picks the
+    first — set MT5_TERMINAL_PATH explicitly to disambiguate.
     """
     if MT5_TERMINAL_PATH and os.path.exists(MT5_TERMINAL_PATH):
         return MT5_TERMINAL_PATH
-    candidates = glob.glob(r"C:\Program Files\MetaTrader*\terminal64.exe")
-    if candidates:
-        return candidates[0]
-    raise RuntimeError(
-        f"MT5 terminal64.exe not found. MT5_TERMINAL_PATH={MT5_TERMINAL_PATH!r}; "
-        r"also searched C:\Program Files\MetaTrader*\terminal64.exe. "
-        "Install MT5 or set MT5_TERMINAL_PATH in .env."
-    )
+    candidates = glob.glob(r"C:\Program Files\*MetaTrader*\terminal64.exe")
+    if not candidates:
+        raise RuntimeError(
+            f"MT5 terminal64.exe not found. MT5_TERMINAL_PATH={MT5_TERMINAL_PATH!r}; "
+            r"also searched C:\Program Files\*MetaTrader*\terminal64.exe. "
+            "Install MT5 or set MT5_TERMINAL_PATH in .env."
+        )
+    if len(candidates) > 1:
+        logger.warning(
+            "Multiple MT5 installs found: %s. Picking %s. "
+            "Set MT5_TERMINAL_PATH in .env to choose explicitly.",
+            candidates, candidates[0],
+        )
+    return candidates[0]
 
 
 def _connect_mt5() -> None:
