@@ -12,15 +12,24 @@ New in v2:
   - Dormant guard: incoming execution tickets are silently dropped while dormant.
 
 Environment variables:
-  WORKER_NAME    — "prop" or "personal"
-  MT5_LOGIN      — integer MT5 account number
-  MT5_PASSWORD   — MT5 account password
-  MT5_SERVER     — MT5 broker server name
-  ZMQ_PULL_ADDR  — execution ticket listener  (default tcp://0.0.0.0:5555)
-  ZMQ_REP_ADDR   — equity query responder     (default tcp://0.0.0.0:5556)
-  MT5_MAGIC      — EA magic number            (default 20250001)
+  WORKER_NAME       — "prop" or "personal"
+  MT5_LOGIN         — integer MT5 account number (used for the hard account guard)
+  MT5_PASSWORD      — MT5 account password (reference only — auth is via MT5 UI saved default)
+  MT5_SERVER        — MT5 broker server name  (reference only — same reason)
+  MT5_TERMINAL_PATH — full path to terminal64.exe; glob-fallback if unset
+                      (default search: C:\\Program Files\\MetaTrader*\\terminal64.exe)
+  ZMQ_PULL_ADDR     — execution ticket listener  (default tcp://0.0.0.0:5555)
+  ZMQ_REP_ADDR      — equity query responder     (default tcp://0.0.0.0:5556)
+  MT5_MAGIC         — EA magic number            (default 20250001)
+
+MT5 connection model (see _connect_mt5 docstring for full setup):
+  The MetaTrader5 Python lib only obtains IPC with a terminal it self-launches.
+  We launch terminal64.exe via mt5.initialize(path) and let it load its
+  saved-default account. The .env MT5_LOGIN is then enforced as a hard guard
+  via account_info().login — mismatch = fatal exit, never trade.
 """
 
+import glob
 import json
 import logging
 import os
@@ -39,13 +48,14 @@ from ._retry import run_market_retry
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────
-WORKER_NAME  = os.getenv("WORKER_NAME", "worker")
-MT5_LOGIN    = int(os.environ["MT5_LOGIN"])
-MT5_PASSWORD = os.environ["MT5_PASSWORD"]
-MT5_SERVER   = os.environ["MT5_SERVER"]
-PULL_ADDR    = os.getenv("ZMQ_PULL_ADDR", "tcp://0.0.0.0:5555")
-REP_ADDR     = os.getenv("ZMQ_REP_ADDR",  "tcp://0.0.0.0:5556")
-MT5_MAGIC    = int(os.getenv("MT5_MAGIC", "20250001"))
+WORKER_NAME       = os.getenv("WORKER_NAME", "worker")
+MT5_LOGIN         = int(os.environ["MT5_LOGIN"])
+MT5_PASSWORD      = os.getenv("MT5_PASSWORD", "")  # reference only — see module docstring
+MT5_SERVER        = os.getenv("MT5_SERVER",   "")  # reference only — see module docstring
+MT5_TERMINAL_PATH = os.getenv("MT5_TERMINAL_PATH", "")
+PULL_ADDR         = os.getenv("ZMQ_PULL_ADDR", "tcp://0.0.0.0:5555")
+REP_ADDR          = os.getenv("ZMQ_REP_ADDR",  "tcp://0.0.0.0:5556")
+MT5_MAGIC         = int(os.getenv("MT5_MAGIC", "20250001"))
 
 JOURNAL_ENABLED = os.getenv("FIREBASE_JOURNAL_ENABLED", "false").lower() == "true"
 
@@ -186,26 +196,97 @@ def _resolve_account_mode(acct) -> str:
     return "unknown"
 
 
+def _resolve_terminal_path() -> str:
+    """Find terminal64.exe. MT5_TERMINAL_PATH wins if set + exists; otherwise
+    glob C:\\Program Files\\MetaTrader*\\terminal64.exe (handles both
+    "MetaTrader 5" and the space-eaten "MetaTrader5" form noVNC can produce).
+    """
+    if MT5_TERMINAL_PATH and os.path.exists(MT5_TERMINAL_PATH):
+        return MT5_TERMINAL_PATH
+    candidates = glob.glob(r"C:\Program Files\MetaTrader*\terminal64.exe")
+    if candidates:
+        return candidates[0]
+    raise RuntimeError(
+        f"MT5 terminal64.exe not found. MT5_TERMINAL_PATH={MT5_TERMINAL_PATH!r}; "
+        r"also searched C:\Program Files\MetaTrader*\terminal64.exe. "
+        "Install MT5 or set MT5_TERMINAL_PATH in .env."
+    )
+
+
 def _connect_mt5() -> None:
+    """Connect to MT5 via library self-launch + hard account guard.
+
+    Why self-launch: the MetaTrader5 Python lib only obtains IPC with a
+    terminal it self-launches. Passing login/password/server to
+    mt5.initialize() — or calling mt5.login() to switch off the saved
+    default — kills the IPC pipe and produces -10005 timeouts (proven
+    diagnostically; see handoff/SESSION-HANDOFF.md).
+
+    One-time setup per VPS:
+      1. Open MT5 manually (double-click terminal64.exe).
+      2. File → Login to Trading Account.
+      3. Enter the target login / password / server.
+      4. TICK "Save password" (this build's label for "save account info").
+      5. Click Login. Wait for prices to stream (bottom-right green + kb/s).
+      6. Close MT5.
+    From then on, every library self-launch of that terminal lands on the
+    saved-default account automatically. The hard guard below verifies
+    account_info().login == MT5_LOGIN — mismatch is fatal so we never
+    accidentally trade on a stale or wrong account.
+    """
     global _account_mode
+    terminal_path = _resolve_terminal_path()
+    logger.info("MT5 terminal path: %s", terminal_path)
+
     while True:
         with _mt5_lock:
-            ok = mt5.initialize(login=MT5_LOGIN, password=MT5_PASSWORD, server=MT5_SERVER)
-        if ok:
+            ok = mt5.initialize(terminal_path, timeout=120_000)
+        if not ok:
+            err = mt5.last_error()
+            logger.error("MT5 init failed (%s) — retrying in %ds", err, RECONNECT_DELAY)
+            time.sleep(RECONNECT_DELAY)
+            continue
+
+        with _mt5_lock:
+            acct     = mt5.account_info()
+            terminal = mt5.terminal_info()
+
+        if acct is None:
+            err = mt5.last_error()
+            logger.error(
+                "MT5 connected but account_info() is None (%s). The terminal "
+                "may not have a saved default account. Open MT5 UI → File → "
+                "Login to Trading Account → tick 'Save password' → Login → "
+                "close MT5. Retrying in %ds.",
+                err, RECONNECT_DELAY,
+            )
             with _mt5_lock:
-                acct     = mt5.account_info()
-                terminal = mt5.terminal_info()
-            _account_mode = _resolve_account_mode(acct)
-            logger.info("MT5 connected — account=%d  server=%s  balance=%.2f  mode=%s",
-                        acct.login, acct.server, acct.balance, _account_mode)
-            if not terminal.trade_allowed:
-                logger.error(
-                    "Automated trading DISABLED in MT5. "
-                    "Enable via Tools → Options → Expert Advisors → Allow automated trading."
-                )
-            return
-        logger.error("MT5 init failed (%s) — retrying in %ds", mt5.last_error(), RECONNECT_DELAY)
-        time.sleep(RECONNECT_DELAY)
+                mt5.shutdown()
+            time.sleep(RECONNECT_DELAY)
+            continue
+
+        if acct.login != MT5_LOGIN:
+            logger.error(
+                "ACCOUNT GUARD: terminal default = %d (%s) but .env MT5_LOGIN = %d. "
+                "Refusing to start — would trade on the wrong account. "
+                "Fix: open MT5 UI → File → Login to Trading Account → enter "
+                "%d's credentials → TICK 'Save password' → Login → close MT5. "
+                "Then restart this worker.",
+                acct.login, acct.server, MT5_LOGIN, MT5_LOGIN,
+            )
+            with _mt5_lock:
+                mt5.shutdown()
+            raise SystemExit(1)
+
+        _account_mode = _resolve_account_mode(acct)
+        logger.info("MT5 connected — account=%d  server=%s  balance=%.2f  mode=%s",
+                    acct.login, acct.server, acct.balance, _account_mode)
+        if terminal is not None and not terminal.trade_allowed:
+            logger.error(
+                "Automated trading DISABLED in MT5. "
+                "Enable via Tools → Options → Expert Advisors → Allow automated trading."
+            )
+        return
 
 
 def _ensure_connected() -> None:
