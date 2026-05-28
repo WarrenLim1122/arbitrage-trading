@@ -25,16 +25,17 @@ def test_reject_no_money_shows_margin_detail():
         "margin": 12000.0, "margin_free": -2000.0, "comment": "Not enough money",
     })
     assert "REJECTED" in line
-    assert "Not enough money" in line
     assert "12,000.00" in line   # margin needed surfaced
-    assert "-2,000.00" in line   # free margin surfaced
+    assert "-$2,000.00" in line  # free margin surfaced (signed money)
 
 
 def test_reject_negative_free_margin_without_code():
     line = _order_check_leg_line("Personal Signal", {
         "verdict": "reject", "retcode": 10006, "margin_free": -5.0, "margin": 100.0,
     })
-    assert "Not enough money" in line
+    # Negative free margin should still surface an insufficient-funds detail
+    assert "REJECTED" in line
+    assert "-$5.00" in line
 
 
 def test_reject_invalid_stops_mapped():

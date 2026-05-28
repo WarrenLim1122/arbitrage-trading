@@ -1169,7 +1169,7 @@ async def _verify_and_notify_inner(
             phase_context_extra = f"Baseline: ${baseline_equity:,.2f}"
 
         await _telegram_alert(telegram_handlers.msg_trade_opened(
-            ticker=ticker, phase=phase, baseline_equity=baseline_equity,
+            ticker=ticker, phase=phase,
             phase_context_extra=phase_context_extra,
             pers_arrow=pers_arrow, pers_lots=pers_lots,
             pers_entry_fmt=_fp(ef.get("actual_fill_price", entry)),
@@ -1187,23 +1187,17 @@ async def _verify_and_notify_inner(
         ))
         return
 
-    # One or both not filled — compose alert via telegram_handlers
-    pers_summary = telegram_handlers.msg_side_summary_for_order_not_filled(
-        _pers_final, "Personal Signal", ticker, entry,
-    )
-    prop_summary = telegram_handlers.msg_side_summary_for_order_not_filled(
-        _prop_final, "Prop Hedge", ticker, entry,
-    )
-
+    # One or both not filled — pass the raw status dicts so all leg text is
+    # built inside telegram_handlers.msg_order_not_filled (no inline formatting here).
     _states  = {(_pers_final or {}).get("status"), (_prop_final or {}).get("status")}
     _hard    = {"REJECTED", "ERROR", "UNSUPPORTED_LIMIT_SETUP", None}
     _resting = "PENDING_PLACED" in _states and not (_states & _hard)
 
     await _telegram_alert(telegram_handlers.msg_order_not_filled(
         ticker=ticker, resting=_resting,
-        pers_summary=pers_summary, prop_summary=prop_summary,
+        pers_final=_pers_final, prop_final=_prop_final,
+        entry=entry,
         pers_arrow=pers_arrow,
-        entry_fmt=_fp(entry),
         pers_sl_fmt=_fp(pers_sl), pers_tp_fmt=_fp(pers_tp),
         pers_lots=pers_lots, prop_lots=prop_lots,
     ))
@@ -1377,7 +1371,10 @@ async def receive_signal(request: Request):
             msg = "Phase 1 not configured — run /phase1 to set reward:risk first"
             logger.error(msg)
             await _telegram_alert(telegram_handlers.msg_signal_blocked_generic(
-                payload.ticker, msg,
+                payload.ticker,
+                main="Phase 1 not configured.",
+                command="/phase1",
+                tail="to set reward:risk first.",
             ))
             raise HTTPException(status_code=503, detail=msg)
         try:
@@ -1388,7 +1385,8 @@ async def receive_signal(request: Request):
             msg = "Phase 1: live prop equity unavailable — cannot size dynamic reward"
             logger.error(msg)
             await _telegram_alert(telegram_handlers.msg_signal_blocked_generic(
-                payload.ticker, msg,
+                payload.ticker,
+                main="Phase 1: live prop equity unavailable.\n\nCannot size dynamic reward.",
             ))
             raise HTTPException(status_code=503, detail=msg)
         idx = _phase1_active_stage(stages, live_prop_equity)

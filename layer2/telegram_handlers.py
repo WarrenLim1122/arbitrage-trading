@@ -2283,28 +2283,53 @@ def _msg_positions_lines(positions: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _msg_aligned_rows(rows: list[tuple[str, str]], pad: int = 2) -> str:
+    """Render a stack of (label, value) rows with the label column left-padded.
+
+    Width = max(label length) + pad spaces. Used for the Trade Opened /
+    Position Closed metric blocks and for diagnostic 'key = value' lists.
+    Drop any (label, value) where value is falsy (None/'') so callers can
+    conditionally include rows.
+    """
+    rows = [(label, value) for label, value in rows if value not in (None, "")]
+    if not rows:
+        return ""
+    width = max(len(label) for label, _ in rows) + pad
+    return "\n".join(f"{label:<{width}}{value}" for label, value in rows)
+
+
 def _msg_side_label(side: str) -> str:
     """'prop' → 'Prop Hedge'; anything else → 'Personal Signal'."""
     return "Prop Hedge" if side == "prop" else "Personal Signal"
 
 
 def _msg_order_check_leg_line(label: str, chk: dict) -> str:
-    """Per-leg status line for the pre-flight 'Signal Not Placed' alert (Issue 2)."""
+    """Per-leg block for the pre-flight 'Signal Not Placed' alert (Issue 2).
+
+    Returns:
+        <b>label</b>
+        <status line>
+        [<optional detail block, blank-line separated>]
+    """
     verdict = chk.get("verdict", "?")
     if verdict == "ok":
-        return f"<b>{label}</b>\nStatus: ✅ Can fill"
+        return f"<b>{label}</b>\n✅ Can fill"
     if verdict == "transient":
         c = chk.get("comment") or "temporarily unavailable"
-        return f"<b>{label}</b>\nStatus: ⚠️ {c}"
+        return f"<b>{label}</b>\n⚠️ {c}"
     rc      = chk.get("retcode")
     comment = (chk.get("comment") or "").strip()
     mf      = chk.get("margin_free")
     mneed   = chk.get("margin")
     if rc == 10019 or (isinstance(mf, (int, float)) and mf < 0):
-        detail = "Not enough money"
-        if isinstance(mneed, (int, float)) and isinstance(mf, (int, float)):
-            detail += f" (needs ${mneed:,.2f} margin, free ${mf:,.2f})"
-        return f"<b>{label}</b>\nStatus: 🚫 REJECTED — {detail}"
+        detail_lines = []
+        if isinstance(mneed, (int, float)):
+            detail_lines.append(f"Needs ${mneed:,.2f} margin")
+        if isinstance(mf, (int, float)):
+            detail_lines.append(f"Free: {_msg_signed_money(mf)}")
+        if not detail_lines:
+            detail_lines.append("Not enough money")
+        return f"<b>{label}</b>\nREJECTED\n\n" + "\n".join(detail_lines)
     reason_map = {
         10014: "Invalid volume (lot size)",
         10015: "Invalid price",
@@ -2312,7 +2337,7 @@ def _msg_order_check_leg_line(label: str, chk: dict) -> str:
         10017: "Trading disabled on this account",
     }
     reason = reason_map.get(rc) or comment or f"order_check retcode {rc}"
-    return f"<b>{label}</b>\nStatus: 🚫 REJECTED — {reason}"
+    return f"<b>{label}</b>\nREJECTED\n\n{reason}"
 
 
 def _msg_split_pers_amount(ticker: str, pers_value: float, usd_to_acct_rate: float) -> tuple[float, float]:
@@ -2770,7 +2795,7 @@ def msg_kill5_consistency() -> str:
 
 # ── Trade Open / Close ────────────────────────────────────────────────────
 
-def msg_trade_opened(*, ticker: str, phase: int, baseline_equity: float,
+def msg_trade_opened(*, ticker: str, phase: int,
                      phase_context_extra: str,
                      pers_arrow: str, pers_lots: float,
                      pers_entry_fmt: str, pers_sl_fmt: str, pers_tp_fmt: str,
@@ -2786,31 +2811,46 @@ def msg_trade_opened(*, ticker: str, phase: int, baseline_equity: float,
     personal report status=FILLED. Includes phase context (Phase 1 stage or
     Phase 2 baseline) and dual-currency display for the personal account.
     """
-    phase_context = f"Phase: Phase {phase}" + (
-        f"\n{phase_context_extra}" if phase_context_extra else ""
-    )
+    pers_levels = _msg_aligned_rows([
+        ("Size",  f"{pers_lots:.2f} lots"),
+        ("Entry", pers_entry_fmt),
+        ("SL",    pers_sl_fmt),
+        ("TP",    pers_tp_fmt),
+    ])
+    pers_risk_block = _msg_aligned_rows([
+        ("Risk",   _msg_pers_money_dual(ticker, pers_dollar_risk, pers_currency, pers_usd_to_acct_rate)),
+        ("Reward", _msg_pers_money_dual(ticker, pers_reward,      pers_currency, pers_usd_to_acct_rate)),
+        ("RR",     f"{pers_rr:.2f}"),
+    ])
+    pers_ticket_row = _msg_aligned_rows([("Ticket", f"{pers_ticket}")])
+
+    prop_levels = _msg_aligned_rows([
+        ("Size",  f"{prop_lots:.2f} lots"),
+        ("Entry", prop_entry_fmt),
+        ("SL",    prop_sl_fmt),
+        ("TP",    prop_tp_fmt),
+    ])
+    prop_risk_block = _msg_aligned_rows([
+        ("Risk",   f"${prop_dollar_risk:,.2f}"),
+        ("Reward", f"${prop_reward:,.2f}"),
+        ("RR",     f"{prop_rr:.2f}"),
+    ])
+    prop_ticket_row = _msg_aligned_rows([("Ticket", f"{prop_ticket}")])
+
     return (
-        f"<b>{ticker} — Trade Opened</b>\n\n"
-        f"<b>Personal Signal — {pers_arrow}</b>\n"
-        f"Size: {pers_lots:.2f} lots\n"
-        f"Entry: {pers_entry_fmt}\n"
-        f"SL: {pers_sl_fmt}\n"
-        f"TP: {pers_tp_fmt}\n"
-        f"Risk: {_msg_pers_money_dual(ticker, pers_dollar_risk, pers_currency, pers_usd_to_acct_rate)}\n"
-        f"Reward: {_msg_pers_money_dual(ticker, pers_reward, pers_currency, pers_usd_to_acct_rate)}\n"
-        f"RR: {pers_rr:.2f}\n"
-        f"Ticket: {pers_ticket}\n\n"
-        f"<b>Prop Hedge — {prop_arrow}</b>\n"
-        f"Size: {prop_lots:.2f} lots\n"
-        f"Entry: {prop_entry_fmt}\n"
-        f"SL: {prop_sl_fmt}\n"
-        f"TP: {prop_tp_fmt}\n"
-        f"Risk: ${prop_dollar_risk:,.2f}\n"
-        f"Reward: ${prop_reward:,.2f}\n"
-        f"RR: {prop_rr:.2f}\n"
-        f"Ticket: {prop_ticket}\n\n"
+        f"🟢 <b>{ticker} — Trade Opened</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Personal Signal</b>  {pers_arrow}\n\n"
+        f"{pers_levels}\n\n"
+        f"{pers_risk_block}\n\n"
+        f"{pers_ticket_row}\n\n"
+        f"<b>Prop Hedge</b>  {prop_arrow}\n\n"
+        f"{prop_levels}\n\n"
+        f"{prop_risk_block}\n\n"
+        f"{prop_ticket_row}\n\n"
         f"<b>Context</b>\n"
-        f"{phase_context}"
+        f"Phase {phase}"
+        + (f"\n{phase_context_extra}" if phase_context_extra else "")
     )
 
 
@@ -2824,33 +2864,21 @@ def msg_position_closed(*, symbol: str,
 
     Triggered when: the equity monitor's _detect_closes() flushes a pending
     close (both sides confirmed OR 120 s wait window elapsed). Layout
-    mirrors Trade Opened: one variable per line, four close-type emojis
+    mirrors Trade Opened: aligned label rows per side, four close-type emojis
     (🟢 TP / 🔴 SL / 📰 News / ⚠️ Other). Account mode (demo/real) is
     inferred from Layer 3's deal reply.
     """
-    def _pos_summary(pos_list: list[dict]) -> str:
-        if not pos_list:
-            return "  No open positions"
-        return "\n".join(
-            f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
-            for p in pos_list
-        )
-
     def _reason_label(deal: dict | None) -> str:
         if is_news_close:
             return "NEWS"
         if deal and deal.get("found") and deal.get("close_reason"):
             return deal["close_reason"]
-        if deal is None:
-            return "—"
         return "—"
 
     pers_reason = _reason_label(pers_deal)
     prop_reason = _reason_label(prop_deal)
 
-    sections: list[str] = []
-
-    # Title
+    # ── Title ────────────────────────────────────────────────────────────
     if is_news_close:
         title = f"📰 <b>{symbol} — News Close</b>"
     elif pers_pos_data:
@@ -2870,68 +2898,95 @@ def msg_position_closed(*, symbol: str,
             )
     else:
         title = f"⚠️ <b>{symbol} — Position Closed</b>"
-    sections.append(title)
 
+    # ── Per-side block ───────────────────────────────────────────────────
     def _side_block(label: str, pos_data: dict | None, deal: dict | None,
                     reason_label: str, currency: str) -> str:
         if not pos_data:
             return f"<b>{label}</b>\nNo matching position — already closed"
         dir_str = "↑ LONG" if pos_data["type"] == 0 else "↓ SHORT"
         if deal and deal.get("found"):
-            pnl        = deal["net_pnl"]
+            pnl_val    = deal["net_pnl"]
             exit_price = _fmt_price(symbol, deal["close_price"])
             commission = deal["commission"]
-            pnl_line   = f"Trade P&amp;L: {_money(pnl, currency, signed=True)}"
-            comm_line  = f"Commission: {_money(commission, currency, signed=True)}"
+            pnl_str    = _msg_signed_money(pnl_val, currency)
+            comm_str   = _msg_signed_money(commission, currency)
         else:
-            pnl = pos_data["profit"]
+            pnl_val = pos_data["profit"]
             exit_price = (
-                _fmt_price(symbol, pos_data["tp"]) if pnl >= 0
+                _fmt_price(symbol, pos_data["tp"]) if pnl_val >= 0
                 else _fmt_price(symbol, pos_data["sl"])
             )
-            pnl_line  = f"Trade P&amp;L: {_money(pnl, currency, signed=True)} (est.)"
-            comm_line = None
-        lines = [
-            f"<b>{label} — {dir_str}</b>",
-            f"Size: {pos_data['volume']:.2f} lots",
-            f"Entry: {_fmt_price(symbol, pos_data['price_open'])}",
-            f"Exit: {exit_price}",
-            f"Reason: {reason_label}",
-            pnl_line,
-        ]
-        if comm_line:
-            lines.append(comm_line)
-        if pos_data.get("ticket"):
-            lines.append(f"Ticket: {pos_data['ticket']}")
-        return "\n".join(lines)
+            pnl_str    = f"{_msg_signed_money(pnl_val, currency)} (est.)"
+            comm_str   = ""   # deal missing → no commission row
 
-    sections.append(_side_block("Personal Signal", pers_pos_data, pers_deal, pers_reason, pers_currency))
-    sections.append(_side_block("Prop Hedge",      prop_pos_data, prop_deal, prop_reason, "USD"))
+        levels = _msg_aligned_rows([
+            ("Size",  f"{pos_data['volume']:.2f} lots"),
+            ("Entry", _fmt_price(symbol, pos_data['price_open'])),
+            ("Exit",  exit_price),
+        ])
+        outcome = _msg_aligned_rows([
+            ("Reason",     reason_label),
+            ("Trade P&amp;L",  pnl_str),
+            ("Commission", comm_str),  # empty rows dropped by helper
+        ])
+        ticket_row = (
+            _msg_aligned_rows([("Ticket", str(pos_data['ticket']))])
+            if pos_data.get("ticket") else ""
+        )
+        block = (
+            f"<b>{label}</b>  {dir_str}\n\n"
+            f"{levels}\n\n"
+            f"{outcome}"
+        )
+        if ticket_row:
+            block += f"\n\n{ticket_row}"
+        return block
 
-    sections.append(
-        f"<b>After Close</b>\n"
-        f"<b>Personal Signal:</b>\n{_pos_summary(curr_pers)}\n\n"
-        f"<b>Prop Hedge:</b>\n{_pos_summary(curr_prop)}"
+    pers_block = _side_block("Personal Signal", pers_pos_data, pers_deal, pers_reason, pers_currency)
+    prop_block = _side_block("Prop Hedge",      prop_pos_data, prop_deal, prop_reason, "USD")
+
+    # ── After Close ──────────────────────────────────────────────────────
+    def _pos_summary(pos_list: list[dict]) -> str:
+        if not pos_list:
+            return "No open positions"
+        return "\n".join(
+            f"{p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
+            for p in pos_list
+        )
+
+    after_block = (
+        f"<b>After Close</b>\n\n"
+        f"<b>Personal Signal</b>\n{_pos_summary(curr_pers)}\n\n"
+        f"<b>Prop Hedge</b>\n{_pos_summary(curr_prop)}"
     )
 
-    sections.append(
-        f"<b>Account Equity</b>  <i>(whole account, not this trade)</i>\n"
+    # ── Account Equity ───────────────────────────────────────────────────
+    equity_block = (
+        f"<b>Account Equity</b>\n"
         f"Personal Signal: {pers_eq_str}\n"
         f"Prop Hedge: {prop_eq_str}"
     )
 
+    # ── Footer for missing deal data ─────────────────────────────────────
     pers_deal_missing = pers_pos_data and not (pers_deal and pers_deal.get("found"))
     prop_deal_missing = prop_pos_data and not (prop_deal and prop_deal.get("found"))
+    footer = ""
     if pers_deal_missing or prop_deal_missing:
         if account_mode == "demo":
-            sections.append(
-                "ℹ️ Demo account — exact MT5 figures will sync to the journal in ~2-3h."
-            )
+            footer = "ℹ️ Demo account — exact figures sync to journal in ~2-3h."
         elif account_mode == "real":
-            sections.append(
-                "⚠️ Deal data unavailable from broker — check journal dashboard shortly."
-            )
+            footer = "⚠️ Deal data unavailable — check journal shortly."
 
+    sections = [
+        f"{title}\n{_MSG_SEP}",
+        pers_block,
+        prop_block,
+        after_block,
+        equity_block,
+    ]
+    if footer:
+        sections.append(footer)
     return "\n\n".join(sections)
 
 
@@ -2945,16 +3000,26 @@ def msg_signal_not_placed_terminal(*, ticker: str,
     REJECTED / ERROR / UNSUPPORTED_LIMIT_SETUP on either side, before any
     fill. Order_check pre-flight should have caught most of these.
     """
-    def _side_reason(s: dict, label: str) -> str:
+    def _side_block(s: dict, label: str) -> str:
         st  = s.get("status", "UNKNOWN")
         err = s.get("error") or s.get("broker_comment") or ""
-        return f"<b>{label}</b>\nStatus: {st}\n{err}" if err else f"<b>{label}</b>\nStatus: {st}"
+        if err:
+            return f"<b>{label}</b>\n{st}\n{err}"
+        return f"<b>{label}</b>\n{st}"
+
+    signal_rows = _msg_aligned_rows([
+        ("Entry", entry_fmt),
+        ("SL",    pers_sl_fmt),
+        ("TP",    pers_tp_fmt),
+    ])
     return (
-        f"🚫 <b>Signal Not Placed — {ticker}</b>\n\n"
-        f"{_side_reason(pers_status, 'Personal Signal')}\n\n"
-        f"{_side_reason(prop_status, 'Prop Hedge')}\n\n"
+        f"🚫 <b>Signal Not Placed — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"{_side_block(pers_status, 'Personal Signal')}\n\n"
+        f"{_side_block(prop_status, 'Prop Hedge')}\n\n"
         f"<b>Signal</b>\n"
-        f"{pers_arrow} · Entry {entry_fmt} | SL {pers_sl_fmt} | TP {pers_tp_fmt}"
+        f"{pers_arrow}\n\n"
+        f"{signal_rows}"
     )
 
 
@@ -2967,22 +3032,29 @@ def msg_signal_not_placed_preflight(*, ticker: str,
     Triggered when: order_check on at least one leg returned verdict=reject
     BEFORE either order was sent (Issue 2 guard). Prevents orphaned trades.
     """
+    signal_rows = _msg_aligned_rows([
+        ("Entry", entry_fmt),
+        ("SL",    pers_sl_fmt),
+        ("TP",    pers_tp_fmt),
+    ])
     return (
-        f"🚫 <b>Signal Not Placed — {ticker}</b>\n\n"
-        f"One leg cannot fill, so <b>no order was placed on either account</b> "
-        f"(prevents an orphaned trade + wasted commission).\n\n"
+        f"🚫 <b>Signal Not Placed — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"One leg cannot fill,\n"
+        f"so no order was placed.\n\n"
+        f"<i>(prevents orphan trades\nand wasted commissions)</i>\n\n"
         f"{_msg_order_check_leg_line('Personal Signal', pers_chk)}\n\n"
         f"{_msg_order_check_leg_line('Prop Hedge', prop_chk)}\n\n"
         f"<b>Signal</b>\n"
-        f"{pers_arrow} · Entry {entry_fmt} "
-        f"| SL {pers_sl_fmt} | TP {pers_tp_fmt}"
+        f"{pers_arrow}\n\n"
+        f"{signal_rows}"
     )
 
 
 def msg_order_not_filled(*, ticker: str, resting: bool,
-                         pers_summary: str, prop_summary: str,
-                         pers_arrow: str,
-                         entry_fmt: str, pers_sl_fmt: str, pers_tp_fmt: str,
+                         pers_final: dict | None, prop_final: dict | None,
+                         entry: float,
+                         pers_arrow: str, pers_sl_fmt: str, pers_tp_fmt: str,
                          pers_lots: float, prop_lots: float) -> str:
     """Order Not Filled / Limit Order Resting — non-success outcome.
 
@@ -2990,55 +3062,72 @@ def msg_order_not_filled(*, ticker: str, resting: bool,
     horizon. If at least one side rests as PENDING_PLACED (market closed,
     limit dropped) and no hard error elsewhere, the title becomes "Limit
     Order Resting"; otherwise "Order Not Filled".
+
+    `pers_final` / `prop_final` are the raw order-status dicts from Layer 3
+    (or None if no confirmation arrived). All leg/ticket text is built here.
     """
+    def _leg_block(s: dict | None, label: str) -> str:
+        if s is None:
+            return f"<b>{label}</b>\n⚠️ No confirmation received"
+        st     = s.get("status", "UNKNOWN")
+        reason = s.get("broker_comment") or s.get("error") or ""
+        if st == "FILLED":
+            fill = _fmt_price(ticker, s.get("actual_fill_price", entry))
+            return f"<b>{label}</b>\n✅ Filled @ {fill}"
+        if st == "PENDING_PLACED":
+            px = _fmt_price(ticker, s.get("requested_entry", entry))
+            return (
+                f"<b>{label}</b>\n"
+                f"⏳ Limit @ {px}\n"
+                f"<i>(market was closed)</i>"
+            )
+        if st == "UNSUPPORTED_LIMIT_SETUP":
+            base = f"<b>{label}</b>\n🚫 {st}"
+            return f"{base}\n{reason}" if reason else base
+        base = f"<b>{label}</b>\n❌ {st}"
+        return f"{base}\n{reason}" if reason else base
+
+    pers_block = _leg_block(pers_final, "Personal Signal")
+    prop_block = _leg_block(prop_final, "Prop Hedge")
+
+    # Collect tickets that landed (filled or resting). Show whichever exist.
+    tickets: list[tuple[str, object]] = []
+    if pers_final and pers_final.get("mt5_order_ticket"):
+        tickets.append(("Personal", pers_final["mt5_order_ticket"]))
+    if prop_final and prop_final.get("mt5_order_ticket"):
+        tickets.append(("Prop", prop_final["mt5_order_ticket"]))
+    if not tickets:
+        ticket_block = ""
+    elif len(tickets) == 1:
+        ticket_block = f"\n\n<b>Ticket</b>\n{tickets[0][1]}"
+    else:
+        ticket_lines = "\n".join(f"{side}: {num}" for side, num in tickets)
+        ticket_block = f"\n\n<b>Tickets</b>\n{ticket_lines}"
+
     header = (f"⏳ <b>Limit Order Resting — {ticker}</b>" if resting
               else f"⚠️ <b>Order Not Filled — {ticker}</b>")
-    return (
-        f"{header}\n\n"
-        f"{pers_summary}\n\n"
-        f"{prop_summary}\n\n"
-        f"<b>Signal details</b>\n"
-        f"{pers_arrow} · Entry {entry_fmt} | SL {pers_sl_fmt} | TP {pers_tp_fmt}\n"
-        f"Lots: Personal {pers_lots:.2f} / Prop {prop_lots:.2f}"
+
+    signal_rows = _msg_aligned_rows([
+        ("Entry", _fmt_price(ticker, entry)),
+        ("SL",    pers_sl_fmt),
+        ("TP",    pers_tp_fmt),
+    ])
+    lots_rows = (
+        f"Personal {pers_lots:.2f}\n"
+        f"Prop {prop_lots:.2f}"
     )
-
-
-def msg_side_summary_for_order_not_filled(s: dict | None, label: str,
-                                          ticker: str, entry: float) -> str:
-    """Per-leg block used inside msg_order_not_filled.
-
-    Triggered when: built per side by _verify_and_notify_inner before
-    composing the parent message. Not sent on its own.
-    """
-    if s is None:
-        return f"<b>{label}</b>\n⚠️ No confirmation received"
-    st         = s.get("status", "UNKNOWN")
-    ticket_num = s.get("mt5_order_ticket")
-    reason     = s.get("broker_comment") or s.get("error") or ""
-    if st == "FILLED":
-        fill = _fmt_price(ticker, s.get("actual_fill_price", entry))
-        return (
-            f"<b>{label}</b>\n"
-            f"✅ Filled @ {fill}"
-            f"{f'  |  Ticket: {ticket_num}' if ticket_num else ''}"
-        )
-    elif st == "PENDING_PLACED":
-        px = _fmt_price(ticker, s.get("requested_entry", entry))
-        return (
-            f"<b>{label}</b>\n"
-            f"⏳ Limit order resting @ {px} (market was closed; "
-            f"fills when price returns)"
-            f"{f'  |  Ticket: {ticket_num}' if ticket_num else ''}"
-        )
-    elif st == "UNSUPPORTED_LIMIT_SETUP":
-        return f"<b>{label}</b>\n🚫 {st}\n{reason}"
-    else:
-        line = f"<b>{label}</b>\n❌ {st}"
-        if ticket_num:
-            line += f"  |  Ticket: {ticket_num}"
-        if reason:
-            line += f"\n{reason}"
-        return line
+    return (
+        f"{header}\n"
+        f"{_MSG_SEP}\n\n"
+        f"{pers_block}\n\n"
+        f"{prop_block}"
+        f"{ticket_block}\n\n"
+        f"<b>Signal</b>\n\n"
+        f"{pers_arrow}\n\n"
+        f"{signal_rows}\n\n"
+        f"<b>Lots</b>\n"
+        f"{lots_rows}"
+    )
 
 
 # ── Signal block / skip ──────────────────────────────────────────────────
@@ -3050,10 +3139,15 @@ def msg_signal_blocked_p_halt(ticker: str, signal: str) -> str:
     set. Dedup'd via _maybe_block_alert to one per (ticker, p_halt) per 30 min.
     """
     return (
-        f"🔴 <b>Signal Blocked — {ticker}</b>\n\n"
-        f"System permanently halted (K2/K4/K5 triggered).\n"
-        f"Signal: {signal}\n\n"
-        f"Use /phase2 or /changepropfirm then /resume to restart."
+        f"🔴 <b>Signal Blocked — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"System permanently halted.\n"
+        f"<i>(K2 / K4 / K5 triggered)</i>\n\n"
+        f"<b>Signal</b>\n{signal}\n\n"
+        f"<b>Recovery</b>\n"
+        f"/phase2\n"
+        f"/changepropfirm\n"
+        f"/resume"
     )
 
 
@@ -3064,10 +3158,13 @@ def msg_signal_skipped_halted(ticker: str, signal: str) -> str:
     daily halt or user issued /stop). Dedup'd to 30 min per ticker.
     """
     return (
-        f"⏸ <b>Signal Skipped — {ticker}</b>\n\n"
-        f"System halted (K1/K3 daily halt or manual /stop).\n"
-        f"Signal: {signal}\n\n"
-        f"Auto-resumes next session, or /resume to restart now."
+        f"⏸️ <b>Signal Skipped — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"System halted.\n"
+        f"<i>(K1 / K3 / manual /stop)</i>\n\n"
+        f"<b>Signal</b>\n{signal}\n\n"
+        f"<b>Auto-resume</b>\nNext session\n\n"
+        f"/resume to restart now"
     )
 
 
@@ -3079,10 +3176,12 @@ def msg_signal_suppressed(ticker: str, signal: str, reason: str) -> str:
     Dedup'd to 30 min per (ticker, reason).
     """
     return (
-        f"📰 <b>Signal Suppressed — {ticker}</b>\n\n"
-        f"Reason: {reason}\n"
-        f"Signal: {signal}\n\n"
-        f"Trading resumes automatically when the window expires."
+        f"📰 <b>Signal Suppressed — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Reason</b>\n{reason}\n\n"
+        f"<b>Signal</b>\n{signal}\n\n"
+        f"Trading resumes automatically\n"
+        f"when the window expires."
     )
 
 
@@ -3094,10 +3193,13 @@ def msg_signal_skipped_max_pos(ticker: str, signal: str,
     already holds ≥ max_open_positions positions.
     """
     return (
-        f"🚫 <b>Signal Skipped — {ticker}</b>\n\n"
-        f"Max open positions reached ({open_count}/{max_pos}).\n"
-        f"Signal: {signal}\n\n"
-        f"/setmaxpos N to increase the limit."
+        f"🚫 <b>Signal Skipped — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Max open positions reached.\n"
+        f"<i>({open_count} / {max_pos})</i>\n\n"
+        f"<b>Signal</b>\n{signal}\n\n"
+        f"/setmaxpos N\n"
+        f"to increase the limit"
     )
 
 
@@ -3110,23 +3212,41 @@ def msg_signal_blocked_algo_disabled(ticker: str, side: str) -> str:
     """
     label = _msg_side_label(side)
     return (
-        f"🚫 <b>Signal Blocked — {ticker}</b>\n\n"
-        f"{label} algo trading is <b>DISABLED</b>.\n\n"
-        f"<b>Fix</b>\n"
-        f"1. MT5 toolbar → Algo Trading button (make it green)\n"
-        f"2. Tools → Options → Expert Advisors → uncheck "
-        f"<i>'Disable algorithmic trading when the account has been changed'</i>"
+        f"🚫 <b>Signal Blocked — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"{label} algo trading\n"
+        f"is <b>DISABLED</b>.\n\n"
+        f"<b>Fix</b>\n\n"
+        f"1. Turn Algo Trading ON (green)\n\n"
+        f"2. Tools → Options\n"
+        f"   → Expert Advisors\n\n"
+        f"3. Uncheck:\n"
+        f"   <i>“Disable algo trading\n"
+        f"   when account changes”</i>"
     )
 
 
-def msg_signal_blocked_generic(ticker: str, reason: str) -> str:
-    """Signal blocked — generic block reason wrapper.
+def msg_signal_blocked_generic(ticker: str, *, main: str,
+                               command: str | None = None,
+                               tail: str | None = None) -> str:
+    """Signal blocked — structured 'main + optional /command + optional tail'.
 
-    Triggered when: a config-side error makes the signal unsizable
-    (Phase 1 not configured; live prop equity unavailable). The raw
-    reason is supplied by the caller.
+    Triggered when: a config-side error makes the signal unsizable. Two
+    call patterns:
+      • Phase 1 not configured → main="Phase 1 not configured.",
+        command="/phase1", tail="to set reward:risk first."
+      • Phase 1 live equity unavailable → main only, no command/tail.
     """
-    return f"🚫 <b>Signal Blocked — {ticker}</b>\n\n{reason}"
+    body = main
+    if command and tail:
+        body = f"{main}\n\n<b>Run</b>\n{command}\n\n{tail}"
+    elif command:
+        body = f"{main}\n\n<b>Run</b>\n{command}"
+    return (
+        f"🚫 <b>Signal Blocked — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"{body}"
+    )
 
 
 def msg_geometry_reject(ticker: str, phase: int, reject_reason: str, signal: str) -> str:
@@ -3136,9 +3256,11 @@ def msg_geometry_reject(ticker: str, phase: int, reject_reason: str, signal: str
     key — e.g. SL too tight, lots below broker minimum, max_prop_lots cap hit.
     """
     return (
-        f"🚫 <b>Signal Skipped — {ticker}</b>\n\n"
-        f"Phase {phase} sizing rejected: {reject_reason}\n"
-        f"Signal: {signal}"
+        f"🚫 <b>Signal Skipped — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Phase {phase} sizing rejected.\n\n"
+        f"{reject_reason}\n\n"
+        f"<b>Signal</b>\n{signal}"
     )
 
 
@@ -3149,64 +3271,114 @@ def msg_internal_error(ticker: str, exc: object) -> str:
     Trade Opened / Not Filled alert. Positions MAY be open; user must check
     MT5 manually.
     """
+    # Split the exception representation so the type sits on its own line.
+    if isinstance(exc, BaseException):
+        exc_str = f"{type(exc).__name__}: {exc}"
+    else:
+        exc_str = str(exc)
+    if ":" in exc_str:
+        head, _, tail = exc_str.partition(": ")
+        exc_block = f"{head}:\n{tail}"
+    else:
+        exc_block = exc_str
     return (
-        f"⚠️ <b>Internal Error — {ticker}</b>\n\n"
-        f"Order confirmation task crashed: {exc}\n\n"
-        f"Check VPS #1 logs. Positions may be open — verify MT5 manually."
+        f"⚠️ <b>Internal Error — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Order confirmation task crashed.\n\n"
+        f"{exc_block}\n\n"
+        f"Check VPS #1 logs.\n"
+        f"Positions may still be open.\n\n"
+        f"Verify MT5 manually."
     )
 
 
 # ── Plain diagnostic strings (sent as raw text, not HTML-formatted) ──────
 
 def msg_contract_query_failed(side: str, exc: object) -> str:
-    """Plain error — Layer 3 /equity query failed at signal-processing time.
+    """Diagnostic — Layer 3 /equity query failed at signal-processing time.
 
     Triggered when: _query_equity to either worker throws while sizing a
     fresh signal. Logged as ERROR and returned to TradingView as 503.
     """
     label = _msg_side_label(side)
-    return f"{label} contract query failed: {exc}"
+    return (
+        f"⚠️ <b>Contract Query Failed</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"{label} contract query failed.\n\n"
+        f"{exc}"
+    )
 
 
 def msg_baseline_missing() -> str:
-    """Plain error — baseline_equity not set.
+    """Diagnostic — baseline_equity not set.
 
     Triggered when: a signal arrives before /phase1 or /phase2 has set
     baseline_equity. The bot refuses to size without a static baseline.
     """
-    return "baseline_equity not set — send /phase1 or /phase2 via Telegram first"
+    return (
+        f"⚠️ <b>Baseline Missing</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"baseline_equity not set.\n\n"
+        f"<b>Run</b>\n"
+        f"/phase1\n"
+        f"or\n"
+        f"/phase2\n\n"
+        f"via Telegram first."
+    )
 
 
 def msg_invalid_contract_data(ticker: str, tick_size: float, tick_value: float) -> str:
-    """Plain error — prop worker returned invalid contract data.
+    """Diagnostic — prop worker returned invalid contract data.
 
     Triggered when: trade_tick_size or trade_tick_value from Layer 3 is
     ≤ 0 for the signal's ticker. Means MT5 has no live contract for it.
     """
+    rows = _msg_aligned_rows([
+        ("tick_size",  f"= {tick_size}"),
+        ("tick_value", f"= {tick_value}"),
+    ], pad=1)
     return (
-        f"Invalid contract data from prop worker for {ticker} — "
-        f"tick_size={tick_size} tick_value={tick_value}"
+        f"⚠️ <b>Invalid Contract Data</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Invalid contract data\n"
+        f"returned from prop worker.\n\n"
+        f"<b>{ticker}</b>\n\n"
+        f"{rows}"
     )
 
 
 def msg_tp_distance_zero(ticker: str, tp: float, entry: float) -> str:
-    """Plain error — TP equals entry, so TP distance is zero.
+    """Diagnostic — TP equals entry, so TP distance is zero.
 
     Triggered when: the signal's TP and entry are identical. Sizing would
     divide by zero; signal is rejected with 422.
     """
-    return f"TP distance is zero for {ticker} — tp={tp} entry={entry}"
+    rows = _msg_aligned_rows([
+        ("tp",    f"= {tp}"),
+        ("entry", f"= {entry}"),
+    ], pad=1)
+    return (
+        f"⚠️ <b>TP Distance Zero — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"TP distance is zero.\n\n"
+        f"{rows}"
+    )
 
 
 def msg_dispatch_failed(side: str, exc: object) -> str:
-    """Plain error — ZMQ push of ticket to a Layer 3 worker failed.
+    """Diagnostic — ZMQ push of ticket to a Layer 3 worker failed.
 
     Triggered when: _push_ticket to prop or personal ZMQ_PUSH socket
     throws. Logged as ERROR; the partial signal may have already gone
     to the other leg, so user should verify manually.
     """
     label = _msg_side_label(side)
-    return f"{label} dispatch failed: {exc}"
+    return (
+        f"⚠️ <b>Dispatch Failed</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"{label} dispatch failed.\n\n"
+        f"{exc}"
+    )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3314,7 +3486,7 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
     ("msg_trade_opened",
      "_verify_and_notify saw status=FILLED on both legs",
      lambda: msg_trade_opened(
-         ticker="EURUSD", phase=2, baseline_equity=100000.0,
+         ticker="EURUSD", phase=2,
          phase_context_extra="Baseline: $100,000.00",
          pers_arrow="↑ LONG", pers_lots=0.10,
          pers_entry_fmt="1.08234", pers_sl_fmt="1.07900", pers_tp_fmt="1.08600",
@@ -3359,10 +3531,12 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
      "At least one leg didn't reach FILLED in the poll horizon (or LIMIT resting)",
      lambda: msg_order_not_filled(
          ticker="EURUSD", resting=False,
-         pers_summary="<b>Personal Signal</b>\n❌ TIMEOUT",
-         prop_summary="<b>Prop Hedge</b>\n✅ Filled @ 1.08234  |  Ticket: 987654321",
+         pers_final={"status": "TIMEOUT"},
+         prop_final={"status": "FILLED", "actual_fill_price": 1.08234,
+                     "mt5_order_ticket": 987654321},
+         entry=1.08234,
          pers_arrow="↑ LONG",
-         entry_fmt="1.08234", pers_sl_fmt="1.07900", pers_tp_fmt="1.08600",
+         pers_sl_fmt="1.07900", pers_tp_fmt="1.08600",
          pers_lots=0.10, prop_lots=0.50,
      )),
     ("msg_signal_blocked_p_halt",
@@ -3383,7 +3557,10 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
     ("msg_signal_blocked_generic",
      "Config-side error makes signal unsizable (Phase 1 not configured, etc.)",
      lambda: msg_signal_blocked_generic(
-         "EURUSD", "Phase 1 not configured — run /phase1 to set reward:risk first",
+         "EURUSD",
+         main="Phase 1 not configured.",
+         command="/phase1",
+         tail="to set reward:risk first.",
      )),
     ("msg_geometry_reject",
      "phase1_strategy or phase2_strategy returned a 'reject' key",
