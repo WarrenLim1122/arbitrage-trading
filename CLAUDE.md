@@ -17,18 +17,20 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 ---
 
-## 🔔 Pending Changes — REMIND WARREN NEXT SESSION
+## 🔔 Next Session — RESUME FROM `handoff/SESSION-HANDOFF.md`
 
-Surface this list the first time Warren returns:
+Surface this the first time Warren returns:
 
-1. **Telegram close-alert P&L breakdown** — change `_send_close_alert()` in `layer2/logic_core.py` so the P&L line shows BOTH gross and net side-by-side, plus commission:
-   ```
-   P&L (Net):  $-34.98
-   Gross:      $-29.86
-   Commission: $-5.12
-   Swap:       $0.00          ← omit line if swap is 0
-   ```
-   Replaces current two-line layout. Apply to both Personal Signal and Prop Hedge sections. Demo fallback stays single-line `P&L: $-X.XX (est.)`. Approved in principle 2026-05-13.
+**Read `handoff/SESSION-HANDOFF.md`** — it contains the two queued tasks for the next session:
+
+1. **Folder reorganization** — deletion table + reorg moves (deferred from 2026-05-28 after Warren chose to redesign messages first).
+2. **`$` / currency-formatting consistency audit** — verify sign-before-`$` is used consistently across the 37 redesigned `msg_*` functions; check personal/prop currency assignments in `msg_position_closed`; suggested rendering check included.
+
+**Already shipped (don't re-do):**
+- All Telegram message text now lives in `layer2/telegram_handlers.py` as 37 named `msg_*()` functions, each with a docstring describing its trigger. `logic_core.py` is pure orchestration.
+- `/messages` (page 1) and `/messages2` (page 2) Telegram commands print the catalog for review.
+- All 37 templates use the new format: header + ━ separator + labeled blocks. Audit confirmed zero orphans.
+- The previous "Telegram close-alert P&L breakdown" pending item is **partially addressed** by the Position Closed redesign — the new format shows Reason / Trade P&L / Commission as separate aligned rows (no Swap line). Warren may want to verify this matches his ask or request a further tweak; see `handoff/SESSION-HANDOFF.md §Open items NOT for this session`.
 
 ---
 
@@ -173,32 +175,42 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ---
 
-## Current State (as of 2026-05-26)
+## Current State (as of 2026-05-29)
 
-**Live-account cutover is UNBLOCKED.** Both VPS desktops now stream live broker data and the Layer 3 connection rewrite is shipped. Awaiting deploy.
+### Live trading state — UNBLOCKED, awaiting VPS deploy
 
-**What unblocked it (the actual root cause, after weeks of wrong diagnoses):** the generic MetaQuotes MT5 (downloaded from metaquotes.com) does NOT bake in broker server endpoints. When you select "FusionMarkets-Live" or "FundingPips2-SIM" in such an install, the terminal silently never even attempts a connection — Journal shows zero Network entries, bottom-right reads `n/a`/`0/0 Kb`, prices stay frozen at stale values. The MetaQuotes-Demo built-in account streams fine in the same install, which masked the real issue. **Both accounts were funded and streaming on mobile the whole time** (the earlier "unfunded accounts" diagnosis in `handoff/SESSION-HANDOFF.md` was wrong). Fix is purely server-endpoint config — see **VPS MT5 Setup** section above.
+Both VPS desktops stream live broker data and the Layer 3 connection rewrite is shipped. Awaiting deploy on the VPSes.
 
-**Code state (`main` HEAD):**
+**What unblocked it (the actual root cause, after weeks of wrong diagnoses):** the generic MetaQuotes MT5 (downloaded from metaquotes.com) does NOT bake in broker server endpoints. When you select "FusionMarkets-Live" or "FundingPips2-SIM" in such an install, the terminal silently never even attempts a connection — Journal shows zero Network entries, bottom-right reads `n/a`/`0/0 Kb`, prices stay frozen at stale values. The MetaQuotes-Demo built-in account streams fine in the same install, which masked the real issue. **Both accounts were funded and streaming on mobile the whole time.** Fix is purely server-endpoint config — see **VPS MT5 Setup** section above.
+
+**Layer 3 code state (`main` HEAD):**
 - `72b3921` — `_worker_core._connect_mt5()` rewritten to self-launch via `mt5.initialize(path)` + hard guard `account_info().login == MT5_LOGIN`
-- `75f55f5` — terminal-path glob broadened to `C:\Program Files\*MetaTrader*\terminal64.exe` so broker-branded installs (e.g. `Fusion Markets MetaTrader 5\`) are found; warns on ambiguous matches
-- `.env.example` documents `MT5_TERMINAL_PATH` env (optional; only needed when multiple MT5 installs coexist)
+- `75f55f5` — terminal-path glob broadened to `C:\Program Files\*MetaTrader*\terminal64.exe` so broker-branded installs (e.g. `Fusion Markets MetaTrader 5\`) are found
 
 **Verified-streaming state on the VPSes (2026-05-26):**
 - VPS #2 (personal): Fusion-branded MT5 + generic MT5 both installed; `459166` is the saved default in the Fusion-branded build. **SGD-denominated** (486.88 SGD).
 - VPS #3 (prop): generic MetaQuotes MT5 only, with FundingPips Corp (2) added as a company via Option 2; `12250900` is the saved default. USD-denominated ($5,000 demo).
 
-**Next action — deploy steps (one-shot, both VPSes):**
-1. On VPS #2 + VPS #3: `cd C:\arbitrage && git pull` (picks up `75f55f5`)
-2. VPS #2 only: edit `.env` → add `MT5_TERMINAL_PATH=<path to Fusion-branded terminal64.exe>` (right-click the Fusion Markets MT5 desktop shortcut → Properties → copy "Target" field). Required because two MT5 installs coexist there.
+**Layer 3 deploy steps (one-shot, both VPSes):**
+1. `cd C:\arbitrage && git pull` on both VPSes
+2. VPS #2 only: edit `.env` → add `MT5_TERMINAL_PATH=<path to Fusion-branded terminal64.exe>`. Required because two MT5 installs coexist there.
 3. VPS #3: no `MT5_TERMINAL_PATH` needed (only one MT5 install)
-4. Close all MT5 windows on the VPS (worker self-launches)
-5. `uv run python layer3/worker_personal.py` (VPS #2) and `uv run python layer3/worker_prop.py` (VPS #3)
-6. Expect each log: `MT5 connected — account=<MT5_LOGIN>  server=…  balance=…  mode=…`
-7. From Telegram: `/health` → both legs green
+4. Close all MT5 windows (worker self-launches), then `uv run python layer3/worker_{personal,prop}.py`
+5. From Telegram: `/health` → both legs green
+6. Housekeeping: delete `C:\arbitrage\config\mt5_autologin.ini` if it still exists (leftover plaintext-password file, unused)
 
-**Housekeeping when next on the VPSes:**
-- Delete `C:\arbitrage\config\mt5_autologin.ini` if it still exists (leftover plaintext-password file, unused)
-- `handoff/SESSION-HANDOFF.md` is stale (its "unfunded accounts" diagnosis was wrong); safe to delete or ignore — superseded by this section
+### Layer 2 telegram-message consolidation (2026-05-28 → 2026-05-29) — SHIPPED, awaiting `/update layer2`
 
-**Carryover from before the MT5 saga (verify status when resuming):** `/update layer2` for the session-13 phase1-persistence fix (+ Trade Opened reformat) and the post-deploy `/phase1`→`reward:risk`→`CONFIRM`→`/resume` reconfigure; Issues 1–7 deploy via `/update layer2` + `/update layer3` opt 1+2; Telegram close-alert P&L breakdown (see Pending Changes section above).
+All Telegram message text moved out of `logic_core.py` into named `msg_*()` functions in `telegram_handlers.py`. Each function has a docstring describing its trigger condition. Two new Telegram commands print the catalog (`/messages` for templates 1-19, `/messages2` for 20-37). All 37 templates redesigned with Warren's header + ━ separator + labeled-block format. **Audit confirmed zero orphans** — every message function is wired to at least one logic_core call-site.
+
+**Layer 2 commits (chronological):**
+- `5d1f58a` — consolidate Telegram messages + `/messages` catalog
+- `1b03ddf` — paginate `/messages` so all 37 templates survive Telegram flood control
+- `8940848` — apply Warren's redesigned templates 1-19
+- `4f7a69b` — apply redesigned templates 20-37 + audit
+
+**Deploy:** `/update layer2` in Telegram, then `/messages` and `/messages2` on phone to review the redesigned templates.
+
+### Next session
+
+Read `handoff/SESSION-HANDOFF.md` — it contains two queued tasks (folder reorganization + `$`/currency consistency audit). Both deferred during the message-consolidation work and explicitly requested by Warren.
