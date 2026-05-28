@@ -204,57 +204,35 @@ _known_pos_lock = threading.Lock()
 def _handle_mismatch(ticker: str, mismatch_type: str,
                      prop_dir: int | None, pers_dir: int | None) -> None:
     """Close the orphaned position and alert Telegram. Called after 120 s grace period."""
-    _dir = {0: "LONG", 1: "SHORT"}
     if mismatch_type == "prop_only":
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "orphan_mismatch")
-        summary = (
-            f"Orphan: {_dir.get(prop_dir, '?')} on Prop Hedge "
-            f"(no matching Personal Signal position)\n"
-            f"Action: Force-closed Prop Hedge"
-        )
     elif mismatch_type == "pers_only":
         _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "orphan_mismatch")
-        summary = (
-            f"Orphan: {_dir.get(pers_dir, '?')} on Personal Signal "
-            f"(no matching Prop Hedge position)\n"
-            f"Action: Force-closed Personal Signal"
-        )
     else:  # same_direction
         _close_ticker_on_worker(ZMQ_PUSH_PROP, ticker, "direction_mismatch")
         _close_ticker_on_worker(ZMQ_PUSH_PERS, ticker, "direction_mismatch")
-        summary = (
-            f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge broken\n"
-            f"Action: Force-closed both accounts"
-        )
     logger.error("MISMATCH HANDLED: %s  type=%s", ticker, mismatch_type)
 
     # Re-check positions 5 s after force-close to confirm the orphan is gone
     time.sleep(5)
+    post_query_ok = True
+    post_prop_open = False
+    post_pers_open = False
     try:
         post_prop = _query_positions(ZMQ_REQ_PROP)
         post_pers = _query_positions(ZMQ_REQ_PERS)
-        prop_open = any(p["symbol"] == ticker for p in post_prop)
-        pers_open = any(p["symbol"] == ticker for p in post_pers)
-        prop_str  = f"Still open — {ticker}" if prop_open else "No open positions"
-        pers_str  = f"Still open — {ticker}" if pers_open else "No open positions"
-        if not prop_open and not pers_open:
-            resolution = "✅ Resolved — both accounts are flat."
-        else:
-            resolution = "⚠️ Action required — check MT5 immediately."
+        post_prop_open = any(p["symbol"] == ticker for p in post_prop)
+        post_pers_open = any(p["symbol"] == ticker for p in post_pers)
     except Exception as exc:
         logger.warning("Post-mismatch position re-check failed: %s", exc)
-        prop_str  = "Query failed"
-        pers_str  = "Query failed"
-        resolution = "⚠️ Could not verify — check MT5 on both accounts."
+        post_query_ok = False
 
-    _alert_sync(
-        f"⚠️ <b>Mismatch Detected &amp; Resolved — {ticker}</b>\n\n"
-        f"{summary}\n\n"
-        f"<b>After Close</b>\n"
-        f"Personal Signal: {pers_str}\n"
-        f"Prop Hedge: {prop_str}\n\n"
-        f"{resolution}"
-    )
+    _alert_sync(telegram_handlers.msg_mismatch_resolved(
+        ticker=ticker, mismatch_type=mismatch_type,
+        prop_dir=prop_dir, pers_dir=pers_dir,
+        post_prop_open=post_prop_open, post_pers_open=post_pers_open,
+        post_query_ok=post_query_ok,
+    ))
 
 
 def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) -> None:
@@ -375,66 +353,10 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
             _send_close_alert(symbol, entry["pers_data"], entry["prop_data"])
 
 
-def _split_pers_amount(ticker: str, pers_value: float, usd_to_acct_rate: float) -> tuple[float, float]:
-    """Recover (usd, account_ccy) from a personal figure produced by geometry.
-
-    Geometry computes USD-quote pairs (ticker endswith USD) in USD via the contract
-    method, and all other pairs in the account currency via the tick_value method.
-    Mirror that split so we can show both currencies. (Issue 7)
-    """
-    rate = usd_to_acct_rate if (usd_to_acct_rate and usd_to_acct_rate > 0) else 1.0
-    if ticker.endswith("USD"):
-        return round(pers_value, 2), round(pers_value * rate, 2)
-    return round(pers_value / rate, 2), round(pers_value, 2)
-
-
-def _pers_money_dual(ticker: str, pers_value: float, currency: str, rate: float,
-                     signed: bool = False) -> str:
-    """Personal money as USD with a parenthetical account-currency (e.g. SGD)
-    equivalent. Collapses to plain USD when the personal account is USD. (Issue 7)"""
-    if (currency or "USD").upper() == "USD":
-        return _money(pers_value, "USD", signed)
-    usd, acct = _split_pers_amount(ticker, pers_value, rate)
-    return f"{_money(usd, 'USD', signed)} (≈ {_money(acct, currency, signed)})"
-
-
-def _order_check_leg_line(label: str, chk: dict) -> str:
-    """Per-leg status line for the pre-flight 'Signal Not Placed' alert (Issue 2)."""
-    verdict = chk.get("verdict", "?")
-    if verdict == "ok":
-        return f"<b>{label}</b>\nStatus: ✅ Can fill"
-    if verdict == "transient":
-        c = chk.get("comment") or "temporarily unavailable"
-        return f"<b>{label}</b>\nStatus: ⚠️ {c}"
-    # verdict == "reject" — explain why it would not fill
-    rc      = chk.get("retcode")
-    comment = (chk.get("comment") or "").strip()
-    mf      = chk.get("margin_free")
-    mneed   = chk.get("margin")
-    if rc == 10019 or (isinstance(mf, (int, float)) and mf < 0):
-        detail = "Not enough money"
-        if isinstance(mneed, (int, float)) and isinstance(mf, (int, float)):
-            detail += f" (needs ${mneed:,.2f} margin, free ${mf:,.2f})"
-        return f"<b>{label}</b>\nStatus: 🚫 REJECTED — {detail}"
-    reason_map = {
-        10014: "Invalid volume (lot size)",
-        10015: "Invalid price",
-        10016: "Invalid stops — SL/TP too close to price",
-        10017: "Trading disabled on this account",
-    }
-    reason = reason_map.get(rc) or comment or f"order_check retcode {rc}"
-    return f"<b>{label}</b>\nStatus: 🚫 REJECTED — {reason}"
-
-
 def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: dict | None) -> None:
-    """Build and send the Position Closed Telegram alert for one symbol.
-
-    Layout mirrors the Trade Opened message: one variable per line, section headers
-    in bold with direction merged in, four close-type emojis (🟢 TP / 🔴 SL /
-    📰 News / ⚠️ Other).  Account mode (demo/real) is read from MT5 directly via
-    Layer 3 — no env var, fully automatic.
+    """Orchestrate the Position Closed alert: gather data from Layer 3, then
+    hand off to telegram_handlers.msg_position_closed for the text.
     """
-    # Fresh re-query — gives accurate after-close snapshot.
     try:
         curr_prop = _query_positions(ZMQ_REQ_PROP)
     except Exception:
@@ -444,27 +366,16 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
     except Exception:
         curr_pers = []
 
-    def _pos_summary(pos_list: list[dict]) -> str:
-        if not pos_list:
-            return "  No open positions"
-        return "\n".join(
-            f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
-            for p in pos_list
-        )
-
-    # Query actual deal P&L from Layer 3 — always returns account_mode even when
-    # deal not yet found (MetaQuotes Demo lag).  Returns None only on transport error.
     pers_deal = _query_deal_pnl(ZMQ_REQ_PERS, symbol) if pers_pos_data else None
     prop_deal = _query_deal_pnl(ZMQ_REQ_PROP, symbol) if prop_pos_data else None
 
-    # Account mode — read whichever side we got back; personal is the authoritative one.
     account_mode = "unknown"
     if pers_deal and pers_deal.get("account_mode"):
         account_mode = pers_deal["account_mode"]
     elif prop_deal and prop_deal.get("account_mode"):
         account_mode = prop_deal["account_mode"]
 
-    # Was this a news-triggered close?  (Layer 2 tracks its own dispatches.)
+    # Was this a news-triggered close?  Layer 2 tracks its own dispatches.
     now_utc = datetime.now(timezone.utc)
     is_news_close = False
     dispatch_ts = _news_close_dispatched.get(symbol)
@@ -472,101 +383,12 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         is_news_close = True
         _news_close_dispatched.pop(symbol, None)
 
-    # Reason label (per side) — prefer Layer 3 deal.reason, override to NEWS when applicable.
-    def _reason_label(deal: dict | None) -> str:
-        if is_news_close:
-            return "NEWS"
-        if deal and deal.get("found") and deal.get("close_reason"):
-            return deal["close_reason"]
-        # Fallback inference when deal data is unavailable (demo)
-        if deal is None:
-            return "—"
-        return "—"
-
-    pers_reason = _reason_label(pers_deal)
-    prop_reason = _reason_label(prop_deal)
-
-    sections: list[str] = []
-
-    # ── Title — driven by close reason if available, else personal P&L sign ──
-    if is_news_close:
-        title = f"📰 <b>{symbol} — News Close</b>"
-    elif pers_pos_data:
-        if pers_deal and pers_deal.get("found"):
-            cr = pers_deal["close_reason"]
-            if cr == "TP":
-                title = f"🟢 <b>{symbol} — Take Profit</b>"
-            elif cr == "SL":
-                title = f"🔴 <b>{symbol} — Stop Loss</b>"
-            else:
-                title = f"⚠️ <b>{symbol} — Position Closed</b>"
-        else:
-            # Fall back to P&L sign for demo accounts where deal data hasn't arrived
-            pers_pnl = pers_pos_data["profit"]
-            title = (
-                f"🟢 <b>{symbol} — Take Profit</b>" if pers_pnl >= 0
-                else f"🔴 <b>{symbol} — Stop Loss</b>"
-            )
-    else:
-        title = f"⚠️ <b>{symbol} — Position Closed</b>"
-    sections.append(title)
-
-    # ── Helper to build one side block ───────────────────────────────────────
-    def _side_block(label: str, pos_data: dict | None, deal: dict | None,
-                    reason_label: str, currency: str = "USD") -> str:
-        if not pos_data:
-            return f"<b>{label}</b>\nNo matching position — already closed"
-        dir_str = "↑ LONG" if pos_data["type"] == 0 else "↓ SHORT"
-        if deal and deal.get("found"):
-            pnl        = deal["net_pnl"]
-            exit_price = _fmt_price(symbol, deal["close_price"])
-            commission = deal["commission"]
-            pnl_line   = f"Trade P&amp;L: {_money(pnl, currency, signed=True)}"
-            comm_line  = f"Commission: {_money(commission, currency, signed=True)}"
-        else:
-            pnl = pos_data["profit"]
-            # No deal data → fall back to theoretical exit level
-            exit_price = (
-                _fmt_price(symbol, pos_data["tp"]) if pnl >= 0
-                else _fmt_price(symbol, pos_data["sl"])
-            )
-            pnl_line  = f"Trade P&amp;L: {_money(pnl, currency, signed=True)} (est.)"
-            comm_line = None
-        lines = [
-            f"<b>{label} — {dir_str}</b>",
-            f"Size: {pos_data['volume']:.2f} lots",
-            f"Entry: {_fmt_price(symbol, pos_data['price_open'])}",
-            f"Exit: {exit_price}",
-            f"Reason: {reason_label}",
-            pnl_line,
-        ]
-        if comm_line:
-            lines.append(comm_line)
-        if pos_data.get("ticket"):
-            lines.append(f"Ticket: {pos_data['ticket']}")
-        return "\n".join(lines)
-
-    # Personal account currency (Issue 7) — its P&L/equity come from MT5 in this
-    # currency (e.g. SGD); the prop account is always USD. Fetched once and reused
-    # for the Equity section below.
+    # Personal account currency (Issue 7) — P&L/equity arrive in this currency.
     try:
         _pers_eq_reply = _query_equity(ZMQ_REQ_PERS, "")
     except Exception:
         _pers_eq_reply = {}
     pers_currency = _pers_eq_reply.get("account_currency", "USD")
-
-    sections.append(_side_block("Personal Signal", pers_pos_data, pers_deal, pers_reason, pers_currency))
-    sections.append(_side_block("Prop Hedge",      prop_pos_data, prop_deal, prop_reason, "USD"))
-
-    # ── After Close ──────────────────────────────────────────────────────────
-    sections.append(
-        f"<b>After Close</b>\n"
-        f"<b>Personal Signal:</b>\n{_pos_summary(curr_pers)}\n\n"
-        f"<b>Prop Hedge:</b>\n{_pos_summary(curr_prop)}"
-    )
-
-    # ── Equity ───────────────────────────────────────────────────────────────
-    # Personal equity reuses the reply fetched above (in its own currency, e.g. SGD).
     if "equity" in _pers_eq_reply:
         pers_eq_str = _money(_pers_eq_reply["equity"], pers_currency)
     else:
@@ -576,33 +398,20 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         prop_eq_str = f"${prop_eq:,.2f}"
     except Exception:
         prop_eq_str = "OFFLINE"
-    sections.append(
-        f"<b>Account Equity</b>  <i>(whole account, not this trade)</i>\n"
-        f"Personal Signal: {pers_eq_str}\n"
-        f"Prop Hedge: {prop_eq_str}"
-    )
 
-    # ── Footer — context line for demo / live data state ─────────────────────
-    pers_deal_missing = pers_pos_data and not (pers_deal and pers_deal.get("found"))
-    prop_deal_missing = prop_pos_data and not (prop_deal and prop_deal.get("found"))
-    any_deal_missing  = pers_deal_missing or prop_deal_missing
-    if any_deal_missing:
-        if account_mode == "demo":
-            sections.append(
-                "ℹ️ Demo account — exact MT5 figures will sync to the journal in ~2-3h."
-            )
-        elif account_mode == "real":
-            sections.append(
-                "⚠️ Deal data unavailable from broker — check journal dashboard shortly."
-            )
-        # account_mode == "unknown" or "contest": stay silent (no spurious footer)
-
-    # Clear from known-open-positions tracker.
     with _known_pos_lock:
         _known_open_positions.pop(symbol, None)
 
     logger.info("Close detection: alert sent for %s", symbol)
-    _alert_sync("\n\n".join(sections))
+    _alert_sync(telegram_handlers.msg_position_closed(
+        symbol=symbol,
+        pers_pos_data=pers_pos_data, prop_pos_data=prop_pos_data,
+        pers_deal=pers_deal, prop_deal=prop_deal,
+        curr_pers=curr_pers, curr_prop=curr_prop,
+        pers_currency=pers_currency,
+        pers_eq_str=pers_eq_str, prop_eq_str=prop_eq_str,
+        is_news_close=is_news_close, account_mode=account_mode,
+    ))
 
 
 def _run_news_preclose_check() -> None:
@@ -636,15 +445,11 @@ def _run_news_preclose_check() -> None:
 
     if expired:
         _sgt = timedelta(hours=8)
-        pair_lines = []
-        for t, end in sorted(expired):
-            expired_sgt = (end + _sgt).strftime("%H:%M SGT")
-            pair_lines.append(f"🔴 → 🟢  <b>{t}</b> — window expired (was until {expired_sgt})")
-        _alert_sync(
-            f"🟢 <b>News Window Cleared</b>\n\n"
-            + "\n".join(pair_lines)
-            + "\n\nNew signals accepted for these pairs."
-        )
+        expired_pairs = [
+            (t, (end + _sgt).strftime("%H:%M SGT"))
+            for t, end in sorted(expired)
+        ]
+        _alert_sync(telegram_handlers.msg_news_window_cleared(expired_pairs))
 
     for t, _ in expired:
         with _news_suppressed_lock:
@@ -748,27 +553,14 @@ def _run_news_preclose_check() -> None:
         affected_pers = [p for p in pers_pos if p["symbol"] in tickers_set]
         affected_prop = [p for p in prop_pos if p["symbol"] in tickers_set]
 
-        def _fmt_pos_list(pos_list: list[dict]) -> str:
-            return "\n".join(
-                f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'}"
-                f" {p['volume']:.2f} lots  P&L: ${p['profit']:+,.2f}"
-                for p in pos_list
-            ) if pos_list else "  No open positions"
-
-        closing_lines = (
-            f"<b>Personal Signal:</b>\n{_fmt_pos_list(affected_pers)}\n\n"
-            f"<b>Prop Hedge:</b>\n{_fmt_pos_list(affected_prop)}"
-        )
-
         logger.warning("NEWS BAN [%s] — %s  affected: %s", meta["currency"], event_desc, tickers)
-        _alert_sync(
-            f"📰 <b>News Pre-Close — [{meta['currency']}]</b>\n\n"
-            f"{event_desc}\n\n"
-            f"<b>Positions being closed:</b>\n{closing_lines}\n\n"
-            f"New signals blocked until "
-            f"{(sup_end + _sgt).strftime('%H:%M')} SGT "
-            f"(event +{_NEWS_TRADING_BAN_WINDOW} min)."
-        )
+        _alert_sync(telegram_handlers.msg_news_pre_close(
+            currency=meta["currency"],
+            event_desc=event_desc,
+            affected_pers=affected_pers, affected_prop=affected_prop,
+            suppression_end_sgt=f"{(sup_end + _sgt).strftime('%H:%M')} SGT",
+            ban_window_min=_NEWS_TRADING_BAN_WINDOW,
+        ))
 
         for ticker in tickers:
             _dispatch_close_ticker(ticker, f"pre_news_{ticker}")
@@ -819,11 +611,9 @@ def _run_equity_check() -> None:
             logger.info("Monitor: SGT curfew transition — dispatching force-close (positions only)")
             pos_str = _snapshot_positions_str()
             _dispatch_force_close("sgt_curfew", halt=False)
-            _alert_sync(
-                f"🌙 <b>Curfew — All positions closed</b>\n\n"
-                f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"Resumes at next session ({_next_window_open_text()})."
-            )
+            _alert_sync(telegram_handlers.msg_curfew_close(
+                pos_str=pos_str, next_open_text=_next_window_open_text(),
+            ))
             _last_curfew_close_date = today
         _pos_tracking_initialized = False
         _pending_closes.clear()  # Discard any stale pending closes across the curfew boundary
@@ -838,7 +628,7 @@ def _run_equity_check() -> None:
             _prop_fail_count = 0
             _pos_tracking_initialized = False
             _pending_closes.clear()
-            _alert_sync("✅ <b>Prop Hedge — Worker Back Online</b>")
+            _alert_sync(telegram_handlers.msg_worker_back_online("prop"))
         else:
             _prop_fail_count = 0
 
@@ -846,17 +636,10 @@ def _run_equity_check() -> None:
         prop_trade_ok = _eq_result.get("trade_allowed", True)
         if not prop_trade_ok and not _prop_algo_disabled:
             _prop_algo_disabled = True
-            _alert_sync(
-                "⚠️ <b>Prop Hedge — Algo Trading DISABLED</b>\n\n"
-                "MT5 algo trading is off. Orders will be silently rejected.\n\n"
-                "<b>Fix</b>\n"
-                "1. MT5 toolbar → Algo Trading button (make it green)\n"
-                "2. Tools → Options → Expert Advisors → uncheck "
-                "<i>'Disable algorithmic trading when the account has been changed'</i>"
-            )
+            _alert_sync(telegram_handlers.msg_algo_trading_disabled("prop"))
         elif prop_trade_ok and _prop_algo_disabled:
             _prop_algo_disabled = False
-            _alert_sync("✅ <b>Prop Hedge — Algo Trading Restored</b>")
+            _alert_sync(telegram_handlers.msg_algo_trading_restored("prop"))
 
     except Exception as exc:
         _prop_fail_count += 1
@@ -864,13 +647,9 @@ def _run_equity_check() -> None:
                        _prop_fail_count, _WORKER_DOWN_THRESHOLD, exc)
         if _prop_fail_count >= _WORKER_DOWN_THRESHOLD and not _prop_down:
             _prop_down = True
-            _alert_sync(
-                "⚠️ <b>Prop Hedge — Worker OFFLINE</b>\n\n"
-                f"No response for ~{_WORKER_DOWN_THRESHOLD * 30}s. Positions may still be open.\n\n"
-                "<b>Action</b>\n"
-                "1. Open VPS #3 noVNC\n"
-                "2. <code>cd C:/arbitrage &amp;&amp; uv run python layer3/worker_prop.py</code>"
-            )
+            _alert_sync(telegram_handlers.msg_worker_offline(
+                "prop", _WORKER_DOWN_THRESHOLD * 30,
+            ))
         return
 
     pers_equity_live: float | None = None
@@ -882,24 +661,17 @@ def _run_equity_check() -> None:
             _pers_fail_count = 0
             _pos_tracking_initialized = False
             _pending_closes.clear()
-            _alert_sync("✅ <b>Personal Signal — Worker Back Online</b>")
+            _alert_sync(telegram_handlers.msg_worker_back_online("personal"))
         else:
             _pers_fail_count = 0
 
         pers_trade_ok = _pers_result.get("trade_allowed", True)
         if not pers_trade_ok and not _pers_algo_disabled:
             _pers_algo_disabled = True
-            _alert_sync(
-                "⚠️ <b>Personal Signal — Algo Trading DISABLED</b>\n\n"
-                "MT5 algo trading is off. Orders will be silently rejected.\n\n"
-                "<b>Fix</b>\n"
-                "1. MT5 toolbar → Algo Trading button (make it green)\n"
-                "2. Tools → Options → Expert Advisors → uncheck "
-                "<i>'Disable algorithmic trading when the account has been changed'</i>"
-            )
+            _alert_sync(telegram_handlers.msg_algo_trading_disabled("personal"))
         elif pers_trade_ok and _pers_algo_disabled:
             _pers_algo_disabled = False
-            _alert_sync("✅ <b>Personal Signal — Algo Trading Restored</b>")
+            _alert_sync(telegram_handlers.msg_algo_trading_restored("personal"))
 
     except Exception as exc:
         _pers_fail_count += 1
@@ -907,13 +679,9 @@ def _run_equity_check() -> None:
                        _pers_fail_count, _WORKER_DOWN_THRESHOLD, exc)
         if _pers_fail_count >= _WORKER_DOWN_THRESHOLD and not _pers_down:
             _pers_down = True
-            _alert_sync(
-                "⚠️ <b>Personal Signal — Worker OFFLINE</b>\n\n"
-                f"No response for ~{_WORKER_DOWN_THRESHOLD * 30}s. Positions may still be open.\n\n"
-                "<b>Action</b>\n"
-                "1. Open VPS #2 noVNC\n"
-                "2. <code>cd C:/arbitrage &amp;&amp; uv run python layer3/worker_personal.py</code>"
-            )
+            _alert_sync(telegram_handlers.msg_worker_offline(
+                "personal", _WORKER_DOWN_THRESHOLD * 30,
+            ))
         # personal failure doesn't block kill-condition checks — prop equity already fetched
 
     # Position mismatch + close detection — runs every cycle when both workers are online
@@ -944,7 +712,7 @@ def _run_equity_check() -> None:
                 _phase_state.pop("soft_kill_override_day", None)
                 _save_phase(_phase_state)
             active = True
-            _alert_sync("🟢 <b>New Session — Auto-Resumed</b>\n\nDaily halt cleared. System is armed and accepting signals.")
+            _alert_sync(telegram_handlers.msg_new_session_auto_resumed())
 
     if not active:
         return
@@ -1023,36 +791,28 @@ def _run_equity_check() -> None:
             _phase1_record_stage_day(_propfirm_day(now_sgt))
             # advance the ratchet so tomorrow aims at the next stage
             _phase1_active_stage(stages, prop_equity)
-            _alert_sync(
-                f"🎯 <b>Phase 1 — Stage Reached</b>\n\n"
-                f"Prop equity: <b>${prop_equity:,.2f}</b> ≥ stage ${decision['stage_value']:,.2f}\n"
-                f"Profitable day locked. Positions force-closed.\n\n"
-                f"System auto-resumes at next session ({_next_session_resume_text()}); next target is the following stage."
-            )
+            _alert_sync(telegram_handlers.msg_phase1_stage_reached(
+                prop_equity=prop_equity,
+                stage_value=decision["stage_value"],
+                next_resume_text=_next_session_resume_text(),
+            ))
         elif reason == "daily_loss_limit":
-            df = decision["daily_floor"]
-            _alert_sync(
-                f"🔴 <b>KILL 1 — Daily Loss Limit Hit (Phase 1)</b>\n\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${df:,.2f}\n"
-                f"Day-start: ${day_start:,.2f}\n\n"
-                f"All positions force-closed. System auto-resumes at next session ({_next_session_resume_text()}), or /resume to restart now."
-            )
+            _alert_sync(telegram_handlers.msg_kill1_phase1(
+                prop_equity=prop_equity,
+                daily_floor=decision["daily_floor"],
+                day_start=day_start,
+                next_resume_text=_next_session_resume_text(),
+            ))
         elif reason == "overall_drawdown_limit":
-            of = decision["overall_floor"]
-            _alert_sync(
-                f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit (Phase 1)</b>\n\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${of:,.2f}\n\n"
-                f"All positions force-closed. Permanent halt.\n"
-                f"/changepropfirm → /phase1 → /resume to start a new challenge."
-            )
+            _alert_sync(telegram_handlers.msg_kill2_phase1(
+                prop_equity=prop_equity,
+                overall_floor=decision["overall_floor"],
+            ))
         else:  # profit_target
-            _alert_sync(
-                f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
-                f"Prop equity: <b>${prop_equity:,.2f}</b> ≥ funded line "
-                f"${decision['stage_value']:,.2f}\n\n"
-                f"All positions force-closed. System halted.\n\n"
-                f"/phase2 to configure and start the funded phase"
-            )
+            _alert_sync(telegram_handlers.msg_kill4_phase1_passed(
+                prop_equity=prop_equity,
+                funded_line=decision["stage_value"],
+            ))
         return
 
     if phase != 1:
@@ -1060,17 +820,12 @@ def _run_equity_check() -> None:
         if dd_overall_pct > 0 and prop_equity <= overall_floor:
             pos_str = _snapshot_positions_str()
             _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
-            msg = (
-                f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
-                f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${overall_floor:,.2f}\n"
-                f"Overall DD: {dd_overall_pct:.1f}%  |  Baseline: ${baseline:,.2f}\n\n"
-                f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                f"All positions force-closed. Permanent halt.\n\n"
-                f"<b>Next steps:</b>\n"
-                f"/changepropfirm → /phase1 → /resume to start a new challenge."
-            )
             logger.warning("KILL2: equity=%.2f floor=%.2f", prop_equity, overall_floor)
-            _alert_sync(msg)
+            _alert_sync(telegram_handlers.msg_kill2_phase2plus(
+                prop_equity=prop_equity, overall_floor=overall_floor,
+                dd_overall_pct=dd_overall_pct, baseline=baseline,
+                pos_str=pos_str,
+            ))
             return
 
         # Kill 1 — dynamic daily drawdown floor (all phases)
@@ -1085,19 +840,15 @@ def _run_equity_check() -> None:
                     _phase_state["daily_halted"] = True
                     _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
                     _save_phase(_phase_state)
-                msg = (
-                    f"🔴 <b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
-                    f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${daily_floor:,.2f}\n"
-                    f"Day-start: ${day_start:,.2f}  |  Max daily loss: ${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)\n\n"
-                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                    f"All positions force-closed. System halted for today.\n\n"
-                    f"Overall DD floor: ${overall_floor:,.2f}\n\n"
-                    f"System auto-resumes at next session ({_next_session_resume_text()}), or /resume to restart now.\n"
-                    f"/changepropfirm to switch to a new challenge"
-                )
                 logger.warning("KILL1: equity=%.2f daily_floor=%.2f day_start=%.2f",
                                prop_equity, daily_floor, day_start)
-                _alert_sync(msg)
+                _alert_sync(telegram_handlers.msg_kill1_phase2plus(
+                    prop_equity=prop_equity, daily_floor=daily_floor,
+                    day_start=day_start, daily_loss_amt=daily_loss_amt,
+                    dd_daily_pct=dd_daily_pct, pos_str=pos_str,
+                    overall_floor=overall_floor,
+                    next_resume_text=_next_session_resume_text(),
+                ))
                 return
 
         # Kill 3 — daily profit cap (all phases)
@@ -1113,17 +864,14 @@ def _run_equity_check() -> None:
                     _phase_state["daily_halted"] = True
                     _phase_state["daily_halted_date"] = _propfirm_day(now_sgt)
                     _save_phase(_phase_state)
-                msg = (
-                    f"🟡 <b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
-                    f"Equity: <b>${prop_equity:,.2f}</b>  |  Cap level: ${daily_cap_level:,.2f}\n"
-                    f"Day-start: ${day_start:,.2f}  |  Cap: +${layer_cap_amt:,.2f}\n\n"
-                    f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                    f"All positions force-closed. System halted for today.\n\n"
-                    f"System auto-resumes at next session ({_next_session_resume_text()}), or /resume to restart now."
-                )
                 logger.warning("KILL3: equity=%.2f cap_level=%.2f day_start=%.2f",
                                prop_equity, daily_cap_level, day_start)
-                _alert_sync(msg)
+                _alert_sync(telegram_handlers.msg_kill3_daily_profit_cap(
+                    prop_equity=prop_equity, daily_cap_level=daily_cap_level,
+                    day_start=day_start, layer_cap_amt=layer_cap_amt,
+                    pos_str=pos_str,
+                    next_resume_text=_next_session_resume_text(),
+                ))
                 return
 
         # Kill 4 — profit target reached (all phases) — cumulative from baseline
@@ -1134,24 +882,14 @@ def _run_equity_check() -> None:
                 pos_str = _snapshot_positions_str()
                 _dispatch_force_close("profit_target", halt=True, permanent=True)
                 if phase == 1:
-                    msg = (
-                        f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
-                        f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
-                        f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-                        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                        f"All positions force-closed. System halted.\n\n"
-                        f"/phase2 to configure and start the funded phase\n"
-                        f"/changepropfirm to start a new challenge instead"
+                    msg = telegram_handlers.msg_kill4_phase1_via_target(
+                        prop_equity=prop_equity, overall_pct=overall_pct,
+                        target=target, pos_str=pos_str,
                     )
                 else:
-                    msg = (
-                        f"🏆 <b>KILL 4 — Phase {phase} Profit Target Reached</b>\n\n"
-                        f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
-                        f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-                        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                        f"All positions force-closed. System halted.\n\n"
-                        f"/phase2 to start a new cycle\n"
-                        f"/stop to end trading on this account"
+                    msg = telegram_handlers.msg_kill4_phase2plus(
+                        phase=phase, prop_equity=prop_equity,
+                        overall_pct=overall_pct, target=target, pos_str=pos_str,
                     )
                 logger.warning(msg)
                 _alert_sync(msg)
@@ -1177,17 +915,13 @@ def _run_equity_check() -> None:
                     overall_pct = total / baseline * 100 if baseline > 0 else 0.0
                     pos_str = _snapshot_positions_str()
                     _dispatch_force_close("consistency_rule", halt=True, permanent=True)
-                    msg = (
-                        f"🏆 <b>KILL 5 — Consistency Rule Met</b>\n\n"
-                        f"<pre>{table_str}</pre>\n\n"
-                        f"Overall profit: <b>{overall_pct:.1f}%</b> across {len(locked_days) + (1 if today_running > 0 else 0)} days\n\n"
-                        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-                        f"All positions force-closed. Trading halted.\n\n"
-                        f"Log in to your prop account and submit the profit share withdrawal claim.\n\n"
-                        f"/phase2 + /resume to start a new cycle."
-                    )
                     logger.warning("KILL 5 — consistency rule met: %.1f%% < %.1f%%", ratio_pct, cons_threshold)
-                    _alert_sync(msg)
+                    _alert_sync(telegram_handlers.msg_kill5_consistency(
+                        table_str=table_str, overall_pct=overall_pct,
+                        locked_days_count=len(locked_days),
+                        today_running_positive=today_running > 0,
+                        pos_str=pos_str,
+                    ))
 
 
 # ── Module startup ────────────────────────────────────────────────────────
@@ -1291,11 +1025,7 @@ async def _verify_and_notify(
         )
     except Exception as exc:
         logger.error("_verify_and_notify crashed for %s: %s", ticker, exc, exc_info=True)
-        await _telegram_alert(
-            f"⚠️ <b>Internal Error — {ticker}</b>\n\n"
-            f"Order confirmation task crashed: {exc}\n\n"
-            f"Check VPS #1 logs. Positions may be open — verify MT5 manually."
-        )
+        await _telegram_alert(telegram_handlers.msg_internal_error(ticker, exc))
 
 
 async def _verify_and_notify_inner(
@@ -1366,17 +1096,13 @@ async def _verify_and_notify_inner(
     # Immediate terminal states (UNSUPPORTED / ERROR / REJECTED before any fill)
     if prop_state in ("UNSUPPORTED_LIMIT_SETUP", "ERROR", "REJECTED") or \
        pers_state in ("UNSUPPORTED_LIMIT_SETUP", "ERROR", "REJECTED"):
-        def _side_reason(s: dict, label: str) -> str:
-            st  = s.get("status", "UNKNOWN")
-            err = s.get("error") or s.get("broker_comment") or ""
-            return f"<b>{label}</b>\nStatus: {st}\n{err}" if err else f"<b>{label}</b>\nStatus: {st}"
-        await _telegram_alert(
-            f"🚫 <b>Signal Not Placed — {ticker}</b>\n\n"
-            f"{_side_reason(pers_status, 'Personal Signal')}\n\n"
-            f"{_side_reason(prop_status, 'Prop Hedge')}\n\n"
-            f"<b>Signal</b>\n"
-            f"{pers_arrow} · Entry {_fp(entry)} | SL {_fp(pers_sl)} | TP {_fp(pers_tp)}"
-        )
+        await _telegram_alert(telegram_handlers.msg_signal_not_placed_terminal(
+            ticker=ticker,
+            pers_status=pers_status, prop_status=prop_status,
+            pers_arrow=pers_arrow,
+            entry_fmt=_fp(entry),
+            pers_sl_fmt=_fp(pers_sl), pers_tp_fmt=_fp(pers_tp),
+        ))
         return
 
     # Poll until both reach a terminal state — market orders fill in < 1 s
@@ -1444,85 +1170,53 @@ async def _verify_and_notify_inner(
         pf = _prop_final
         ef = _pers_final
 
-        pers_entry_disc = ef.get("entry_discrepancy", 0.0)
-        prop_entry_disc = pf.get("entry_discrepancy", 0.0)
+        if phase == 1:
+            _p1 = _phase1_load()
+            _stages = _p1.get("stages", [1])
+            _idx = min(int(_p1.get("active_stage_index", 0)), len(_stages) - 1)
+            phase_context_extra = f"Active stage: ${_stages[_idx]:,.0f}"
+        else:
+            phase_context_extra = f"Baseline: ${baseline_equity:,.2f}"
 
-        await _telegram_alert(
-            f"<b>{ticker} — Trade Opened</b>\n\n"
-            f"<b>Personal Signal — {pers_arrow}</b>\n"
-            f"Size: {pers_lots:.2f} lots\n"
-            f"Entry: {_fp(ef.get('actual_fill_price', entry))}\n"
-            f"SL: {_fp(ef.get('actual_sl', pers_sl))}\n"
-            f"TP: {_fp(ef.get('actual_tp', pers_tp))}\n"
-            f"Risk: {_pers_money_dual(ticker, pers_dollar_risk, pers_currency, pers_usd_to_acct_rate)}\n"
-            f"Reward: {_pers_money_dual(ticker, pers_reward, pers_currency, pers_usd_to_acct_rate)}\n"
-            f"RR: {pers_rr:.2f}\n"
-            f"Ticket: {ef.get('mt5_order_ticket', '?')}\n\n"
-            f"<b>Prop Hedge — {prop_arrow}</b>\n"
-            f"Size: {prop_lots:.2f} lots\n"
-            f"Entry: {_fp(pf.get('actual_fill_price', entry))}\n"
-            f"SL: {_fp(pf.get('actual_sl', prop_sl))}\n"
-            f"TP: {_fp(pf.get('actual_tp', prop_tp))}\n"
-            f"Risk: ${prop_dollar_risk:,.2f}\n"
-            f"Reward: ${prop_reward:,.2f}\n"
-            f"RR: {prop_rr:.2f}\n"
-            f"Ticket: {pf.get('mt5_order_ticket', '?')}\n\n"
-            f"<b>Context</b>\n"
-            f"Phase: Phase {phase}"
-            + (f"\nActive stage: ${_phase1_load().get('stages', ['?'])[min(int(_phase1_load().get('active_stage_index',0)), len(_phase1_load().get('stages',[1]))-1)]:,.0f}"
-               if phase == 1 else f"\nBaseline: ${baseline_equity:,.2f}")
-        )
+        await _telegram_alert(telegram_handlers.msg_trade_opened(
+            ticker=ticker, phase=phase, baseline_equity=baseline_equity,
+            phase_context_extra=phase_context_extra,
+            pers_arrow=pers_arrow, pers_lots=pers_lots,
+            pers_entry_fmt=_fp(ef.get("actual_fill_price", entry)),
+            pers_sl_fmt=_fp(ef.get("actual_sl", pers_sl)),
+            pers_tp_fmt=_fp(ef.get("actual_tp", pers_tp)),
+            pers_dollar_risk=pers_dollar_risk, pers_reward=pers_reward, pers_rr=pers_rr,
+            pers_ticket=ef.get("mt5_order_ticket", "?"),
+            pers_currency=pers_currency, pers_usd_to_acct_rate=pers_usd_to_acct_rate,
+            prop_arrow=prop_arrow, prop_lots=prop_lots,
+            prop_entry_fmt=_fp(pf.get("actual_fill_price", entry)),
+            prop_sl_fmt=_fp(pf.get("actual_sl", prop_sl)),
+            prop_tp_fmt=_fp(pf.get("actual_tp", prop_tp)),
+            prop_dollar_risk=prop_dollar_risk, prop_reward=prop_reward, prop_rr=prop_rr,
+            prop_ticket=pf.get("mt5_order_ticket", "?"),
+        ))
         return
 
-    # One or both not filled — build appropriate alert
-    def _side_summary(s: dict | None, label: str) -> str:
-        if s is None:
-            return f"<b>{label}</b>\n⚠️ No confirmation received"
-        st         = s.get("status", "UNKNOWN")
-        ticket_num = s.get("mt5_order_ticket")
-        reason     = s.get("broker_comment") or s.get("error") or ""
-        if st == "FILLED":
-            fill = _fp(s.get("actual_fill_price", entry))
-            return (
-                f"<b>{label}</b>\n"
-                f"✅ Filled @ {fill}"
-                f"{f'  |  Ticket: {ticket_num}' if ticket_num else ''}"
-            )
-        elif st == "PENDING_PLACED":
-            px = _fp(s.get("requested_entry", entry))
-            return (
-                f"<b>{label}</b>\n"
-                f"⏳ Limit order resting @ {px} (market was closed; "
-                f"fills when price returns)"
-                f"{f'  |  Ticket: {ticket_num}' if ticket_num else ''}"
-            )
-        elif st == "UNSUPPORTED_LIMIT_SETUP":
-            return f"<b>{label}</b>\n🚫 {st}\n{reason}"
-        else:
-            line = f"<b>{label}</b>\n❌ {st}"
-            if ticket_num:
-                line += f"  |  Ticket: {ticket_num}"
-            if reason:
-                line += f"\n{reason}"
-            return line
-
-    pers_summary = _side_summary(_pers_final, "Personal Signal")
-    prop_summary = _side_summary(_prop_final, "Prop Hedge")
+    # One or both not filled — compose alert via telegram_handlers
+    pers_summary = telegram_handlers.msg_side_summary_for_order_not_filled(
+        _pers_final, "Personal Signal", ticker, entry,
+    )
+    prop_summary = telegram_handlers.msg_side_summary_for_order_not_filled(
+        _prop_final, "Prop Hedge", ticker, entry,
+    )
 
     _states  = {(_pers_final or {}).get("status"), (_prop_final or {}).get("status")}
     _hard    = {"REJECTED", "ERROR", "UNSUPPORTED_LIMIT_SETUP", None}
     _resting = "PENDING_PLACED" in _states and not (_states & _hard)
-    _header  = (f"⏳ <b>Limit Order Resting — {ticker}</b>" if _resting
-                else f"⚠️ <b>Order Not Filled — {ticker}</b>")
 
-    await _telegram_alert(
-        f"{_header}\n\n"
-        f"{pers_summary}\n\n"
-        f"{prop_summary}\n\n"
-        f"<b>Signal details</b>\n"
-        f"{pers_arrow} · Entry {_fp(entry)} | SL {_fp(pers_sl)} | TP {_fp(pers_tp)}\n"
-        f"Lots: Personal {pers_lots:.2f} / Prop {prop_lots:.2f}"
-    )
+    await _telegram_alert(telegram_handlers.msg_order_not_filled(
+        ticker=ticker, resting=_resting,
+        pers_summary=pers_summary, prop_summary=prop_summary,
+        pers_arrow=pers_arrow,
+        entry_fmt=_fp(entry),
+        pers_sl_fmt=_fp(pers_sl), pers_tp_fmt=_fp(pers_tp),
+        pers_lots=pers_lots, prop_lots=prop_lots,
+    ))
 
 
 @app.post("/signal")
@@ -1550,12 +1244,9 @@ async def receive_signal(request: Request):
 
     if p_halt:
         if _maybe_block_alert(payload.ticker, "p_halt"):
-            await _telegram_alert(
-                f"🔴 <b>Signal Blocked — {payload.ticker}</b>\n\n"
-                f"System permanently halted (K2/K4/K5 triggered).\n"
-                f"Signal: {payload.signal}\n\n"
-                f"Use /phase2 or /changepropfirm then /resume to restart."
-            )
+            await _telegram_alert(telegram_handlers.msg_signal_blocked_p_halt(
+                payload.ticker, payload.signal,
+            ))
         return JSONResponse({
             "status": "halted",
             "reason": "profit target reached — /phase2 to configure and start next phase",
@@ -1563,12 +1254,9 @@ async def receive_signal(request: Request):
 
     if not active:
         if _maybe_block_alert(payload.ticker, "halted"):
-            await _telegram_alert(
-                f"⏸ <b>Signal Skipped — {payload.ticker}</b>\n\n"
-                f"System halted (K1/K3 daily halt or manual /stop).\n"
-                f"Signal: {payload.signal}\n\n"
-                f"Auto-resumes next session, or /resume to restart now."
-            )
+            await _telegram_alert(telegram_handlers.msg_signal_skipped_halted(
+                payload.ticker, payload.signal,
+            ))
         logger.info("HALTED — dropped %s %s", payload.signal, payload.ticker)
         return JSONResponse({"status": "halted", "reason": "signal processing stopped"})
 
@@ -1586,12 +1274,9 @@ async def receive_signal(request: Request):
         reason = "manual block (/closepair)" if manual_block else "news suppression window"
         logger.info("SUPPRESSED — dropped %s %s (%s)", payload.signal, payload.ticker, reason)
         if _maybe_block_alert(payload.ticker, reason):
-            await _telegram_alert(
-                f"📰 <b>Signal Suppressed — {payload.ticker}</b>\n\n"
-                f"Reason: {reason}\n"
-                f"Signal: {payload.signal}\n\n"
-                f"Trading resumes automatically when the window expires."
-            )
+            await _telegram_alert(telegram_handlers.msg_signal_suppressed(
+                payload.ticker, payload.signal, reason,
+            ))
         return JSONResponse({"status": "suppressed", "reason": reason})
 
     # Max open positions gate — count by prop positions (1 signal = 1 prop position)
@@ -1604,12 +1289,9 @@ async def receive_signal(request: Request):
 
     if open_count >= max_pos:
         logger.info("MAX_POS  %s %s — %d/%d open", payload.signal, payload.ticker, open_count, max_pos)
-        await _telegram_alert(
-            f"🚫 <b>Signal Skipped — {payload.ticker}</b>\n\n"
-            f"Max open positions reached ({open_count}/{max_pos}).\n"
-            f"Signal: {payload.signal}\n\n"
-            f"/setmaxpos N to increase the limit."
-        )
+        await _telegram_alert(telegram_handlers.msg_signal_skipped_max_pos(
+            payload.ticker, payload.signal, open_count, max_pos,
+        ))
         return JSONResponse({
             "status": "rejected",
             "reason": "max_positions_reached",
@@ -1625,7 +1307,7 @@ async def receive_signal(request: Request):
             _query_equity, ZMQ_REQ_PROP, payload.ticker
         )
     except Exception as exc:
-        msg = f"Prop contract query failed: {exc}"
+        msg = telegram_handlers.msg_contract_query_failed("prop", exc)
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
@@ -1635,7 +1317,7 @@ async def receive_signal(request: Request):
             _query_equity, ZMQ_REQ_PERS, payload.ticker
         )
     except Exception as exc:
-        msg = f"Personal contract query failed: {exc}"
+        msg = telegram_handlers.msg_contract_query_failed("personal", exc)
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
@@ -1643,36 +1325,24 @@ async def receive_signal(request: Request):
     # Gate: reject immediately if MT5 algo trading is disabled on either worker.
     # This prevents a silent EXECUTION FAILURE caused by Layer 3 rejecting the order.
     if not prop_info.get("trade_allowed", True):
-        msg = (
-            f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n"
-            f"Prop Hedge algo trading is <b>DISABLED</b>.\n\n"
-            f"<b>Fix</b>\n"
-            f"1. MT5 toolbar → Algo Trading button (make it green)\n"
-            f"2. Tools → Options → Expert Advisors → uncheck "
-            f"<i>'Disable algorithmic trading when the account has been changed'</i>"
-        )
         logger.error("Prop trade_allowed=False — blocking %s %s", payload.signal, payload.ticker)
-        await _telegram_alert(msg)
+        await _telegram_alert(telegram_handlers.msg_signal_blocked_algo_disabled(
+            payload.ticker, "prop",
+        ))
         raise HTTPException(status_code=503, detail="prop trade_allowed=False")
 
     if not pers_info.get("trade_allowed", True):
-        msg = (
-            f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n"
-            f"Personal Signal algo trading is <b>DISABLED</b>.\n\n"
-            f"<b>Fix</b>\n"
-            f"1. MT5 toolbar → Algo Trading button (make it green)\n"
-            f"2. Tools → Options → Expert Advisors → uncheck "
-            f"<i>'Disable algorithmic trading when the account has been changed'</i>"
-        )
         logger.error("Personal trade_allowed=False — blocking %s %s", payload.signal, payload.ticker)
-        await _telegram_alert(msg)
+        await _telegram_alert(telegram_handlers.msg_signal_blocked_algo_disabled(
+            payload.ticker, "personal",
+        ))
         raise HTTPException(status_code=503, detail="personal trade_allowed=False")
 
     # Step A — prop dollar risk: strictly 0.67% of static baseline (never live equity)
     with _pf_lock:
         baseline_equity = _propfirm.get("baseline_equity", 0.0)
     if baseline_equity <= 0:
-        msg = "baseline_equity not set — send /phase1 or /phase2 via Telegram first"
+        msg = telegram_handlers.msg_baseline_missing()
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
@@ -1689,14 +1359,17 @@ async def receive_signal(request: Request):
     prop_tick_val  = prop_info["trade_tick_value"]
 
     if prop_tick_size <= 0 or prop_tick_val <= 0:
-        msg = (f"Invalid contract data from prop worker for {payload.ticker} — "
-               f"tick_size={prop_tick_size} tick_value={prop_tick_val}")
+        msg = telegram_handlers.msg_invalid_contract_data(
+            payload.ticker, prop_tick_size, prop_tick_val,
+        )
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
 
     if tp_distance <= 0:
-        msg = f"TP distance is zero for {payload.ticker} — tp={payload.tp} entry={payload.entry}"
+        msg = telegram_handlers.msg_tp_distance_zero(
+            payload.ticker, payload.tp, payload.entry,
+        )
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=422, detail=msg)
@@ -1713,7 +1386,9 @@ async def receive_signal(request: Request):
         if not stages:
             msg = "Phase 1 not configured — run /phase1 to set reward:risk first"
             logger.error(msg)
-            await _telegram_alert(f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n{msg}")
+            await _telegram_alert(telegram_handlers.msg_signal_blocked_generic(
+                payload.ticker, msg,
+            ))
             raise HTTPException(status_code=503, detail=msg)
         try:
             live_prop_equity = float(prop_info.get("equity", 0.0))
@@ -1722,7 +1397,9 @@ async def receive_signal(request: Request):
         if live_prop_equity <= 0:
             msg = "Phase 1: live prop equity unavailable — cannot size dynamic reward"
             logger.error(msg)
-            await _telegram_alert(f"🚫 <b>Signal Blocked — {payload.ticker}</b>\n\n{msg}")
+            await _telegram_alert(telegram_handlers.msg_signal_blocked_generic(
+                payload.ticker, msg,
+            ))
             raise HTTPException(status_code=503, detail=msg)
         idx = _phase1_active_stage(stages, live_prop_equity)
         if idx >= len(stages):
@@ -1757,11 +1434,9 @@ async def receive_signal(request: Request):
 
     if "reject" in g:
         logger.info("GEOMETRY REJECT %s: %s", payload.ticker, g["reject"])
-        await _telegram_alert(
-            f"🚫 <b>Signal Skipped — {payload.ticker}</b>\n\n"
-            f"Phase {phase} sizing rejected: {g['reject']}\n"
-            f"Signal: {payload.signal}"
-        )
+        await _telegram_alert(telegram_handlers.msg_geometry_reject(
+            payload.ticker, phase, g["reject"], payload.signal,
+        ))
         return JSONResponse({"status": "rejected", "reason": g["reject"]})
 
     prop_lots        = g["prop_lots"]
@@ -1839,16 +1514,14 @@ async def receive_signal(request: Request):
             pers_chk.get("verdict"), pers_chk.get("comment"),
         )
         pers_arrow = "↑ LONG" if pers_signal == "LONG" else "↓ SHORT"
-        await _telegram_alert(
-            f"🚫 <b>Signal Not Placed — {payload.ticker}</b>\n\n"
-            f"One leg cannot fill, so <b>no order was placed on either account</b> "
-            f"(prevents an orphaned trade + wasted commission).\n\n"
-            f"{_order_check_leg_line('Personal Signal', pers_chk)}\n\n"
-            f"{_order_check_leg_line('Prop Hedge', prop_chk)}\n\n"
-            f"<b>Signal</b>\n"
-            f"{pers_arrow} · Entry {_fmt_price(payload.ticker, payload.entry)} "
-            f"| SL {_fmt_price(payload.ticker, pers_sl)} | TP {_fmt_price(payload.ticker, pers_tp)}"
-        )
+        await _telegram_alert(telegram_handlers.msg_signal_not_placed_preflight(
+            ticker=payload.ticker,
+            pers_chk=pers_chk, prop_chk=prop_chk,
+            pers_arrow=pers_arrow,
+            entry_fmt=_fmt_price(payload.ticker, payload.entry),
+            pers_sl_fmt=_fmt_price(payload.ticker, pers_sl),
+            pers_tp_fmt=_fmt_price(payload.ticker, pers_tp),
+        ))
         return JSONResponse({
             "status": "rejected",
             "reason": "preflight_order_check_failed",
@@ -1860,7 +1533,7 @@ async def receive_signal(request: Request):
         await asyncio.to_thread(_push_ticket, ZMQ_PUSH_PROP, prop_ticket)
         logger.info("DISPATCHED  prop     %s  %.2f lots", prop_ticket["signal"], prop_lots)
     except Exception as exc:
-        msg = f"Prop dispatch failed: {exc}"
+        msg = telegram_handlers.msg_dispatch_failed("prop", exc)
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)
@@ -1869,7 +1542,7 @@ async def receive_signal(request: Request):
         await asyncio.to_thread(_push_ticket, ZMQ_PUSH_PERS, pers_ticket)
         logger.info("DISPATCHED  personal %s  %.2f lots", pers_ticket["signal"], pers_lots)
     except Exception as exc:
-        msg = f"Personal dispatch failed: {exc}"
+        msg = telegram_handlers.msg_dispatch_failed("personal", exc)
         logger.error(msg)
         await _telegram_alert(msg)
         raise HTTPException(status_code=503, detail=msg)

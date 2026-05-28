@@ -4,7 +4,10 @@ Lot-sizing and risk MATH stay USD; only the *display* of personal-account figure
 becomes SGD, with personal Risk/Reward shown as USD plus an SGD equivalent.
 """
 from layer2.state import _money, _ccy_prefix
-from layer2.logic_core import _split_pers_amount, _pers_money_dual
+from layer2.telegram_handlers import (
+    _msg_split_pers_amount as _split_pers_amount,
+    _msg_pers_money_dual as _pers_money_dual,
+)
 
 
 # ── state._money / _ccy_prefix ────────────────────────────────────────────────

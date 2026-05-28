@@ -3,7 +3,7 @@
 When one leg fails the order_check, Layer 2 places nothing and reports why.
 _order_check_leg_line turns each worker verdict into a human-readable status line.
 """
-from layer2.logic_core import _order_check_leg_line
+from layer2.telegram_handlers import _msg_order_check_leg_line as _order_check_leg_line
 
 
 def test_ok_leg():
