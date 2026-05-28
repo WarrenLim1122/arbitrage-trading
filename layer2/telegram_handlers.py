@@ -2228,7 +2228,8 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>System</b>\n"
         "/status — Operational system state\n"
         "/health — Connectivity check\n"
-        "/messages — Preview every Telegram message + its trigger\n"
+        "/messages — Preview every Telegram message (page 1 of 2)\n"
+        "/messages2 — Continuation (page 2 of 2)\n"
         "/update — Maintenance and deployment guide",
         parse_mode="HTML",
     )
@@ -3300,51 +3301,98 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
 ]
 
 
-async def _cmd_messages(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Catalog every Telegram message + its trigger condition.
+# Page size: keep each /messages run under Telegram's ~20-msg bot burst limit.
+# Two pages cover the whole catalog: /messages → 1-19, /messages2 → 20-end.
+_MESSAGES_PAGE_SIZE = 19
 
-    Sends one Telegram message per entry in MESSAGE_CATALOG, in order, each
-    prefixed with [n/N] and a one-line trigger description. Warren reads them
-    on his phone and tells Claude which to rewrite.
-    """
-    if not _auth(update):
-        return
+
+async def _send_messages_page(update: Update, page: int) -> None:
+    """Render one page of MESSAGE_CATALOG as separate Telegram messages."""
     total = len(MESSAGE_CATALOG)
+    total_pages = (total + _MESSAGES_PAGE_SIZE - 1) // _MESSAGES_PAGE_SIZE
+    if page < 1 or page > total_pages:
+        await update.message.reply_text(
+            f"⚠️ Page {page} out of range. Valid pages: 1–{total_pages}.",
+            parse_mode="HTML",
+        )
+        return
+
+    start_idx = (page - 1) * _MESSAGES_PAGE_SIZE  # 0-based
+    end_idx   = min(start_idx + _MESSAGES_PAGE_SIZE, total)
+
     await update.message.reply_text(
-        f"<b>Telegram Message Catalog</b>\n\n"
-        f"{total} message templates follow. Each shows the trigger condition "
-        f"and a preview rendered with stand-in data. "
-        f"Reply with which numbers to edit and how.",
+        f"<b>Telegram Message Catalog — Page {page}/{total_pages}</b>\n\n"
+        f"Showing templates {start_idx + 1}–{end_idx} of {total}.",
         parse_mode="HTML",
     )
-    for idx, (name, trigger, render) in enumerate(MESSAGE_CATALOG, start=1):
+
+    for idx in range(start_idx, end_idx):
+        name, trigger, render = MESSAGE_CATALOG[idx]
+        human_idx = idx + 1
         try:
             preview = render()
         except Exception as exc:
             preview = f"(preview failed to render: {exc!r})"
         header = (
-            f"<b>[{idx}/{total}] {name}</b>\n"
+            f"<b>[{human_idx}/{total}] {name}</b>\n"
             f"<i>Triggered when:</i> {trigger}\n"
             f"────────────\n"
         )
         body = preview
-        # Telegram caps a single message at 4096 chars.
         max_body = 4096 - len(header) - 40
         if len(body) > max_body:
             body = body[:max_body] + "\n…\n[preview truncated]"
         try:
             await update.message.reply_text(header + body, parse_mode="HTML")
         except Exception as exc:
-            await update.message.reply_text(
-                f"{header}(send failed: {exc!r}) — raw preview:\n{body[:1500]}",
-                parse_mode=None,
-            )
-        await asyncio.sleep(0.4)  # avoid Telegram flood-control
-    await update.message.reply_text(
-        f"✅ End of catalog ({total} templates). "
-        f"Reply with the numbers to redesign.",
-        parse_mode="HTML",
-    )
+            logger.warning("messages send failed at idx=%d: %r", human_idx, exc)
+            try:
+                await update.message.reply_text(
+                    f"{header}(send failed: {exc!r}) — raw preview:\n{body[:1500]}",
+                    parse_mode=None,
+                )
+            except Exception as exc2:
+                logger.error("messages fallback also failed at idx=%d: %r", human_idx, exc2)
+        await asyncio.sleep(1.0)  # generous spacing to stay clear of bot flood limits
+
+    if page < total_pages:
+        await update.message.reply_text(
+            f"✅ End of page {page}/{total_pages}. "
+            f"Send /messages{page + 1} for the next page.",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ End of catalog ({total} templates across {total_pages} pages). "
+            f"Reply with the numbers to redesign.",
+            parse_mode="HTML",
+        )
+
+
+async def _cmd_messages(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catalog every Telegram message + its trigger condition (page 1).
+
+    Sends one Telegram message per entry in MESSAGE_CATALOG. Pages of
+    _MESSAGES_PAGE_SIZE entries to stay under Telegram's bot flood limit.
+    `/messages` or `/messages 1` → page 1; `/messages 2` → page 2; etc.
+    """
+    if not _auth(update):
+        return
+    page = 1
+    args = (ctx.args or []) if ctx else []
+    if args:
+        try:
+            page = int(args[0])
+        except ValueError:
+            page = 1
+    await _send_messages_page(update, page)
+
+
+async def _cmd_messages2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catalog page 2 (continuation of /messages). See _cmd_messages."""
+    if not _auth(update):
+        return
+    await _send_messages_page(update, 2)
 
 
 # ── Bot startup ───────────────────────────────────────────────────────────
@@ -3455,6 +3503,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("help",          _cmd_help))
     tg_app.add_handler(CommandHandler("setwindow",     _cmd_setwindow))
     tg_app.add_handler(CommandHandler("messages",      _cmd_messages))
+    tg_app.add_handler(CommandHandler("messages2",     _cmd_messages2))
     tg_app.add_handler(CommandHandler("cancel",        _cmd_cancel_noop))  # fallback when no wizard active
 
     async def _poll():
