@@ -533,11 +533,7 @@ def _run_news_preclose_check() -> None:
         mins      = meta["mins_to_event"]
         _sgt      = timedelta(hours=8)
 
-        direction  = f"in {int(mins)} min" if mins >= 0 else f"{int(abs(mins))} min ago"
-        event_desc = (
-            f"[{meta['currency']}] {meta['title']} "
-            f"@ {(event_utc + _sgt).strftime('%H:%M')} SGT ({direction})"
-        )
+        event_time_sgt = f"{(event_utc + _sgt).strftime('%H:%M')} SGT"
 
         # Query positions ONCE for this event group — show only positions being closed.
         try:
@@ -553,13 +549,15 @@ def _run_news_preclose_check() -> None:
         affected_pers = [p for p in pers_pos if p["symbol"] in tickers_set]
         affected_prop = [p for p in prop_pos if p["symbol"] in tickers_set]
 
-        logger.warning("NEWS BAN [%s] — %s  affected: %s", meta["currency"], event_desc, tickers)
+        logger.warning("NEWS BAN [%s] %s %s  affected: %s",
+                       meta["currency"], meta["title"], event_time_sgt, tickers)
         _alert_sync(telegram_handlers.msg_news_pre_close(
             currency=meta["currency"],
-            event_desc=event_desc,
+            event_title=meta["title"],
+            event_time_sgt=event_time_sgt,
+            mins_to_event=int(mins),
             affected_pers=affected_pers, affected_prop=affected_prop,
             suppression_end_sgt=f"{(sup_end + _sgt).strftime('%H:%M')} SGT",
-            ban_window_min=_NEWS_TRADING_BAN_WINDOW,
         ))
 
         for ticker in tickers:
@@ -811,7 +809,6 @@ def _run_equity_check() -> None:
         else:  # profit_target
             _alert_sync(telegram_handlers.msg_kill4_phase1_passed(
                 prop_equity=prop_equity,
-                funded_line=decision["stage_value"],
             ))
         return
 
@@ -884,12 +881,12 @@ def _run_equity_check() -> None:
                 if phase == 1:
                     msg = telegram_handlers.msg_kill4_phase1_via_target(
                         prop_equity=prop_equity, overall_pct=overall_pct,
-                        target=target, pos_str=pos_str,
+                        pos_str=pos_str,
                     )
                 else:
                     msg = telegram_handlers.msg_kill4_phase2plus(
                         phase=phase, prop_equity=prop_equity,
-                        overall_pct=overall_pct, target=target, pos_str=pos_str,
+                        overall_pct=overall_pct, pos_str=pos_str,
                     )
                 logger.warning(msg)
                 _alert_sync(msg)
@@ -912,16 +909,9 @@ def _run_equity_check() -> None:
                 )
 
                 if rule_met:
-                    overall_pct = total / baseline * 100 if baseline > 0 else 0.0
-                    pos_str = _snapshot_positions_str()
                     _dispatch_force_close("consistency_rule", halt=True, permanent=True)
                     logger.warning("KILL 5 — consistency rule met: %.1f%% < %.1f%%", ratio_pct, cons_threshold)
-                    _alert_sync(telegram_handlers.msg_kill5_consistency(
-                        table_str=table_str, overall_pct=overall_pct,
-                        locked_days_count=len(locked_days),
-                        today_running_positive=today_running > 0,
-                        pos_str=pos_str,
-                    ))
+                    _alert_sync(telegram_handlers.msg_kill5_consistency())
 
 
 # ── Module startup ────────────────────────────────────────────────────────

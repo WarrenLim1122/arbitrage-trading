@@ -2249,6 +2249,40 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
+# Heavy-rule separator placed under every alert header.  18 characters wide:
+# wide enough to give a clear visual break, narrow enough to never wrap on a
+# phone in either landscape or portrait. Change here once to restyle everywhere.
+_MSG_SEP = "━" * 18
+
+
+def _msg_signed_money(value: float, currency: str = "USD") -> str:
+    """Format a signed money value as '+$12.50' / '-$12.50' (sign BEFORE symbol).
+
+    For non-USD currencies, falls through to '+SGD 12.50' / '-SGD 12.50'.
+    """
+    sign = "+" if value >= 0 else "-"
+    mag  = abs(value)
+    if (currency or "USD").upper() == "USD":
+        return f"{sign}${mag:,.2f}"
+    return f"{sign}{currency} {mag:,.2f}"
+
+
+def _msg_positions_lines(positions: list[dict]) -> str:
+    """Format a list of position dicts as plain lines (one per position).
+
+    No account prefix, no leading indent, no 'lots'/'P&L:' filler. Used by
+    msg_news_pre_close inside per-account sub-blocks.
+    """
+    if not positions:
+        return "No open positions"
+    out = []
+    for p in positions:
+        arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
+        pnl   = _msg_signed_money(p["profit"], "USD")
+        out.append(f"{p['symbol']} {arrow} {p['volume']:.2f} {pnl}")
+    return "\n".join(out)
+
+
 def _msg_side_label(side: str) -> str:
     """'prop' → 'Prop Hedge'; anything else → 'Personal Signal'."""
     return "Prop Hedge" if side == "prop" else "Personal Signal"
@@ -2311,11 +2345,14 @@ def msg_worker_offline(side: str, down_threshold_secs: int) -> str:
     vps   = "#3" if side == "prop" else "#2"
     worker_file = "worker_prop.py" if side == "prop" else "worker_personal.py"
     return (
-        f"⚠️ <b>{label} — Worker OFFLINE</b>\n\n"
-        f"No response for ~{down_threshold_secs}s. Positions may still be open.\n\n"
-        "<b>Action</b>\n"
+        f"⚠️ <b>{label} — Worker OFFLINE</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"No response for ~{down_threshold_secs}s.\n"
+        f"Positions may still be open.\n\n"
+        f"<b>Recovery</b>\n\n"
         f"1. Open VPS {vps} noVNC\n"
-        f"2. <code>cd C:/arbitrage &amp;&amp; uv run python layer3/{worker_file}</code>"
+        f"2. <code>cd C:/arbitrage</code>\n"
+        f"3. <code>uv run python layer3/{worker_file}</code>"
     )
 
 
@@ -2325,7 +2362,12 @@ def msg_worker_back_online(side: str) -> str:
     Triggered when: equity monitor's next query succeeds after the worker was
     marked offline. Clears msg_worker_offline.
     """
-    return f"✅ <b>{_msg_side_label(side)} — Worker Back Online</b>"
+    return (
+        f"✅ <b>{_msg_side_label(side)} — Worker Restored</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Worker responding normally again.\n"
+        f"Execution resumed successfully."
+    )
 
 
 def msg_algo_trading_disabled(side: str) -> str:
@@ -2335,12 +2377,15 @@ def msg_algo_trading_disabled(side: str) -> str:
     worker that was previously enabled.
     """
     return (
-        f"⚠️ <b>{_msg_side_label(side)} — Algo Trading DISABLED</b>\n\n"
-        "MT5 algo trading is off. Orders will be silently rejected.\n\n"
-        "<b>Fix</b>\n"
-        "1. MT5 toolbar → Algo Trading button (make it green)\n"
-        "2. Tools → Options → Expert Advisors → uncheck "
-        "<i>'Disable algorithmic trading when the account has been changed'</i>"
+        f"⚠️ <b>{_msg_side_label(side)} — Algo Trading OFF</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"MT5 algo trading is disabled.\n"
+        f"Orders will be rejected silently.\n\n"
+        f"<b>Fix</b>\n\n"
+        f"1. Turn Algo Trading ON (green)\n"
+        f"2. Tools → Options → Expert Advisors\n"
+        f"3. Uncheck:\n"
+        f"   <i>“Disable algo trading when account changes”</i>"
     )
 
 
@@ -2350,7 +2395,12 @@ def msg_algo_trading_restored(side: str) -> str:
     Triggered when: trade_allowed flips back to True on a worker that was
     previously marked disabled.
     """
-    return f"✅ <b>{_msg_side_label(side)} — Algo Trading Restored</b>"
+    return (
+        f"✅ <b>{_msg_side_label(side)} — Algo Trading Restored</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"MT5 trade_allowed restored to True.\n"
+        f"Execution resumed normally."
+    )
 
 
 def msg_new_session_auto_resumed() -> str:
@@ -2360,7 +2410,12 @@ def msg_new_session_auto_resumed() -> str:
     has advanced past the day on which a K1/K3 daily halt was set, with the
     system not curfewed and not permanently halted.
     """
-    return "🟢 <b>New Session — Auto-Resumed</b>\n\nDaily halt cleared. System is armed and accepting signals."
+    return (
+        f"🟢 <b>New Session Started</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Daily halt cleared.\n"
+        f"System armed and accepting signals."
+    )
 
 
 def msg_curfew_close(pos_str: str, next_open_text: str) -> str:
@@ -2370,9 +2425,12 @@ def msg_curfew_close(pos_str: str, next_open_text: str) -> str:
     first time today. Dispatches FORCE_CLOSE for positions only (no halt).
     """
     return (
-        f"🌙 <b>Curfew — All positions closed</b>\n\n"
-        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-        f"Resumes at next session ({next_open_text})."
+        f"🌙 <b>Curfew — Positions Closed</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Positions</b>\n\n"
+        f"{pos_str}\n\n"
+        f"<b>Next session</b>\n"
+        f"{next_open_text}"
     )
 
 
@@ -2390,46 +2448,51 @@ def msg_mismatch_resolved(*, ticker: str, mismatch_type: str,
     """
     _dir = {0: "LONG", 1: "SHORT"}
     if mismatch_type == "prop_only":
-        summary = (
-            f"Orphan: {_dir.get(prop_dir, '?')} on Prop Hedge "
-            f"(no matching Personal Signal position)\n"
-            f"Action: Force-closed Prop Hedge"
+        problem_block = (
+            f"<b>Orphan detected</b>\n"
+            f"{_dir.get(prop_dir, '?')} on Prop Hedge\n"
+            f"(no Personal Signal match)"
         )
+        action_line = "Force-closed Prop Hedge leg"
     elif mismatch_type == "pers_only":
-        summary = (
-            f"Orphan: {_dir.get(pers_dir, '?')} on Personal Signal "
-            f"(no matching Prop Hedge position)\n"
-            f"Action: Force-closed Personal Signal"
+        problem_block = (
+            f"<b>Orphan detected</b>\n"
+            f"{_dir.get(pers_dir, '?')} on Personal Signal\n"
+            f"(no Prop Hedge match)"
         )
+        action_line = "Force-closed Personal Signal leg"
     else:  # same_direction
-        summary = (
-            f"Both accounts hold {_dir.get(prop_dir, '?')} — hedge broken\n"
-            f"Action: Force-closed both accounts"
+        problem_block = (
+            f"<b>Hedge broken</b>\n"
+            f"Both accounts hold {_dir.get(prop_dir, '?')}\n"
+            f"(direction mismatch)"
         )
+        action_line = "Force-closed both legs"
 
     if not post_query_ok:
-        pers_str   = "Query failed"
-        prop_str   = "Query failed"
-        resolution = "⚠️ Could not verify — check MT5 on both accounts."
+        pers_state = "QUERY FAILED"
+        prop_state = "QUERY FAILED"
+        status     = "⚠️ Could not verify — check MT5."
     else:
-        pers_str = f"Still open — {ticker}" if post_pers_open else "No open positions"
-        prop_str = f"Still open — {ticker}" if post_prop_open else "No open positions"
+        pers_state = "OPEN" if post_pers_open else "FLAT"
+        prop_state = "OPEN" if post_prop_open else "FLAT"
         if not post_prop_open and not post_pers_open:
-            resolution = "✅ Resolved — both accounts are flat."
+            status = "✅ Sync restored."
         else:
-            resolution = "⚠️ Action required — check MT5 immediately."
+            status = "⚠️ Action required — check MT5 immediately."
 
     return (
-        f"⚠️ <b>Mismatch Detected &amp; Resolved — {ticker}</b>\n\n"
-        f"{summary}\n\n"
-        f"<b>After Close</b>\n"
-        f"Personal Signal: {pers_str}\n"
-        f"Prop Hedge: {prop_str}\n\n"
-        f"{resolution}"
+        f"⚠️ <b>Position Mismatch — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"{problem_block}\n\n"
+        f"<b>Action</b>\n"
+        f"{action_line}\n\n"
+        f"<b>Final State</b>\n"
+        f"Personal Signal: {pers_state}\n"
+        f"Prop Hedge: {prop_state}\n\n"
+        f"{status}"
     )
 
-
-# ── News ─────────────────────────────────────────────────────────────────
 
 def msg_news_window_cleared(expired_pairs: list[tuple[str, str]]) -> str:
     """News suppression windows have expired for one or more pairs.
@@ -2438,20 +2501,22 @@ def msg_news_window_cleared(expired_pairs: list[tuple[str, str]]) -> str:
     time has passed. NEWS_CLEAR is sent to Layer 3 right after this alert.
     expired_pairs is a list of (ticker, end_time_sgt_str) tuples.
     """
-    pair_lines = [
-        f"🔴 → 🟢  <b>{ticker}</b> — window expired (was until {end_sgt})"
+    pair_blocks = "\n\n".join(
+        f"<b>{ticker}</b> window expired\n(until {end_sgt})"
         for ticker, end_sgt in expired_pairs
-    ]
+    )
     return (
-        f"🟢 <b>News Window Cleared</b>\n\n"
-        + "\n".join(pair_lines)
-        + "\n\nNew signals accepted for these pairs."
+        f"🟢 <b>News Window Cleared</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"{pair_blocks}\n\n"
+        f"Signals accepted again."
     )
 
 
-def msg_news_pre_close(*, currency: str, event_desc: str,
+def msg_news_pre_close(*, currency: str, event_title: str,
+                       event_time_sgt: str, mins_to_event: int,
                        affected_pers: list[dict], affected_prop: list[dict],
-                       suppression_end_sgt: str, ban_window_min: int) -> str:
+                       suppression_end_sgt: str) -> str:
     """High-impact news event entered the ban zone — positions are closing.
 
     Triggered when: a ForexFactory high-impact event for one of the tracked
@@ -2459,24 +2524,23 @@ def msg_news_pre_close(*, currency: str, event_desc: str,
     per (ticker, event_time) pair; affected positions are force-closed and
     new signals on those pairs are blocked until ban_window_min after the event.
     """
-    def _fmt_pos_list(pos_list: list[dict]) -> str:
-        return "\n".join(
-            f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'}"
-            f" {p['volume']:.2f} lots  P&L: ${p['profit']:+,.2f}"
-            for p in pos_list
-        ) if pos_list else "  No open positions"
+    if mins_to_event >= 0:
+        time_detail = f"{event_time_sgt} (in {mins_to_event} min)"
+    else:
+        time_detail = f"{event_time_sgt} ({abs(mins_to_event)} min ago)"
 
-    closing_lines = (
-        f"<b>Personal Signal:</b>\n{_fmt_pos_list(affected_pers)}\n\n"
-        f"<b>Prop Hedge:</b>\n{_fmt_pos_list(affected_prop)}"
-    )
     return (
-        f"📰 <b>News Pre-Close — [{currency}]</b>\n\n"
-        f"{event_desc}\n\n"
-        f"<b>Positions being closed:</b>\n{closing_lines}\n\n"
-        f"New signals blocked until "
-        f"{suppression_end_sgt} "
-        f"(event +{ban_window_min} min)."
+        f"📰 <b>News Pre-Close — {currency}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>{currency} {event_title}</b>\n"
+        f"{time_detail}\n\n"
+        f"<b>Closing Positions</b>\n\n"
+        f"<b>Personal Signal</b>\n"
+        f"{_msg_positions_lines(affected_pers)}\n\n"
+        f"<b>Prop Hedge</b>\n"
+        f"{_msg_positions_lines(affected_prop)}\n\n"
+        f"<b>Signals blocked until</b>\n"
+        f"{suppression_end_sgt}"
     )
 
 
@@ -2491,10 +2555,14 @@ def msg_phase1_stage_reached(prop_equity: float, stage_value: float,
     at the next stage. NOT permanent.
     """
     return (
-        f"🎯 <b>Phase 1 — Stage Reached</b>\n\n"
-        f"Prop equity: <b>${prop_equity:,.2f}</b> ≥ stage ${stage_value:,.2f}\n"
-        f"Profitable day locked. Positions force-closed.\n\n"
-        f"System auto-resumes at next session ({next_resume_text}); next target is the following stage."
+        f"🎯 <b>Phase 1 — Stage Reached</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Prop equity</b>\n"
+        f"${prop_equity:,.2f} ≥ ${stage_value:,.2f}\n\n"
+        f"Profitable day locked.\n"
+        f"Positions force-closed.\n\n"
+        f"<b>Auto-resume</b>\n"
+        f"{next_resume_text}"
     )
 
 
@@ -2507,10 +2575,15 @@ def msg_kill1_phase1(prop_equity: float, daily_floor: float, day_start: float,
     Suppressed by same-day /resume override.
     """
     return (
-        f"🔴 <b>KILL 1 — Daily Loss Limit Hit (Phase 1)</b>\n\n"
-        f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${daily_floor:,.2f}\n"
-        f"Day-start: ${day_start:,.2f}\n\n"
-        f"All positions force-closed. System auto-resumes at next session ({next_resume_text}), or /resume to restart now."
+        f"🔴 <b>KILL 1 — Daily Loss Limit</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"<b>Daily floor</b>\n${daily_floor:,.2f}\n\n"
+        f"<b>Day-start</b>\n${day_start:,.2f}\n\n"
+        f"All positions closed.\n"
+        f"Trading halted for today.\n\n"
+        f"<b>Auto-resume</b>\n{next_resume_text}\n\n"
+        f"/resume to restart now"
     )
 
 
@@ -2521,25 +2594,34 @@ def msg_kill2_phase1(prop_equity: float, overall_floor: float) -> str:
     Permanent halt: requires /changepropfirm → /phase1 → /resume to restart.
     """
     return (
-        f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit (Phase 1)</b>\n\n"
-        f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${overall_floor:,.2f}\n\n"
-        f"All positions force-closed. Permanent halt.\n"
-        f"/changepropfirm → /phase1 → /resume to start a new challenge."
+        f"🔴 <b>KILL 2 — Max Drawdown Hit</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"<b>Floor</b>\n${overall_floor:,.2f}\n\n"
+        f"All positions closed.\n"
+        f"Permanent halt.\n\n"
+        f"<b>Next</b>\n"
+        f"/changepropfirm\n"
+        f"/phase1\n"
+        f"/resume"
     )
 
 
-def msg_kill4_phase1_passed(prop_equity: float, funded_line: float) -> str:
+def msg_kill4_phase1_passed(prop_equity: float) -> str:
     """KILL 4 — Phase 1 evaluation passed.
 
     Triggered when: in Phase 1, prop equity ≥ funded-line stage value.
     Reported via the phase1_strategy decision path.
     """
     return (
-        f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
-        f"Prop equity: <b>${prop_equity:,.2f}</b> ≥ funded line "
-        f"${funded_line:,.2f}\n\n"
-        f"All positions force-closed. System halted.\n\n"
-        f"/phase2 to configure and start the funded phase"
+        f"🏆 <b>Phase 1 PASSED</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Prop equity</b>\n"
+        f"${prop_equity:,.2f} ≥ funded line\n\n"
+        f"All positions closed.\n"
+        f"System halted.\n\n"
+        f"/phase2\n"
+        f"to start funded phase"
     )
 
 
@@ -2551,13 +2633,19 @@ def msg_kill2_phase2plus(prop_equity: float, overall_floor: float,
     (baseline × dd_overall_pct). System permanently halted.
     """
     return (
-        f"🔴 <b>KILL 2 — Overall Drawdown Limit Hit</b>\n\n"
-        f"Equity: <b>${prop_equity:,.2f}</b>  |  Floor: ${overall_floor:,.2f}\n"
-        f"Overall DD: {dd_overall_pct:.1f}%  |  Baseline: ${baseline:,.2f}\n\n"
-        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-        f"All positions force-closed. Permanent halt.\n\n"
-        f"<b>Next steps:</b>\n"
-        f"/changepropfirm → /phase1 → /resume to start a new challenge."
+        f"🔴 <b>KILL 2 — Max Drawdown Hit</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"<b>Floor</b>\n${overall_floor:,.2f}\n\n"
+        f"<b>Overall DD</b>\n{dd_overall_pct:.1f}%\n\n"
+        f"<b>Baseline</b>\n${baseline:,.2f}\n\n"
+        f"<b>Positions</b>\n\n"
+        f"{pos_str}\n\n"
+        f"All positions closed.\n"
+        f"Permanent halt.\n\n"
+        f"<b>Next</b>\n"
+        f"/changepropfirm\n"
+        f"/phase1"
     )
 
 
@@ -2572,14 +2660,20 @@ def msg_kill1_phase2plus(prop_equity: float, daily_floor: float, day_start: floa
     auto-resumes next session. Suppressed by same-day /resume override.
     """
     return (
-        f"🔴 <b>KILL 1 — Daily Loss Limit Hit</b>\n\n"
-        f"Equity: <b>${prop_equity:,.2f}</b>  |  Daily floor: ${daily_floor:,.2f}\n"
-        f"Day-start: ${day_start:,.2f}  |  Max daily loss: ${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)\n\n"
-        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-        f"All positions force-closed. System halted for today.\n\n"
-        f"Overall DD floor: ${overall_floor:,.2f}\n\n"
-        f"System auto-resumes at next session ({next_resume_text}), or /resume to restart now.\n"
-        f"/changepropfirm to switch to a new challenge"
+        f"🔴 <b>KILL 1 — Daily Loss Limit</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"<b>Daily floor</b>\n${daily_floor:,.2f}\n\n"
+        f"<b>Day-start</b>\n${day_start:,.2f}\n\n"
+        f"<b>Max loss</b>\n${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)\n\n"
+        f"<b>Positions</b>\n\n"
+        f"{pos_str}\n\n"
+        f"All positions closed.\n"
+        f"Trading halted for today.\n\n"
+        f"<b>Overall DD floor</b>\n${overall_floor:,.2f}\n\n"
+        f"<b>Auto-resume</b>\n{next_resume_text}\n\n"
+        f"/resume to restart\n"
+        f"/changepropfirm to switch challenge"
     )
 
 
@@ -2593,17 +2687,23 @@ def msg_kill3_daily_profit_cap(prop_equity: float, daily_cap_level: float,
     /resume override.
     """
     return (
-        f"🟡 <b>KILL 3 — Daily Profit Cap Hit</b>\n\n"
-        f"Equity: <b>${prop_equity:,.2f}</b>  |  Cap level: ${daily_cap_level:,.2f}\n"
-        f"Day-start: ${day_start:,.2f}  |  Cap: +${layer_cap_amt:,.2f}\n\n"
-        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-        f"All positions force-closed. System halted for today.\n\n"
-        f"System auto-resumes at next session ({next_resume_text}), or /resume to restart now."
+        f"🟡 <b>KILL 3 — Daily Profit Cap</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"<b>Cap level</b>\n${daily_cap_level:,.2f}\n\n"
+        f"<b>Day-start</b>\n${day_start:,.2f}\n\n"
+        f"<b>Cap</b>\n+${layer_cap_amt:,.2f}\n\n"
+        f"<b>Positions</b>\n\n"
+        f"{pos_str}\n\n"
+        f"All positions closed.\n"
+        f"Trading halted for today.\n\n"
+        f"<b>Auto-resume</b>\n{next_resume_text}\n\n"
+        f"/resume to restart"
     )
 
 
 def msg_kill4_phase1_via_target(prop_equity: float, overall_pct: float,
-                                target: float, pos_str: str) -> str:
+                                pos_str: str) -> str:
     """KILL 4 — Phase 1 evaluation passed (via profit-target branch).
 
     Triggered when: in Phase 1, (equity-baseline)/baseline ≥ profit_target_pct.
@@ -2611,53 +2711,60 @@ def msg_kill4_phase1_via_target(prop_equity: float, overall_pct: float,
     branch with the position snapshot included.
     """
     return (
-        f"🏆 <b>KILL 4 — Phase 1 Evaluation PASSED</b>\n\n"
-        f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
-        f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-        f"All positions force-closed. System halted.\n\n"
-        f"/phase2 to configure and start the funded phase\n"
-        f"/changepropfirm to start a new challenge instead"
+        f"🏆 <b>Phase 1 PASSED</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Profit</b>\n{overall_pct:.1f}% ≥ target\n\n"
+        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"<b>Positions</b>\n\n"
+        f"{pos_str}\n\n"
+        f"All positions closed.\n"
+        f"System halted.\n\n"
+        f"/phase2 to start funded phase\n"
+        f"/changepropfirm for new challenge"
     )
 
 
 def msg_kill4_phase2plus(phase: int, prop_equity: float, overall_pct: float,
-                         target: float, pos_str: str) -> str:
+                         pos_str: str) -> str:
     """KILL 4 — profit target reached in Phase 2+ (permanent halt).
 
     Triggered when: in Phase 2 or later, (equity-baseline)/baseline ≥
     profit_target_pct. Permanent halt — user must /phase2 or /stop.
     """
     return (
-        f"🏆 <b>KILL 4 — Phase {phase} Profit Target Reached</b>\n\n"
-        f"Profit: <b>{overall_pct:.1f}%</b> ≥ {target:.1f}% target\n"
-        f"Equity: <b>${prop_equity:,.2f}</b>\n\n"
-        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-        f"All positions force-closed. System halted.\n\n"
-        f"/phase2 to start a new cycle\n"
-        f"/stop to end trading on this account"
+        f"🏆 <b>Phase {phase} Target Reached</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"<b>Profit</b>\n{overall_pct:.1f}% ≥ target\n\n"
+        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"<b>Positions</b>\n\n"
+        f"{pos_str}\n\n"
+        f"All positions closed.\n"
+        f"System halted.\n\n"
+        f"/phase2 to start new cycle\n"
+        f"/stop to end trading"
     )
 
 
-def msg_kill5_consistency(table_str: str, overall_pct: float,
-                          locked_days_count: int, today_running_positive: bool,
-                          pos_str: str) -> str:
+def msg_kill5_consistency() -> str:
     """KILL 5 — Phase 2 consistency rule met (permanent).
 
     Triggered when: in Phase 2, the largest single profitable day is below
     consistency_threshold_pct of total profit, meaning the rule is satisfied
     and withdrawal is safe. Permanent halt — submit profit-share claim, then
     /phase2 + /resume to start a new cycle.
+
+    Detail data (table, overall %, positions) intentionally not shown here —
+    /consistency, /pnl and /positions surface it on demand.
     """
-    day_total = locked_days_count + (1 if today_running_positive else 0)
     return (
-        f"🏆 <b>KILL 5 — Consistency Rule Met</b>\n\n"
-        f"<pre>{table_str}</pre>\n\n"
-        f"Overall profit: <b>{overall_pct:.1f}%</b> across {day_total} days\n\n"
-        f"<b>Positions at close:</b>\n{pos_str}\n\n"
-        f"All positions force-closed. Trading halted.\n\n"
-        f"Log in to your prop account and submit the profit share withdrawal claim.\n\n"
-        f"/phase2 + /resume to start a new cycle."
+        f"🏆 <b>Consistency Rule Met</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Consistency requirement satisfied.\n\n"
+        f"Eligible for payout processing.\n\n"
+        f"System halted.\n\n"
+        f"<b>Next</b>\n"
+        f"• Withdraw payout\n"
+        f"• Start new cycle"
     )
 
 
@@ -3112,7 +3219,10 @@ def msg_dispatch_failed(side: str, exc: object) -> str:
 # /messages, so he can decide which to redesign.
 
 def _demo_pos_str() -> str:
-    return "  EURUSD ↑ LONG 0.10 lots  P&L: $-12.50\n  XAUUSD ↓ SHORT 0.05 lots  P&L: $+34.20"
+    return (
+        "Personal: EURUSD ↑ LONG 0.10 -$12.50\n"
+        "Prop: XAUUSD ↓ SHORT 0.05 +$34.20"
+    )
 
 
 def _demo_close_pos() -> dict:
@@ -3163,10 +3273,11 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
      "High-impact ForexFactory event entered ban zone (≤30 min away)",
      lambda: msg_news_pre_close(
          currency="USD",
-         event_desc="[USD] CPI m/m @ 20:30 SGT (in 12 min)",
+         event_title="CPI m/m",
+         event_time_sgt="20:30 SGT", mins_to_event=12,
          affected_pers=[{"symbol": "EURUSD", "type": 1, "volume": 0.10, "profit": 8.20}],
          affected_prop=[{"symbol": "EURUSD", "type": 0, "volume": 0.50, "profit": -41.00}],
-         suppression_end_sgt="21:00 SGT", ban_window_min=30,
+         suppression_end_sgt="21:00 SGT",
      )),
     ("msg_phase1_stage_reached",
      "Phase 1: prop equity ≥ active stage value (profitable day locked)",
@@ -3179,7 +3290,7 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
      lambda: msg_kill2_phase1(4500.0, 4500.0)),
     ("msg_kill4_phase1_passed",
      "Phase 1 K4: prop equity reached the funded line (via strategy decision)",
-     lambda: msg_kill4_phase1_passed(5500.0, 5500.0)),
+     lambda: msg_kill4_phase1_passed(5500.0)),
     ("msg_kill2_phase2plus",
      "Phase 2+ K2: overall drawdown floor hit (permanent halt)",
      lambda: msg_kill2_phase2plus(95000.0, 95000.0, 5.0, 100000.0, _demo_pos_str())),
@@ -3193,16 +3304,13 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
                                         _demo_pos_str(), "12:00 SGT")),
     ("msg_kill4_phase1_via_target",
      "Phase 1 K4 via profit-target branch (same outcome, includes snapshot)",
-     lambda: msg_kill4_phase1_via_target(5500.0, 10.0, 10.0, _demo_pos_str())),
+     lambda: msg_kill4_phase1_via_target(5500.0, 10.0, _demo_pos_str())),
     ("msg_kill4_phase2plus",
      "Phase 2+ K4: profit target reached (permanent halt)",
-     lambda: msg_kill4_phase2plus(2, 110000.0, 10.0, 10.0, _demo_pos_str())),
+     lambda: msg_kill4_phase2plus(2, 110000.0, 10.0, _demo_pos_str())),
     ("msg_kill5_consistency",
      "Phase 2 K5: consistency rule met → claim profit share, start new cycle",
-     lambda: msg_kill5_consistency(
-         "Day        Profit  Share\n2026-05-20  $1,200  35%\n2026-05-21  $   800  23%",
-         3.5, 5, True, _demo_pos_str(),
-     )),
+     lambda: msg_kill5_consistency()),
     ("msg_trade_opened",
      "_verify_and_notify saw status=FILLED on both legs",
      lambda: msg_trade_opened(

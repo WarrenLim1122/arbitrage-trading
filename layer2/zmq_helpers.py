@@ -184,22 +184,29 @@ def _query_positions(zmq_url: str) -> list[dict]:
 
 
 def _snapshot_positions_str() -> str:
-    """Query both accounts and return a formatted positions summary (sync, for kill alerts)."""
+    """Query both accounts and return a formatted positions summary (sync, for kill alerts).
+
+    Output format (one line per position; one line per account if flat/offline):
+        Personal: EURUSD ↑ LONG 0.10 -$12.50
+        Prop: No open positions
+    """
     lines = []
-    for label, url in [("Personal Signal", ZMQ_REQ_PERS), ("Prop Hedge", ZMQ_REQ_PROP)]:
+    for label, url in [("Personal", ZMQ_REQ_PERS), ("Prop", ZMQ_REQ_PROP)]:
         try:
             positions = _query_positions(url)
             if positions:
                 for p in positions:
                     arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
+                    pnl_v = p["profit"]
+                    sign  = "+" if pnl_v >= 0 else "-"
+                    pnl   = f"{sign}${abs(pnl_v):,.2f}"
                     lines.append(
-                        f"  {label}: {p['symbol']} {arrow} {p['volume']:.2f} lots"
-                        f"  P&amp;L: ${p['profit']:+,.2f}"
+                        f"{label}: {p['symbol']} {arrow} {p['volume']:.2f} {pnl}"
                     )
             else:
-                lines.append(f"  {label}: No open positions")
+                lines.append(f"{label}: No open positions")
         except Exception:
-            lines.append(f"  {label}: OFFLINE — could not query")
+            lines.append(f"{label}: OFFLINE")
     return "\n".join(lines)
 
 
