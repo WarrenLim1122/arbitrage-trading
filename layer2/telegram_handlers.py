@@ -1264,6 +1264,18 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"Equity: {_money(eq, currency)}",
             f"Floating: {_money(floating, currency, signed=True)}",
         ]
+        # Cumulative broker charges (commission + swap) the bot pulled from MT5
+        # deal history. Spread is NOT shown separately — it's baked into each
+        # fill price, so it already sits inside realized P&L. This is the line
+        # that explains why gross trade P&L and balance change don't match.
+        comm = data.get("commission_total", 0.0)
+        swap = data.get("swap_total", 0.0)
+        fees = data.get("fees_total", comm + swap)
+        if "fees_total" in data:
+            fees_line = f"Trading fees: {_money(fees, currency, signed=True)}"
+            if comm and swap:
+                fees_line += f" (comm {_money(comm, currency, signed=True)} · swap {_money(swap, currency, signed=True)})"
+            lines.append(fees_line)
         if baseline > 0:
             overall = eq - baseline
             overall_pct = overall / baseline * 100
