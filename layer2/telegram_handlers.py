@@ -2853,14 +2853,14 @@ def msg_trade_opened(*, ticker: str, phase: int,
     return (
         f"🟢 <b>{ticker} — Trade Opened</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Personal Signal</b>  {pers_arrow}\n\n"
+        f"<b>Personal Signal</b>  {pers_arrow}\n"
+        f"{pers_ticket_row}\n\n"
         f"{pers_levels}\n\n"
         f"{pers_risk_block}\n\n"
-        f"{pers_ticket_row}\n\n"
-        f"<b>Prop Hedge</b>  {prop_arrow}\n\n"
+        f"<b>Prop Hedge</b>  {prop_arrow}\n"
+        f"{prop_ticket_row}\n\n"
         f"{prop_levels}\n\n"
         f"{prop_risk_block}\n\n"
-        f"{prop_ticket_row}\n\n"
         f"<b>Context</b>\n"
         f"Phase {phase}"
         + (f"\n{phase_context_extra}" if phase_context_extra else "")
@@ -2947,14 +2947,14 @@ def msg_position_closed(*, symbol: str,
             _msg_aligned_rows([("Ticket", f"#{pos_data['ticket']}")])
             if pos_data.get("ticket") else ""
         )
-        block = (
-            f"<b>{label}</b>  {dir_str}\n\n"
+        header = f"<b>{label}</b>  {dir_str}"
+        if ticket_row:
+            header += f"\n{ticket_row}"
+        return (
+            f"{header}\n\n"
             f"{levels}\n\n"
             f"{outcome}"
         )
-        if ticket_row:
-            block += f"\n\n{ticket_row}"
-        return block
 
     pers_block = _side_block("Personal Signal", pers_pos_data, pers_deal, pers_reason, pers_currency)
     prop_block = _side_block("Prop Hedge",      prop_pos_data, prop_deal, prop_reason, "USD")
