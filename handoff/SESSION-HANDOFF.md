@@ -1,191 +1,116 @@
-# Session handoff — Apply msgs 20-37 layout fixes to msgs 1-19 + structure discussion
+# Session handoff — Layer 2 message retrofit + folder reorg + deal-wait fix
 
 > Persistent resume file. CLAUDE.md (auto-loaded) has the live system state.
-> Delta only — read this for what's queued; read CLAUDE.md for everything else.
+> Delta only — read this for what changed this session and what's queued next.
 
-**Role:** Single Claude Code agent helping Warren retrofit the Telegram message
-layout fixes (already applied to templates 20-37) onto templates 1-19, then
-have a deep discussion with him on overall message structure, then update
-CLAUDE.md. Live trading state has not changed.
+**Role:** Single Claude Code agent helping Warren with Layer 2 Telegram message
+fixes and a folder reorganization. Live trading state has not changed.
 
----
+## Status — updated 2026-05-29
 
-## What shipped this session (do NOT re-do)
+Four commits shipped, all on `main`, all pushed. **Warren has NOT run `/update layer2`
+yet** — the three Layer 2 commits below all need that deploy to land on the live bot.
 
-Three commits land in `main` and need `/update layer2` on Telegram to take effect:
+- **`7fbb14a`** — Layer 2: apply msgs 20-37 layout fixes to msgs 1-19.
+  - Hand-padded `<b>Label</b>\n${value}` blocks across kill / phase-1 / mismatch
+    templates now render through `_msg_aligned_rows([...])` as `Label: value`.
+  - `_snapshot_positions_str` (zmq_helpers.py) and `_msg_positions_lines`
+    (telegram_handlers.py) now take `pers_currency`; personal P&L renders in
+    the MT5 account currency (SGD on Fusion), prop stays USD.
+  - `logic_core.py` threads `pers_currency = _pers_result.get("account_currency", "USD")`
+    into curfew_close, news_pre_close, and all five Phase-2+ kill paths.
+  - `_demo_pos_str` updated so `/messages` previews match live SGD/$ rendering.
+  - No `#<id>` ticket changes — none of msgs 1-19 carry a ticket.
+- **`7f4ade0`** — Layer 2: bracket every alert title with top + bottom ━ rule.
+  - `_MSG_SEP` shortened `"━" * 18` → `"━" * 12` (Warren's iPhone screenshot showed
+    18 wrapping in portrait).
+  - All 37 templates now render `_MSG_SEP\ntitle\n_MSG_SEP\n\nbody`. Bulk applied
+    via regex prepend in 36 standard sites + manual edit at the lone
+    `msg_position_closed` site (line ~3053).
+- **`5229fd8`** — chore: reorganize repo + collect deletion candidates.
+  - `scripts/` now has `vps-setup/` (setup_worker_*.ps1) and `dev-tests/`
+    (test_firebase_write.py, test_journal_dryrun.py) subfolders.
+  - New top-level `Suggest To Delete/` folder collects 13 deletion candidates
+    + a README.md explaining each item. 5 tracked items moved via `git mv`
+    (so history is preserved); 8 untracked items just `mv`d (gitignored).
+  - README.md scripts/ row updated.
+  - All paths in `Suggest To Delete/` are documented in
+    `Suggest To Delete/README.md` with rationale. Warren reviews; deletes
+    later with `git rm -rf "Suggest To Delete/"` in one commit.
+- **`7a78cc7`** — Layer 2: close alert waits for MT5 deal so Telegram + journal P&L match.
+  - Root cause: 30 s equity monitor captured stale `pos_data["profit"]` from
+    the previous tick (missing commission/swap, stale by tens of seconds);
+    `_query_deal_pnl` was called inline and often returned `found: False`
+    (MetaQuotes Demo lags 2-3 h; Fusion occasionally races MT5 indexing);
+    fallback path slapped `(est.)`. Journal pipeline eventually wrote the
+    real number — Telegram and journal diverged.
+  - Fix: `_detect_closes()` now polls `_query_deal_pnl()` every 30 s tick
+    for any pending close whose deal hasn't surfaced; flushes the alert
+    AS SOON AS both deals land.
+  - New constant `_CLOSE_DEAL_TIMEOUT = 600` (10 min) hard cap for the
+    deal-wait branch; existing `_CLOSE_WAIT_SECONDS = 120` retained for
+    orphan grace.
+  - `_send_close_alert()` refactored to receive pre-fetched deals from the
+    flush loop instead of querying inline.
+  - `msg_position_closed` docstring updated; the `(est.)` fallback path
+    only fires now when MT5 history still hasn't surfaced the deal after
+    10 min (typically MetaQuotes Demo).
 
-- **b7da59a** (2026-05-29) — three layout fixes wired into templates 20-37:
-  1. `_msg_aligned_rows` now renders `Label: value` instead of space-padded
-     alignment (Telegram's proportional font never aligned the spaces).
-  2. Every ticket renders as `#<id>` (e.g. `Ticket: #987654321`).
-  3. Personal Risk/Reward/P&L/Commission/Margin/Equity render in the
-     MT5-reported account currency only — dropped the dual `$X (≈ SGD X)`
-     form. Prop stays `$`. Forex prices (Entry/SL/TP) stay as raw quotes
-     with no currency symbol.
-  Also:
-  - `_msg_pers_money_dual` renamed to `_msg_pers_money_acct` and rewritten to
-    return only the account-currency value.
-  - `_msg_order_check_leg_line` now takes `currency` so pre-flight margin/free
-    use SGD for personal, USD for prop.
-  - `msg_signal_not_placed_preflight` gained a `pers_currency` parameter;
-    `logic_core.py` line 1512 passes `pers_info.get("account_currency", "USD")`.
-  - Catalog demos for msgs 20, 21, 23 hardcoded `pers_currency="SGD"` so
-    `/messages2` previews show the live layout.
-  - `tests/layer2/test_currency_display.py` renamed assertions to match the
-    new helper. 90/90 pass.
-- **c212ce5** (2026-05-29) — `msg_trade_opened` and `msg_position_closed` now
-  render `Ticket: #<id>` directly beneath the side header
-  (`Personal Signal ↑ LONG` / `Prop Hedge ↓ SHORT`), instead of after
-  Risk/Reward/RR. Warren's mental model: ticket IS the trade's name.
+90/90 tests pass after every commit. Folder reorg verified — no production
+paths affected.
 
-**Verified rendering** via local `~/.local/bin/uv run --extra dev` driving
-the catalog lambdas; pasted into Warren's Telegram to confirm visually.
+## Next actions
 
----
-
-## TASK A — Retrofit templates 1-19 with the same three fixes
-
-The 18 templates in `msg_*` lines ~2362-2796 of `layer2/telegram_handlers.py`
-were redesigned earlier (`8940848`) but PRE-DATE this session's three layout
-decisions. They likely still have:
-
-- Hand-built spacing/padding inside f-strings (no `_msg_aligned_rows` call).
-- Plain ticket renderings (no `#` prefix where tickets appear).
-- Mixed `$` rendering that doesn't respect MT5 account currency (e.g.
-  `_snapshot_positions_str` hardcodes USD inside `zmq_helpers.py`).
-
-### Concrete starting points
-
-1. Open `layer2/telegram_handlers.py` and read every `msg_*` function from
-   line ~2362 to ~2796. The 19 are:
-   `msg_worker_offline`, `msg_worker_back_online`, `msg_algo_trading_disabled`,
-   `msg_algo_trading_restored`, `msg_new_session_auto_resumed`,
-   `msg_curfew_close`, `msg_mismatch_resolved`, `msg_news_window_cleared`,
-   `msg_news_pre_close`, `msg_phase1_stage_reached`, `msg_kill1_phase1`,
-   `msg_kill2_phase1`, `msg_kill4_phase1_passed`, `msg_kill2_phase2plus`,
-   `msg_kill1_phase2plus`, `msg_kill3_daily_profit_cap`,
-   `msg_kill4_phase1_via_target`, `msg_kill4_phase2plus`, `msg_kill5_consistency`.
-2. For each, identify hand-formatted label rows that should switch to
-   `_msg_aligned_rows([...])`. Don't force the helper everywhere — some
-   templates have prose-style bodies that read better unchanged.
-3. The Kill-2+ templates take a `pos_str` pre-built by
-   `_snapshot_positions_str` in `layer2/zmq_helpers.py`. That helper hardcodes
-   USD. If we want personal positions in SGD inside kill alerts, that helper
-   needs the personal account currency threaded in. Decide WITH Warren first
-   whether kill-alert position rows should be per-account-currency or stay
-   USD-only — kills are prop-driven so USD might be intentional.
-4. Render the full `/messages` (page 1) preview locally before pushing:
-   ```bash
-   cd "<repo>"
-   TELEGRAM_BOT_TOKEN=stub TELEGRAM_CHAT_ID=0 \
-     ~/.local/bin/uv run --extra dev python -c "
-   from layer2 import telegram_handlers as m
-   for name, _, render in m.MESSAGE_CATALOG[:19]:
-       print(f'==== {name} ====')
-       print(render())
-       print()
-   "
-   ```
-5. Commit + push, then tell Warren to run `/update layer2` + `/messages`.
-
----
-
-## TASK B — Deep discussion on overall message structure
-
-Warren explicitly asked for this. Before writing any code for TASK A, open
-the conversation with concrete proposals on:
-
-1. **Information hierarchy per message.** What goes at the top
-   (identity/ticket), the middle (numbers), the bottom (context/recovery)?
-   The 20-37 retrofit picked one answer: header → ticket → levels → risk
-   → context. Validate this with Warren and decide whether to apply it
-   uniformly across 1-19 (e.g. should kill alerts also have a "ticket" or
-   identifier line at the top?).
-2. **When to use `_msg_aligned_rows` vs prose.** The helper is great for
-   key/value blocks (Size, Entry, SL, TP). It's awkward for sentence-style
-   blocks (e.g. "Take Profit reached at 12:34 SGT — auto-resume next
-   session"). Surface a rule: aligned rows for >=3 paired metrics, prose
-   otherwise.
-3. **Currency labeling rules.** Spell out the rule so the next change
-   doesn't have to be re-derived: Account-balance/P&L/risk numbers → MT5
-   account currency. Prices (entry/SL/TP) → no currency symbol. Prop side
-   → always `$` (CLAUDE.md hard constraint). Personal side → whatever MT5
-   reports.
-4. **Ticket placement convention.** Warren confirmed ticket-under-header
-   for msgs 20-21. Does that also apply to msgs 5, 6, 7 (curfew close,
-   mismatch resolved, news pre-close — which mention positions)? Or only
-   to "trade-event" messages where there's exactly one ticket-per-side?
-
-Goal of the discussion: a one-paragraph **message structure spec** that
-goes into CLAUDE.md or TECHNICAL.md so future redesigns don't have to
-rederive these decisions.
-
----
-
-## TASK C — Update CLAUDE.md before Warren closes session
-
-CLAUDE.md was refreshed last session (commit `accd561`) but is now stale:
-
-- The `🔔 Next Session` block still points to the OLD queued tasks
-  (folder reorg + `$`/currency audit). The currency audit has now been
-  done as part of this session's work — the dual `$ (≈ SGD)` form is gone
-  for personal, replaced with single-currency rendering. The folder reorg
-  is still pending but is a lower priority than TASK A/B above.
-  → Rewrite the `🔔 Next Session` pointer to point to this handoff and
-    the THREE tasks (A retrofit, B structure discussion, C CLAUDE.md
-    refresh — i.e. this very task).
-- The `Current State` section lists commits `5d1f58a` through `4f7a69b`
-  under "Layer 2 telegram-message consolidation". Add `b7da59a` and
-  `c212ce5` to that list.
-- The **Hard Constraints** section says *"Both live MT5 accounts MUST be
-  USD-denominated."* This is now factually wrong: per
-  `~/.claude/projects/.../memory/sgd-usd-account-currency.md`, Warren
-  reversed the decision 2026-05-23 (personal=SGD, prop=USD). The Layer 2
-  retrofit shipped this session makes the personal SGD display work
-  end-to-end. The CLAUDE.md text should be updated to:
-  *"Personal account currency is whatever MT5 reports (auto-detected;
-  currently SGD on the live Fusion Markets account). Prop account MUST
-  stay USD-denominated (hard constraint — prop-firm rule). All Telegram
-  alerts auto-format personal-side money in the MT5-reported currency."*
-  Also revise the surrounding paragraph that said `$` was hardcoded
-  everywhere — that's no longer true for templates 20-37.
-- The "partially addressed" close-alert P&L pending note in the prior
-  handoff is now fully addressed for msg 21 (msg_position_closed shows
-  Reason / Trade P&L / Commission as separate aligned rows in the right
-  currency). Mark it done.
-
----
-
-## Open items NOT for this session
-
-- **Folder reorganization** (deletion table from the previous handoff,
-  commit `accd561`) — still queued. The deletion list and reasoning are
-  in the git history of that prior handoff; do NOT redo the survey work
-  if Warren returns to this later. The deletions are still safe:
-  `.DS_Store`, broken `.claude/skills/skill-creator` symlink,
-  `skills-lock.json`, the four 0-byte log files, `logs/layer2_2026-05-16.log`,
-  and (with confirmation) `docs/AI_Workflow.md`,
-  `docs/superpowers/*.md`, `layer0/TEST-ONLY 15m Loop INDICATOR.pine`,
-  `scripts/backfill_journal.py`.
-- **Live trading state** (Layer 3 cutover deploy on both VPSes) — still
-  awaiting `git pull` + worker start on VPS #2/#3. Unchanged.
-
----
-
-## Pick up here
-
-Open `layer2/telegram_handlers.py` line ~2362, scan msgs 1-19, then start
-TASK B's discussion with Warren before writing any code. The structure spec
-that comes out of TASK B should land in CLAUDE.md as part of TASK C.
-
----
+1. **Warren runs `/update layer2`** on Telegram to deploy `7fbb14a`, `7f4ade0`,
+   `7a78cc7`. Then `/messages` + `/messages2` to visually verify the bracketed
+   header + colon-row format + correct currency on all 37 templates.
+2. **Warren reviews `Suggest To Delete/`** (open `Suggest To Delete/README.md`
+   first — per-item rationale). When done, `git rm -rf "Suggest To Delete/"`
+   removes everything in one commit.
+3. **Verify the deal-wait fix on a real close** — when the next trade closes,
+   check that the Telegram Trade P&L value equals the journal dashboard
+   number byte-for-byte (instead of the prior `(est.)` divergence).
+4. **TASK B from prior handoff still pending** — deep discussion with Warren on
+   overall message structure spec (information hierarchy, when to use aligned
+   rows vs prose, currency labeling rules, ticket placement convention). Lands
+   as a one-paragraph spec in CLAUDE.md or TECHNICAL.md.
+5. **TASK C from prior handoff still pending** — refresh CLAUDE.md once the
+   structure spec from TASK B is settled. CLAUDE.md "Current State" section
+   needs `7fbb14a`, `7f4ade0`, `5229fd8`, `7a78cc7` added to the commit list.
+   Hard Constraints section still has the stale "Both live MT5 accounts MUST
+   be USD-denominated" wording — replace with the SGD-personal / USD-prop
+   reality (per memory/sgd-usd-account-currency.md, 2026-05-23 reversal).
 
 ## Running state
 
 - Background processes: none
 - Dev servers / ports: none
-- Worktrees / branches: main only
+- Worktrees / branches: main only (no worktrees)
+
+## Open items
+
+- **Layer 3 cutover deploy** still pending on VPS #2/#3 (`git pull` + worker
+  start with `MT5_TERMINAL_PATH` env on VPS #2). Unchanged from prior session;
+  see CLAUDE.md §Current State.
+- **`logs/layer2_2026-05-29.log` and `logs/layer3_worker_2026-05-29.log`** were
+  intentionally NOT moved into `Suggest To Delete/logs/` (created today; might
+  be touched by a local process). Re-evaluate on a later session.
+- **Possible follow-up Warren mentioned**: if MetaQuotes Demo's 2-3 h lag
+  causes too many `(est.)` prop-side alerts after the deal-wait fix, wire
+  Telegram `editMessageText` so the journal pipeline can EDIT the original
+  Telegram message with the corrected P&L when the deal eventually lands.
+  Not started — Warren said he'll decide next session if needed.
+
+## Pick up here
+
+Verify Warren has run `/update layer2` and seen the new bracketed headers /
+correct currency / no-`(est.)`-on-deal-found rendering on his phone. If
+he confirms it works as expected, move to TASK B (message structure spec
+discussion) from the prior handoff. If he reports a problem with the
+deal-wait fix (e.g. alerts arriving too late, or some path missing data),
+debug at `layer2/logic_core.py` `_detect_closes()` / `_send_close_alert()`
+and `_query_deal_pnl` in `zmq_helpers.py`.
 
 ---
 
-*Last updated: 2026-05-29 after commit c212ce5.*
+*Last updated: 2026-05-29 after commit `7a78cc7`.*
