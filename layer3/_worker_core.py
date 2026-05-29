@@ -1149,34 +1149,33 @@ def _build_equity_reply(ticker: str) -> dict:
         account_currency = (acct.currency if acct and getattr(acct, "currency", None) else "USD")
         usd_to_acct_rate = _usd_to_account_rate(account_currency)
 
-        # Cumulative trading fees over the account's full deal history, in the
-        # account deposit currency (SGD for personal, USD for prop — MT5 reports
-        # commission/swap in deposit currency, so no conversion needed).
+        # Cumulative COMMISSION over the account's full deal history, in the
+        # account deposit currency (SGD personal / USD prop — MT5 reports
+        # commission in deposit currency, so no conversion needed).
         #
-        # NOTE on spread: MT5 has no separate "spread" line item. Spread is the
-        # bid/ask gap baked into each deal's FILL PRICE, so its cost is already
-        # inside `profit` (gross P&L). The only explicit deductions MT5 itemises
-        # are commission (per-trade broker fee) and swap (overnight financing).
-        # Reconciliation: balance = deposits + sum(gross profit) + commission + swap.
-        commission_total = swap_total = fee_total = 0.0
+        # We query commission only (per Warren's reconciliation experiment: he's
+        # checking whether all hidden costs tie out to commission alone). This is
+        # exactly what MT5 sums across the account's deals.
+        #
+        # NOTE on spread: MT5 has no "spread" line item — spread is the bid/ask
+        # gap baked into each fill price, so its cost already sits inside
+        # `profit` (gross P&L). Reconciliation: balance = deposits + sum(gross
+        # profit) + commission.
+        commission_total = 0.0
         try:
             _from = datetime(2000, 1, 1, tzinfo=timezone.utc)
             _to   = datetime.now(timezone.utc) + timedelta(seconds=30)
             with _mt5_lock:
                 _all_deals = mt5.history_deals_get(_from, _to) or []
             commission_total = round(sum(d.commission for d in _all_deals), 2)
-            swap_total       = round(sum(d.swap       for d in _all_deals), 2)
-            fee_total        = round(sum(getattr(d, "fee", 0.0) for d in _all_deals), 2)
         except Exception as exc:
-            logger.warning("fee-history query failed: %s", exc)
+            logger.warning("commission-history query failed: %s", exc)
 
         return {
             "balance":            balance,
             "equity":             equity,
             "profit":             profit,
             "commission_total":   commission_total,
-            "swap_total":         swap_total,
-            "fees_total":         round(commission_total + swap_total + fee_total, 2),
             "trade_allowed":      trade_allowed,
             "point":              point,
             "contract_size":      contract_size,
@@ -1194,7 +1193,7 @@ def _build_equity_reply(ticker: str) -> dict:
         return {
             "error": str(exc),
             "balance": 0.0, "equity": 0.0, "profit": 0.0,
-            "commission_total": 0.0, "swap_total": 0.0, "fees_total": 0.0,
+            "commission_total": 0.0,
             "trade_allowed": True,
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,

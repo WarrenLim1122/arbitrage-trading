@@ -796,7 +796,7 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     block = _p2_settings_block(phase1_cfg)
     await update.message.reply_text(
         f"{_cmd_header('🟢 <b>Phase 2 Setup</b>')}"
-        f"<b>Phase 1 Settings</b>\n<pre>{block}</pre>\n\n"
+        f"<b>Phase 1 Settings</b>\n{block}\n\n"
         f"Use the same details for Phase 2? Reply <b>yes</b> or <b>no</b>.",
         parse_mode="HTML",
     )
@@ -811,7 +811,7 @@ async def _p2_same_or_diff(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     if v == "no":
         block = _p2_settings_block(_p2_wizard_data["phase1_config"])
         await update.message.reply_text(
-            f"<b>Current Settings</b>\n<pre>{block}</pre>\n\n"
+            f"<b>Current Settings</b>\n{block}\n\n"
             f"<b>Which settings should change?</b>\n"
             f"Reply with numbers separated by spaces.\n"
             f"Example: <code>2 4</code> | Range: 1–8",
@@ -919,7 +919,7 @@ async def _p2_show_review(update) -> int:
     rs_flag = "  <b>[FLAGGED]</b>" if not new.get("raw_spread_account") else ""
     await update.message.reply_text(
         f"{_cmd_header('📊 <b>Phase 2 Review</b>')}"
-        f"<pre>{block}</pre>\n\n"
+        f"{block}\n\n"
         f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
         f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
         f"Reply <b>YES</b> to proceed, or <b>NO</b> to cancel.",
@@ -1230,13 +1230,13 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
         f"Daily profit cap: {pf.get('daily_profit_cap_pct', 0):.1f}%\n\n"
         f"<b>Drawdown</b>\n"
         f"Overall DD: {pf.get('max_drawdown_overall_pct', 0):.1f}%\n"
-        f"Daily DD: {pf.get('max_drawdown_daily_pct', 0):.1f}% (↓1pp)\n"
+        f"Daily DD: {pf.get('max_drawdown_daily_pct', 0):.1f}% enforced (firm {pf.get('max_drawdown_daily_pct', 0) + 1.0:.1f}%, −1pp buffer)\n"
         f"Type: {'Static' if pf.get('drawdown_is_static') else 'Dynamic'}\n\n"
         f"<b>Other Rules</b>\n"
         f"Raw spread: {'Yes' if pf.get('raw_spread_account') else 'No'}\n"
         f"Profit sharing: {pf.get('profit_sharing_pct', 0):.1f}%\n"
         f"Min profit days: {pf.get('min_profit_days', 0)}\n"
-        f"Consistency: {pf.get('consistency_threshold_pct', 0):.1f}% (↓1pp)\n\n"
+        f"Consistency: {pf.get('consistency_threshold_pct', 0):.1f}% enforced (firm {pf.get('consistency_threshold_pct', 0) + 1.0:.1f}%, −1pp buffer)\n\n"
         f"<b>Baselines</b>\n"
         f"Prop: ${prop_b:,.2f}\n"
         f"Personal: {_money(pers_b, pers_ccy) if pers_b > 0 else 'Not set'}",
@@ -1264,18 +1264,15 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"Equity: {_money(eq, currency)}",
             f"Floating: {_money(floating, currency, signed=True)}",
         ]
-        # Cumulative broker charges (commission + swap) the bot pulled from MT5
-        # deal history. Spread is NOT shown separately — it's baked into each
-        # fill price, so it already sits inside realized P&L. This is the line
-        # that explains why gross trade P&L and balance change don't match.
-        comm = data.get("commission_total", 0.0)
-        swap = data.get("swap_total", 0.0)
-        fees = data.get("fees_total", comm + swap)
-        if "fees_total" in data:
-            fees_line = f"Trading fees: {_money(fees, currency, signed=True)}"
-            if comm and swap:
-                fees_line += f" (comm {_money(comm, currency, signed=True)} · swap {_money(swap, currency, signed=True)})"
-            lines.append(fees_line)
+        # Cumulative commission the bot pulled straight from MT5 deal history,
+        # in the account deposit currency. We report ONLY commission for now —
+        # Warren is verifying whether all his hidden costs reconcile to
+        # commission alone. The number here IS exactly what MT5 sums across the
+        # account's deals; add it to gross trade P&L and it should tie to the
+        # balance change. (Spread is not a line item — it's baked into fill
+        # price, already inside gross P&L.)
+        if "commission_total" in data:
+            lines.append(f"Commission: {_money(data['commission_total'], currency, signed=True)}")
         if baseline > 0:
             overall = eq - baseline
             overall_pct = overall / baseline * 100
@@ -1854,7 +1851,7 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     if rule_met:
         await update.message.reply_text(
             f"{_cmd_header('🟢 <b>Consistency Rule Met</b>')}"
-            f"<pre>{table_str}</pre>\n\n"
+            f"{table_str}\n\n"
             f"Ready to submit payout claim.",
             parse_mode="HTML",
         )
@@ -1869,7 +1866,7 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(
         f"{_cmd_header('📊 <b>Consistency Tracker</b>')}"
         f"Threshold: &lt; {threshold:.1f}%\n\n"
-        f"<pre>{table_str}</pre>\n\n"
+        f"{table_str}\n\n"
         f"<b>Status</b>\n{status_line}",
         parse_mode="HTML",
     )

@@ -269,40 +269,37 @@ def _build_consistency_table(
     ratio_pct   = max_day_val / total * 100 if total > 0 else 100.0
     rule_met    = len(all_days) >= 2 and ratio_pct < threshold
 
-    header = f"{'':1}{'Day':<5} {'Date':<10} {'Profit ($)':>12}  {'%Base':>6}  {'%Total':>7}"
-    sep    = "─" * 52
-    rows   = [header, sep]
-
+    # Plain-text rows (no monospace box / column padding) — one line per
+    # profitable day, so it renders cleanly in Telegram's proportional font
+    # without a <pre> code block.
+    rows = []
     for i, d in enumerate(all_days, 1):
         p         = d["profit_usd"]
-        pct_base  = p / baseline * 100 if baseline > 0 else 0.0
         pct_total = p / total * 100
         is_max    = abs(p - max_day_val) < 0.01
-        flag      = "★" if is_max else " "
-        live_tag  = "~" if d["live"] else " "
+        tags      = ""
+        if is_max:
+            tags += " ★"
+        if d["live"]:
+            tags += " ~live"
         try:
             date_str = datetime.fromisoformat(d["date"]).strftime("%b %d")
         except Exception:
             date_str = d["date"][:6]
-        rows.append(
-            f"{flag}D{i:<4} {date_str:<10} ${p:>10,.2f}  "
-            f"{pct_base:>+5.2f}%  {pct_total:>6.1f}%{live_tag}"
-        )
+        rows.append(f"D{i} {date_str}: ${p:,.2f} ({pct_total:.1f}% of total){tags}")
 
     overall_pct = total / baseline * 100 if baseline > 0 else 0.0
-    rows.append(sep)
-    rows.append(f" {'Total':<14} ${total:>10,.2f}  {overall_pct:>+5.2f}%")
-    rows.append(f" Largest day : {ratio_pct:.1f}%   Threshold: < {threshold:.1f}%")
-    rows.append(f" Status      : {'RULE MET ✓' if rule_met else 'not met yet'}")
+    rows.append("")
+    rows.append(f"Total: ${total:,.2f} ({overall_pct:+.2f}% of baseline)")
 
     legend = []
     if any(d["live"] for d in all_days):
-        legend.append("~ today's live P&L (unrealised included)")
+        legend.append("~live = today's running P&L (unrealised included)")
     if any(abs(d["profit_usd"] - max_day_val) < 0.01 for d in all_days):
-        legend.append("★ largest day")
+        legend.append("★ = largest day")
     if legend:
         rows.append("")
-        rows.extend(f" {ln}" for ln in legend)
+        rows.extend(legend)
 
     return "\n".join(rows), total, max_day_val, ratio_pct, rule_met
 
@@ -332,13 +329,15 @@ def _invert(signal: str) -> str:
 def _apply_buffers(raw: dict) -> dict:
     """Apply safety buffers to raw prop firm limits.
 
-    - Daily DD: subtract 0.5 percentage point (buffer against prop firm's daily limit).
+    - Daily DD: subtract 1 percentage point (buffer against prop firm's daily limit;
+      firm 3% → bot enforces at 2%). Wide enough that the monitor can react before
+      a fast move breaches the firm's hard 3% line.
     - Overall DD: NO buffer — trigger at exact value user inputs (prop firm closes at this exact %).
     - Daily profit cap: enforce at 25% of target (vs the 30% consistency rule).
     - Consistency threshold: subtract 1 percentage point (fire 1% before the firm's stated limit).
     """
     effective = raw.copy()
-    effective["max_drawdown_daily_pct"]      = round(raw["max_drawdown_daily_pct"]          - 0.5, 2)
+    effective["max_drawdown_daily_pct"]      = round(raw["max_drawdown_daily_pct"]          - 1.0, 2)
     effective["max_drawdown_overall_pct"]    = raw["max_drawdown_overall_pct"]
     effective["daily_profit_cap_pct"]        = round(raw["profit_target_pct"] * 0.25, 2)
     effective["consistency_threshold_pct"]   = round(raw.get("consistency_threshold_pct", 30.0) - 1.0, 2)
@@ -478,7 +477,7 @@ def _p2_display(key: str, value) -> str:
     if key == "raw_spread_account":
         return "Yes" if value else "No"
     if key == "max_drawdown_daily_pct":
-        return f"{value:.1f}% (enforced at {value - 0.5:.1f}% after −0.5pp buffer)"
+        return f"{value:.1f}% (enforced at {value - 1.0:.1f}% after −1pp buffer)"
     if key in ("profit_target_pct", "max_drawdown_overall_pct",
                "profit_sharing_pct", "consistency_threshold_pct"):
         return f"{value:.1f}%"
@@ -492,5 +491,5 @@ def _p2_settings_block(cfg: dict, compare_to: dict | None = None) -> str:
         mark = ""
         if compare_to is not None and compare_to.get(key) != val:
             mark = "  ← changed"
-        lines.append(f"{idx}. {name:<22} — {_p2_display(key, val)}{mark}")
+        lines.append(f"{idx}. {name}: {_p2_display(key, val)}{mark}")
     return "\n".join(lines)
