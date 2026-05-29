@@ -21,16 +21,19 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 Surface this the first time Warren returns:
 
-**Read `handoff/SESSION-HANDOFF.md`** — it contains the two queued tasks for the next session:
+**Read `handoff/SESSION-HANDOFF.md`** — it contains the queued tasks for the next session:
 
-1. **Folder reorganization** — deletion table + reorg moves (deferred from 2026-05-28 after Warren chose to redesign messages first).
-2. **`$` / currency-formatting consistency audit** — verify sign-before-`$` is used consistently across the 37 redesigned `msg_*` functions; check personal/prop currency assignments in `msg_position_closed`; suggested rendering check included.
+1. **Apply 20-37 layout fixes to templates 1-19** — the three fixes (`:`-separated rows, `#` ticket prefix, single-currency personal display) shipped 2026-05-29 only touch messages 20-37. Messages 1-19 still use the older format from `8940848`.
+2. **Deep discussion on overall message structure** — Warren wants a one-paragraph message structure spec (information hierarchy, when to use aligned rows vs prose, currency labeling rules, ticket placement convention) to land in CLAUDE.md/TECHNICAL.md so future redesigns don't redrive these decisions.
+3. **Refresh CLAUDE.md** — once the structure spec is settled, fold it in.
+4. **Folder reorganization** (still queued, lower priority) — deletion table in the prior handoff at git `accd561`.
 
 **Already shipped (don't re-do):**
-- All Telegram message text now lives in `layer2/telegram_handlers.py` as 37 named `msg_*()` functions, each with a docstring describing its trigger. `logic_core.py` is pure orchestration.
+- All Telegram message text lives in `layer2/telegram_handlers.py` as 37 named `msg_*()` functions, each with a docstring describing its trigger. `logic_core.py` is pure orchestration.
 - `/messages` (page 1) and `/messages2` (page 2) Telegram commands print the catalog for review.
-- All 37 templates use the new format: header + ━ separator + labeled blocks. Audit confirmed zero orphans.
-- The previous "Telegram close-alert P&L breakdown" pending item is **partially addressed** by the Position Closed redesign — the new format shows Reason / Trade P&L / Commission as separate aligned rows (no Swap line). Warren may want to verify this matches his ask or request a further tweak; see `handoff/SESSION-HANDOFF.md §Open items NOT for this session`.
+- All 37 templates use the header + ━ separator + labeled-block format. Audit confirmed zero orphans.
+- **Messages 20-37 (b7da59a + c212ce5, 2026-05-29):** every label/value row renders `Label: value` instead of space-padded alignment; tickets render `#<id>` and now sit directly under the side header (Warren's mental model: ticket IS the trade's name); personal account money (Risk/Reward/P&L/Commission/Margin/Equity) renders in whatever currency MT5 reports (auto-detected — SGD on the live account, would be GBP/EUR/etc. transparently); prop stays `$`; forex prices (Entry/SL/TP) stay raw quotes with no currency symbol. `_msg_pers_money_dual` → `_msg_pers_money_acct` (dual-display dropped).
+- The previous "Telegram close-alert P&L breakdown" pending item is **done** for msg 21 — `msg_position_closed` shows Reason / Trade P&L / Commission as separate currency-correct rows.
 
 ---
 
@@ -95,7 +98,9 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 - Personal account always trades **opposite** direction to prop firm.
 - Lot sizing uses `baseline_equity × 0.67%` — never live equity. Full formula: TECHNICAL.md §Lot Sizing.
 - `baseline_equity` and `pers_baseline_equity` are **immutable** — only written by `/changepropfirm` wizard or `/phase2` wizard. Never auto-set from MT5 balance.
-- **Both live MT5 accounts MUST be USD-denominated.** The system has no multi-currency support: it reads MT5 `trade_tick_value` and `deal.profit/commission/swap` (broker returns these in account deposit currency) and labels everything `$`. A SGD personal account would not break lot sizing or kills (personal lots = `prop_lots × phase_ratio`; all kills are prop-side) but would mislabel personal P&L/risk in every alert and silently mix SGD+USD when comparing the two legs. Decided 2026-05-19: open the real Fusion Markets account in **USD**, not SGD. **If Warren re-asks the SGD/USD question, answer from `docs/Account_Currency_Decision.md` — restate its one-line conclusion + workflow, do not re-derive from the code.**
+- **Personal account currency is whatever MT5 reports** — auto-detected via `_query_equity()` reading `account_info().currency`. Currently **SGD** on the live Fusion Markets account (decision reversed 2026-05-23; was previously USD per `docs/Account_Currency_Decision.md`). The Telegram message layer (post-`b7da59a`, 2026-05-29) renders all personal-side money (Risk/Reward/P&L/Commission/Margin/Equity) in that currency — switching to GBP/EUR/etc. requires no code changes. Forex prices (Entry/SL/TP) carry no currency symbol since they're quotes, not money amounts. **Lot-sizing math is unchanged** — risk is computed from prop equity × `PROP_RISK_PCT`, then converted via `_msg_split_pers_amount(ticker, value, usd_to_acct_rate)` purely for display.
+- **Prop account MUST stay USD-denominated** — prop-firm hard constraint. All prop-side money in alerts hardcoded `$`. Phase 2 kill thresholds, baselines, profit targets all denominated in USD.
+- **If Warren re-asks the SGD/USD question** — point him at the memory file `~/.claude/projects/.../sgd-usd-account-currency.md` (2026-05-23 reversal) and the Layer 2 retrofit shipped 2026-05-29. Do NOT re-derive from `docs/Account_Currency_Decision.md` — that doc captures the 2026-05-19 decision which has since been overridden.
 - Phase switching: Telegram-only (`/phase1`, `/phase2`).
 - **MT5 connection (Layer 3):** the `MetaTrader5` lib only gets IPC for a terminal **it self-launches** via `mt5.initialize(path)`. Runtime account switching (creds in `initialize()` or `login()` off the saved default) kills the pipe → `-10005`. **A terminal whose generic install has no broker server endpoints configured will silently never even attempt to connect** — Journal stays empty when you select that account, bottom-right shows `n/a` / `0/0 Kb`, prices appear "frozen" at stale values. This was the multi-week 2026-05 blocker (NOT funding/feed-side, as wrongly diagnosed earlier — both accounts streamed on mobile fine). Fix = follow one of the two workflows in **VPS MT5 Setup** below. Code enforces hard guard `account_info().login == MT5_LOGIN` (fatal exit on mismatch, never trades on the wrong account).
 - ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open between VPS #1 and VPS #2/#3.
@@ -199,18 +204,22 @@ Both VPS desktops stream live broker data and the Layer 3 connection rewrite is 
 5. From Telegram: `/health` → both legs green
 6. Housekeeping: delete `C:\arbitrage\config\mt5_autologin.ini` if it still exists (leftover plaintext-password file, unused)
 
-### Layer 2 telegram-message consolidation (2026-05-28 → 2026-05-29) — SHIPPED, awaiting `/update layer2`
+### Layer 2 telegram-message consolidation + 20-37 retrofit (2026-05-28 → 2026-05-29) — SHIPPED, awaiting `/update layer2`
 
 All Telegram message text moved out of `logic_core.py` into named `msg_*()` functions in `telegram_handlers.py`. Each function has a docstring describing its trigger condition. Two new Telegram commands print the catalog (`/messages` for templates 1-19, `/messages2` for 20-37). All 37 templates redesigned with Warren's header + ━ separator + labeled-block format. **Audit confirmed zero orphans** — every message function is wired to at least one logic_core call-site.
+
+Templates 20-37 received an additional layout retrofit on 2026-05-29: `Label: value` rows replace space-padded alignment; tickets render `#<id>` directly under each side header; personal-side money renders in the MT5-reported account currency (auto-detected — SGD on the live account); prop stays `$`; forex prices stay raw.
 
 **Layer 2 commits (chronological):**
 - `5d1f58a` — consolidate Telegram messages + `/messages` catalog
 - `1b03ddf` — paginate `/messages` so all 37 templates survive Telegram flood control
 - `8940848` — apply Warren's redesigned templates 1-19
 - `4f7a69b` — apply redesigned templates 20-37 + audit
+- `b7da59a` — msgs 20-37: `:`-separated rows, `#` ticket prefix, single-currency personal display
+- `c212ce5` — msgs 20-37: move ticket row directly under each side header
 
-**Deploy:** `/update layer2` in Telegram, then `/messages` and `/messages2` on phone to review the redesigned templates.
+**Deploy:** `/update layer2` in Telegram, then `/messages` and `/messages2` on phone to review.
 
 ### Next session
 
-Read `handoff/SESSION-HANDOFF.md` — it contains two queued tasks (folder reorganization + `$`/currency consistency audit). Both deferred during the message-consolidation work and explicitly requested by Warren.
+Read `handoff/SESSION-HANDOFF.md` — it queues (A) retrofit msgs 1-19 with the three 20-37 layout fixes, (B) deep discussion with Warren on overall message structure + write a one-paragraph spec into this file, (C) fold (B)'s spec back into CLAUDE.md. Folder reorganization (from the prior handoff at `accd561`) is still queued at lower priority.
