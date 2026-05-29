@@ -1174,13 +1174,25 @@ def _build_equity_reply(ticker: str, want_fee: bool = False) -> dict:
                 _to   = datetime.now(timezone.utc) + timedelta(seconds=30)
                 with _mt5_lock:
                     _all_deals = mt5.history_deals_get(_from, _to) or []
-                deposit_total = round(
+                # ROBUST IDENTITY — the sum of EVERY deal's `profit` field equals
+                # (capital deposited) + (realized gross trade P&L), because MT5
+                # puts the deposit amount in profit on balance-type deals and the
+                # price-only realized P&L on closing deals (entry/open deals are
+                # 0). Commission and swap are SEPARATE fields, never in profit.
+                # Therefore the whole-account residual is the all-in trading cost:
+                #       trading_fee = balance − Σ(every deal.profit)
+                # No entry/type filtering, so it can't double-count or miss a
+                # closing deal. Negative = net cost paid (positive only if net
+                # swap CREDIT exceeds commission — rare but real).
+                #
+                # Worked example (live, 2026-05-29):
+                #   Personal: 542.81  − (486.88 + 61.54)  = −5.61
+                #   Prop:     4911.87 − (5000  + (−81.69)) = −6.44
+                all_deal_profit = round(sum(d.profit for d in _all_deals), 2)
+                deposit_total   = round(
                     sum(d.profit for d in _all_deals if d.type == mt5.DEAL_TYPE_BALANCE), 2)
-                gross_trade_pnl = round(
-                    sum(d.profit for d in _all_deals
-                        if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)), 2)
                 fee_fields = {
-                    "trading_fee_total": round(balance - deposit_total - gross_trade_pnl, 2),
+                    "trading_fee_total": round(balance - all_deal_profit, 2),
                     "deposit_total":     deposit_total,
                 }
             except Exception as exc:
