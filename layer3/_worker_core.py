@@ -1322,10 +1322,22 @@ def _build_account_mode_reply() -> dict:
     return {"account_mode": _account_mode}
 
 
-def _build_deal_pnl_reply(symbol: str) -> dict:
-    """Return actual realized P&L (gross + commission + swap) for the most recently closed position on symbol.
-    Always includes account_mode so Layer 2 can decide message format even when deal history is unavailable
-    (MetaQuotes Demo lags 2-3h; Fusion Markets returns deals in <1s)."""
+def _build_deal_pnl_reply(symbol: str, ticket: int | None = None) -> dict:
+    """Return actual realized P&L (gross + commission + swap) for a closed position.
+
+    When `ticket` (the MT5 position_id of the position that just closed) is given,
+    we match the deal STRICTLY by that position_id — never by symbol-and-latest.
+    This is the correctness guarantee: with several closed trades on the same
+    symbol (and MetaQuotes deal-history lag, which can surface an OLDER trade
+    before the just-closed one), a symbol+max(time) match would return a
+    DIFFERENT trade's P&L and pair it with the wrong ticket in the alert. If the
+    requested ticket's exit deal hasn't surfaced yet, return found=False so the
+    caller waits / falls back to an explicit (est.) — we never show a confident
+    wrong number.
+
+    Always includes account_mode so Layer 2 can decide message format even when
+    deal history is unavailable (MetaQuotes Demo lags 2-3h; Fusion <1s).
+    """
     base = {"account_mode": _account_mode}
     if not symbol:
         return {**base, "found": False, "error": "no symbol"}
@@ -1335,17 +1347,29 @@ def _build_deal_pnl_reply(symbol: str) -> dict:
         with _mt5_lock:
             deals = mt5.history_deals_get(from_dt, to_dt) or []
 
-        sym_exits = [
-            d for d in deals
-            if d.symbol == symbol and d.entry == mt5.DEAL_ENTRY_OUT
-        ]
-        if not sym_exits:
-            return {**base, "found": False}
+        if ticket is not None:
+            # Strict: only deals belonging to THIS position.
+            exits = [
+                d for d in deals
+                if d.position_id == ticket and d.entry == mt5.DEAL_ENTRY_OUT
+            ]
+            if not exits:
+                # The close for this exact ticket hasn't surfaced yet → make the
+                # caller wait rather than mis-attribute another trade's P&L.
+                return {**base, "found": False}
+            latest_exit = max(exits, key=lambda d: d.time)
+        else:
+            # Back-compat path (no ticket supplied): symbol + most-recent exit.
+            sym_exits = [
+                d for d in deals
+                if d.symbol == symbol and d.entry == mt5.DEAL_ENTRY_OUT
+            ]
+            if not sym_exits:
+                return {**base, "found": False}
+            latest_exit = max(sym_exits, key=lambda d: d.time)
 
-        latest_exit = max(sym_exits, key=lambda d: d.time)
-        ticket      = latest_exit.position_id
-
-        pos_deals  = [d for d in deals if d.position_id == ticket]
+        match_ticket = latest_exit.position_id
+        pos_deals    = [d for d in deals if d.position_id == match_ticket]
         gross_pnl  = sum(d.profit     for d in pos_deals)
         commission = sum(d.commission for d in pos_deals)
         swap       = sum(d.swap       for d in pos_deals)
@@ -1364,7 +1388,7 @@ def _build_deal_pnl_reply(symbol: str) -> dict:
         return {
             **base,
             "found":        True,
-            "ticket":       ticket,
+            "ticket":       match_ticket,
             "close_price":  latest_exit.price,
             "close_reason": close_reason,
             "gross_pnl":    round(gross_pnl,  2),
@@ -1405,7 +1429,7 @@ def _rep_loop(ctx: zmq.Context) -> None:
         elif query == "order_status":
             reply = _build_order_status_reply(msg.get("signal_id", ""))
         elif query == "deal_pnl":
-            reply = _build_deal_pnl_reply(msg.get("symbol", ""))
+            reply = _build_deal_pnl_reply(msg.get("symbol", ""), msg.get("ticket"))
         elif query == "order_check":
             reply = _build_order_check_reply(msg)
         elif query == "account_mode":

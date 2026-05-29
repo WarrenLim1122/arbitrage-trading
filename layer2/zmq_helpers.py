@@ -311,16 +311,25 @@ def _dispatch_parameters() -> None:
         logger.error("SET_PARAMETERS dispatch failed: %s", exc)
 
 
-def _query_deal_pnl(zmq_url: str, symbol: str) -> dict | None:
-    """Query Layer 3 for the actual realized P&L of the most recently closed position on symbol.
-    Returns the full reply dict (always includes account_mode, plus net_pnl/commission/close_price
-    when found=True). Returns None only on transport error/timeout. Caller checks reply["found"]
-    to decide whether to use the exact values or fall back to pos.profit."""
+def _query_deal_pnl(zmq_url: str, symbol: str, ticket: int | None = None) -> dict | None:
+    """Query Layer 3 for the actual realized P&L of a closed position.
+
+    Pass `ticket` (the MT5 position_id of the position that just closed) so the
+    worker matches the deal STRICTLY by that position — never by symbol+latest,
+    which can return a different trade's P&L when several trades on the same
+    symbol close (or MetaQuotes history lags). Returns the full reply dict
+    (always includes account_mode, plus net_pnl/commission/close_price when
+    found=True). Returns None only on transport error/timeout. Caller checks
+    reply["found"] to decide whether to use the exact values or fall back to
+    pos.profit (shown as (est.))."""
     sock = _zmq_ctx.socket(zmq.REQ)
     sock.setsockopt(zmq.LINGER, 0)
     sock.connect(zmq_url)
     try:
-        sock.send_json({"query": "deal_pnl", "symbol": symbol})
+        req = {"query": "deal_pnl", "symbol": symbol}
+        if ticket is not None:
+            req["ticket"] = ticket
+        sock.send_json(req)
         if not sock.poll(EQUITY_TIMEOUT):
             return None
         return sock.recv_json()

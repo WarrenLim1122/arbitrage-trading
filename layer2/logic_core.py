@@ -371,9 +371,13 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
     # newly-arrived deal data flushes immediately the same tick.
     for symbol, entry in _pending_closes.items():
         if entry["pers_data"] is not None and not (entry["pers_deal"] and entry["pers_deal"].get("found")):
-            entry["pers_deal"] = _query_deal_pnl(ZMQ_REQ_PERS, symbol)
+            # Match by the exact closed position ticket so the P&L can never come
+            # from a different trade on the same symbol (the wrong-deal bug).
+            entry["pers_deal"] = _query_deal_pnl(
+                ZMQ_REQ_PERS, symbol, entry["pers_data"].get("ticket"))
         if entry["prop_data"] is not None and not (entry["prop_deal"] and entry["prop_deal"].get("found")):
-            entry["prop_deal"] = _query_deal_pnl(ZMQ_REQ_PROP, symbol)
+            entry["prop_deal"] = _query_deal_pnl(
+                ZMQ_REQ_PROP, symbol, entry["prop_data"].get("ticket"))
 
     # Flush rules:
     #   - Both legs closed AND both deals found → flush (the ideal path).

@@ -3214,9 +3214,11 @@ def msg_position_closed(*, symbol: str,
         if deal and deal.get("found"):
             pnl_val    = deal["net_pnl"]
             exit_price = _fmt_price(symbol, deal["close_price"])
-            commission = deal["commission"]
+            # Trading Fee = ALL broker costs on this trade (commission + swap),
+            # not just the commission field. Net Trade P&L already has it baked in.
+            fee_val    = deal.get("commission", 0.0) + deal.get("swap", 0.0)
             pnl_str    = _msg_signed_money(pnl_val, currency)
-            comm_str   = _msg_signed_money(commission, currency)
+            fee_str    = _msg_signed_money(fee_val, currency) if fee_val else ""
         else:
             pnl_val = pos_data["profit"]
             exit_price = (
@@ -3224,7 +3226,7 @@ def msg_position_closed(*, symbol: str,
                 else _fmt_price(symbol, pos_data["sl"])
             )
             pnl_str    = f"{_msg_signed_money(pnl_val, currency)} (est.)"
-            comm_str   = ""   # deal missing → no commission row
+            fee_str    = ""   # deal missing → no fee row (and P&L is only an estimate)
 
         levels = _msg_aligned_rows([
             ("Size",  f"{pos_data['volume']:.2f} lots"),
@@ -3232,9 +3234,9 @@ def msg_position_closed(*, symbol: str,
             ("Exit",  exit_price),
         ])
         outcome = _msg_aligned_rows([
-            ("Reason",     reason_label),
-            ("Trade P&amp;L",  pnl_str),
-            ("Commission", comm_str),  # empty rows dropped by helper
+            ("Reason",      reason_label),
+            ("Trade P&amp;L",   pnl_str),
+            ("Trading Fee", fee_str),  # empty rows dropped by helper
         ])
         ticket_row = (
             _msg_aligned_rows([("Ticket", f"#{pos_data['ticket']}")])
