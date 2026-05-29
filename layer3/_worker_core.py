@@ -1149,33 +1149,41 @@ def _build_equity_reply(ticker: str) -> dict:
         account_currency = (acct.currency if acct and getattr(acct, "currency", None) else "USD")
         usd_to_acct_rate = _usd_to_account_rate(account_currency)
 
-        # Cumulative COMMISSION over the account's full deal history, in the
-        # account deposit currency (SGD personal / USD prop — MT5 reports
-        # commission in deposit currency, so no conversion needed).
-        #
-        # We query commission only (per Warren's reconciliation experiment: he's
-        # checking whether all hidden costs tie out to commission alone). This is
-        # exactly what MT5 sums across the account's deals.
-        #
-        # NOTE on spread: MT5 has no "spread" line item — spread is the bid/ask
-        # gap baked into each fill price, so its cost already sits inside
-        # `profit` (gross P&L). Reconciliation: balance = deposits + sum(gross
-        # profit) + commission.
-        commission_total = 0.0
+        # TRADING FEE — every cost the broker deducted (commission + swap + any
+        # other fee), derived by SIMPLE RECONCILIATION rather than trusting MT5's
+        # commission line. The commission field alone under-reports: swaps and
+        # other fees sit on separate fields, so a commission-only number never
+        # ties out to the real balance discrepancy. Instead, over the account's
+        # full deal history:
+        #     deposit_total   = Σ profit of balance-type deals (capital in/out)
+        #     gross_trade_pnl = Σ profit of trade deals (price-only realized P&L)
+        #     balance         = deposit_total + gross_trade_pnl + (all fees)
+        # ⇒ trading_fee_total = balance − deposit_total − gross_trade_pnl
+        #   (signed; negative = net cost paid). This captures the full discrepancy
+        #   regardless of which fee fields MT5 used. (Spread is not a line item —
+        #   it's baked into each fill price, already inside gross_trade_pnl.)
+        trading_fee_total = 0.0
+        deposit_total     = 0.0
         try:
             _from = datetime(2000, 1, 1, tzinfo=timezone.utc)
             _to   = datetime.now(timezone.utc) + timedelta(seconds=30)
             with _mt5_lock:
                 _all_deals = mt5.history_deals_get(_from, _to) or []
-            commission_total = round(sum(d.commission for d in _all_deals), 2)
+            deposit_total = round(
+                sum(d.profit for d in _all_deals if d.type == mt5.DEAL_TYPE_BALANCE), 2)
+            gross_trade_pnl = round(
+                sum(d.profit for d in _all_deals
+                    if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)), 2)
+            trading_fee_total = round(balance - deposit_total - gross_trade_pnl, 2)
         except Exception as exc:
-            logger.warning("commission-history query failed: %s", exc)
+            logger.warning("trading-fee reconciliation query failed: %s", exc)
 
         return {
             "balance":            balance,
             "equity":             equity,
             "profit":             profit,
-            "commission_total":   commission_total,
+            "trading_fee_total":  trading_fee_total,
+            "deposit_total":      deposit_total,
             "trade_allowed":      trade_allowed,
             "point":              point,
             "contract_size":      contract_size,
@@ -1193,7 +1201,7 @@ def _build_equity_reply(ticker: str) -> dict:
         return {
             "error": str(exc),
             "balance": 0.0, "equity": 0.0, "profit": 0.0,
-            "commission_total": 0.0,
+            "trading_fee_total": 0.0, "deposit_total": 0.0,
             "trade_allowed": True,
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,

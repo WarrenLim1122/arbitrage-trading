@@ -1259,20 +1259,22 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         floating = data.get("profit", eq - bal)
         lines = [
             f"<b>{label}</b>",
-            f"Baseline: {_money(baseline, currency)}" if baseline > 0 else "Baseline: Not set — run /changepropfirm",
+            f"Baseline: {_money(baseline, currency)}" if baseline > 0 else "Baseline: Not set — run /setbaseline",
             f"Balance: {_money(bal, currency)}",
             f"Equity: {_money(eq, currency)}",
             f"Floating: {_money(floating, currency, signed=True)}",
         ]
-        # Cumulative commission the bot pulled straight from MT5 deal history,
-        # in the account deposit currency. We report ONLY commission for now —
-        # Warren is verifying whether all his hidden costs reconcile to
-        # commission alone. The number here IS exactly what MT5 sums across the
-        # account's deals; add it to gross trade P&L and it should tie to the
-        # balance change. (Spread is not a line item — it's baked into fill
-        # price, already inside gross P&L.)
-        if "commission_total" in data:
-            lines.append(f"Commission: {_money(data['commission_total'], currency, signed=True)}")
+        # Deposit = actual capital paid in, summed from MT5 balance-type deals.
+        # Surfaced next to the configured Baseline so a baseline keyed in wrong
+        # is obvious at a glance (fix it with /setbaseline).
+        if "deposit_total" in data and data["deposit_total"]:
+            lines.append(f"Deposit: {_money(data['deposit_total'], currency)}")
+        # Trading Fee = every broker cost (commission + swap + any fee), derived
+        # by reconciliation in the worker: balance − deposit − gross trade P&L.
+        # NOT the raw MT5 commission field (which under-reports). Signed; negative
+        # = net cost paid.
+        if "trading_fee_total" in data:
+            lines.append(f"Trading Fee: {_money(data['trading_fee_total'], currency, signed=True)}")
         if baseline > 0:
             overall = eq - baseline
             overall_pct = overall / baseline * 100
@@ -1295,6 +1297,110 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"{_cmd_header('📊 <b>Account Equity Snapshot</b>')}{pers_block}\n\n{prop_block}",
         parse_mode="HTML",
     )
+
+
+async def _cmd_setbaseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set baseline_equity (prop) or pers_baseline_equity (personal) directly.
+
+    baseline_equity drives all lot-sizing and kill-condition math, so it stays
+    immutable-by-design — only deliberate operator action writes it. The
+    sanctioned writers are the /changepropfirm and /phase2 wizards; this command
+    is a third, for quickly correcting a baseline keyed in wrong without
+    re-running the whole 10-step wizard.
+
+    Usage:
+        /setbaseline                  → show current baselines + actual MT5
+                                        deposits (for comparison) + usage
+        /setbaseline prop 100000      → set prop baseline_equity (USD)
+        /setbaseline personal 486.88  → set pers_baseline_equity (account ccy)
+    """
+    if not _auth(update):
+        return
+    args = (update.message.text or "").split()[1:]
+
+    with _pf_lock:
+        pf = dict(_propfirm)
+    prop_b = pf.get("baseline_equity", 0.0)
+    pers_b = pf.get("pers_baseline_equity", 0.0)
+
+    # No args → status + usage, including the live MT5 deposit so the right
+    # baseline is obvious.
+    if len(args) != 2:
+        try:
+            pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+            pers_ccy = pers.get("account_currency", "USD")
+            pers_dep = pers.get("deposit_total")
+        except Exception:
+            pers_ccy, pers_dep = "USD", None
+        try:
+            prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "")
+            prop_dep = prop.get("deposit_total")
+        except Exception:
+            prop_dep = None
+        prop_line = f"Prop baseline: {_money(prop_b, 'USD') if prop_b > 0 else 'Not set'}"
+        if prop_dep:
+            prop_line += f"\nProp MT5 deposit: {_money(prop_dep, 'USD')}"
+        pers_line = f"Personal baseline: {_money(pers_b, pers_ccy) if pers_b > 0 else 'Not set'}"
+        if pers_dep:
+            pers_line += f"\nPersonal MT5 deposit: {_money(pers_dep, pers_ccy)}"
+        await update.message.reply_text(
+            f"{_cmd_header('📊 <b>Set Baseline Equity</b>')}"
+            f"{prop_line}\n\n{pers_line}\n\n"
+            "<b>Usage</b>\n"
+            "<code>/setbaseline prop 100000</code>\n"
+            "<code>/setbaseline personal 486.88</code>\n\n"
+            "<i>Baseline drives lot sizing + kill levels. Set it to your actual "
+            "deposit (shown above).</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    side = args[0].lower()
+    if side not in ("prop", "personal"):
+        await update.message.reply_text(
+            f"{_cmd_header('⚠️ <b>Unknown Account</b>')}"
+            "First argument must be <code>prop</code> or <code>personal</code>.\n"
+            "Example: <code>/setbaseline personal 486.88</code>",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        amount = float(args[1].replace(",", ""))
+        assert amount > 0
+    except Exception:
+        await update.message.reply_text(
+            f"{_cmd_header('⚠️ <b>Invalid Amount</b>')}"
+            "Enter a positive number.\n"
+            "Example: <code>/setbaseline personal 486.88</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    key      = "baseline_equity" if side == "prop" else "pers_baseline_equity"
+    label    = "Prop Hedge" if side == "prop" else "Personal Signal"
+    currency = "USD"
+    if side == "personal":
+        try:
+            pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+            currency = pers.get("account_currency", "USD")
+        except Exception:
+            currency = "USD"
+    old = prop_b if side == "prop" else pers_b
+
+    with _pf_lock:
+        _propfirm[key] = round(amount, 2)
+        _save_propfirm(_propfirm)
+
+    old_str = _money(old, currency) if old > 0 else "Not set"
+    await update.message.reply_text(
+        f"{_cmd_header('✅ <b>Baseline Updated</b>')}"
+        f"Account: {label}\n"
+        f"Before: {old_str}\n"
+        f"After: <b>{_money(amount, currency)}</b>\n\n"
+        "<i>Lot sizing and kill levels now recompute from this baseline.</i>",
+        parse_mode="HTML",
+    )
+    logger.warning("Telegram: %s %s set to %.2f via /setbaseline", label, key, amount)
 
 
 async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2244,6 +2350,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Positions &amp; Risk</b>\n"
         "/positions — Show open positions\n"
         "/equity — Account equity snapshot\n"
+        "/setbaseline — Set account baseline equity\n"
         "/pnl — Show P&amp;L risk dashboard\n"
         "/maxpos — Show position limit\n"
         "/setmaxpos 2 — Set position limit\n\n"
@@ -3903,6 +4010,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("equity",         _cmd_equity))
+    tg_app.add_handler(CommandHandler("setbaseline",    _cmd_setbaseline))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
