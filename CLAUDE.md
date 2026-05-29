@@ -186,7 +186,7 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 Pending: `/update layer2` AND `/update layer3` (×2 — `_worker_core.py` changed, so both Personal and Prop workers must restart). No `pyproject.toml` change → no `uv sync`. **Layer 3 trading-fee work was verified live on 2026-05-29 (fee reconciles); HEAD `033b97e` is the version to deploy.**
 
-Commits (chronological): `968f9bb` `f2c02dd` `7495ebd` `783dba1` `95ee73c` `d32f316` `43b1ccd` `d42fde8` `aeb7757` `40203e5` `033b97e`.
+Commits (chronological): `968f9bb` `f2c02dd` `7495ebd` `783dba1` `95ee73c` `d32f316` `43b1ccd` `d42fde8` `aeb7757` `40203e5` `033b97e` `3d4dbaa`.
 
 ⚠️ **Layer 3 workers do NOT pick up new code on `git pull` alone — the Python process must be Ctrl+C'd and re-run.** This caused the trading-fee value to stay wrong across "redeploys" until the worker was truly restarted. Closing/reopening the noVNC tab does not restart it. Confirm via the `FEE DEBUG`/build markers or simply that the value changed.
 
@@ -196,6 +196,7 @@ What shipped:
 - **`/equity` "Trading Fee"** (renamed from "Commission") = the all-in cost via the robust identity **`balance − Σ(every deal.profit)`** (Σ profit = deposits + gross realized P&L, since commission/swap live in separate fields). Equivalent to `balance − deposit − gross` and to `Σ(commission)+Σ(swap)`. NOT MT5's commission field alone (under-reports swap). Gated behind a `want_fee` flag so the full-history scan runs ONLY for `/equity`, never the 30s monitor poll. Verified live: personal −SGD 6.01, prop −$8.98 (2026-05-29).
 - **Close-alert wrong-P&L bug FIXED** (`d42fde8`): `_build_deal_pnl_reply` now matches the realized deal by the exact closed-position `ticket` (`position_id`), not symbol+latest-exit — which previously paired one ticket's metadata with another trade's P&L when multiple same-symbol trades closed / MetaQuotes history lagged. If the ticket's deal hasn't surfaced, returns `found=False` → shows `(est.)` rather than a wrong number. Close alert also shows "Trading Fee" (commission+swap) not "Commission".
 - Verified fact (this session): lot sizing + ALL kills are PROP-only; the personal account has no kill conditions and its lots = `prop_lots × phase_multiplier`. The personal baseline was always cosmetic.
+- **Trading list trimmed 8→7** (`3d4dbaa`): dropped XAGUSD + NAS100/USTEC from every gate (see §Covered Instruments). Trading Fee is fully dynamic (live `account_info` + `history_deals_get`), no static constants — verified.
 - Tests: 90 pass. Updated stale `test_buffers.py` to the shipped 1pp daily-DD buffer.
 
 > A rewind mid-session reverted working files behind git HEAD; recovered via `git restore`. If files ever look older than `git log`, that's the cause — `git restore <files>` to resync to `origin/main`.
