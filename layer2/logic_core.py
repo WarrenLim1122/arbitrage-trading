@@ -189,10 +189,23 @@ def _soft_kill_overridden(now_sgt: datetime) -> bool:
 _prev_prop_pos: dict[tuple[str, int], dict] = {}
 _prev_pers_pos: dict[tuple[str, int], dict] = {}
 _pos_tracking_initialized: bool = False
-# Buffer: when one side closes before the other, wait up to 120s before alerting.
-# Prevents duplicate split alerts and false orphan force-closes.
-_pending_closes: dict[str, dict] = {}  # symbol → {pers_data, prop_data, first_seen}
+# Buffer: hold a close until BOTH legs have disappeared from MT5 AND both deal
+# records are visible in MT5 history. Polling re-queries `_query_deal_pnl` every
+# tick until found, so the Telegram alert always carries the same net P&L the
+# trade journal eventually records — no more `(est.)` divergence.
+#
+# Two timeouts work together:
+#   _CLOSE_WAIT_SECONDS — orphan grace (120s). If only one leg ever closes, flush
+#                         then so the mismatch monitor (also 120s) handles it.
+#   _CLOSE_DEAL_TIMEOUT — hard cap (600s = 10 min). When both legs are closed
+#                         but MT5 history hasn't surfaced the deals yet
+#                         (e.g. MetaQuotes Demo's 2-3h lag), flush at this cap
+#                         with whatever's available so the user isn't left
+#                         without an alert. Fusion Markets usually lands deals
+#                         in <1s; the cap is for broker-side outliers.
+_pending_closes: dict[str, dict] = {}  # symbol → {pers_data, prop_data, pers_deal, prop_deal, first_seen}
 _CLOSE_WAIT_SECONDS = 120
+_CLOSE_DEAL_TIMEOUT = 600
 
 # ── Known open positions (registered on confirmed signal dispatch) ─────────
 # Source of truth for what the bot opened — used to suppress false mismatch alerts
@@ -294,12 +307,21 @@ def _run_mismatch_check(prop_positions: list[dict], pers_positions: list[dict]) 
 def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
     """Detect positions closed since the last poll.
 
-    When one side closes before the other (e.g. personal SL hits one poll cycle
-    before prop TP), the close is held in _pending_closes for up to
-    _CLOSE_WAIT_SECONDS (120 s).  A single combined alert fires only after both
-    legs confirm closed, or after the wait window expires.  This prevents the
-    duplicate split-messages and false orphan force-closes seen when both legs
-    of a hedge close within minutes of each other.
+    Two-stage wait so Telegram never reports an `(est.)` P&L when MT5 holds the
+    real number:
+
+      Stage 1 — wait for the OTHER leg's position to disappear from MT5
+                (up to `_CLOSE_WAIT_SECONDS`, default 120s). This is the
+                original split-leg grace; preserves orphan handling.
+      Stage 2 — once both legs are confirmed closed, wait for each side's
+                MT5 deal record to surface via `_query_deal_pnl` (up to
+                `_CLOSE_DEAL_TIMEOUT`, default 600s = 10 min). Re-queries on
+                every tick. Flushes the instant both deals land.
+
+    Outcome: Telegram + journal both show the same net P&L (commission/swap
+    included) for the trade. The only time `(est.)` ever appears is when MT5
+    history still hasn't surfaced the deal after 10 min — typically only
+    MetaQuotes Demo accounts under their 2-3h lag.
     """
     global _prev_prop_pos, _prev_pers_pos, _pos_tracking_initialized, _pending_closes
 
@@ -337,25 +359,66 @@ def _detect_closes(prop_pos: list[dict], pers_pos: list[dict]) -> None:
             _pending_closes[symbol] = {
                 "pers_data":  pers_data,
                 "prop_data":  prop_data,
+                "pers_deal":  None,
+                "prop_deal":  None,
                 "first_seen": now,
             }
             logger.info("Close pending: %s  pers=%s prop=%s",
                         symbol, "yes" if pers_data else "no", "yes" if prop_data else "no")
 
-    # Flush entries where both sides confirmed or the wait window has elapsed.
+    # On every tick, re-query MT5 deal history for any side that has closed
+    # but whose deal is not yet visible. Done before the flush decision so
+    # newly-arrived deal data flushes immediately the same tick.
+    for symbol, entry in _pending_closes.items():
+        if entry["pers_data"] is not None and not (entry["pers_deal"] and entry["pers_deal"].get("found")):
+            entry["pers_deal"] = _query_deal_pnl(ZMQ_REQ_PERS, symbol)
+        if entry["prop_data"] is not None and not (entry["prop_deal"] and entry["prop_deal"].get("found")):
+            entry["prop_deal"] = _query_deal_pnl(ZMQ_REQ_PROP, symbol)
+
+    # Flush rules:
+    #   - Both legs closed AND both deals found → flush (the ideal path).
+    #   - Both legs closed but deals still missing → wait up to _CLOSE_DEAL_TIMEOUT.
+    #   - Only one leg closed (orphan or still-open partner) → flush at _CLOSE_WAIT_SECONDS
+    #     so the mismatch monitor can take over.
     for symbol in list(_pending_closes.keys()):
         entry   = _pending_closes[symbol]
         elapsed = (now - entry["first_seen"]).total_seconds()
-        both_confirmed = entry["pers_data"] is not None and entry["prop_data"] is not None
+        both_closed = entry["pers_data"] is not None and entry["prop_data"] is not None
 
-        if both_confirmed or elapsed >= _CLOSE_WAIT_SECONDS:
+        def _side_deal_ready(pos_data, deal):
+            if pos_data is None:
+                return True   # no close on this side → no deal to wait for
+            return bool(deal and deal.get("found"))
+
+        both_deals_ready = (
+            _side_deal_ready(entry["pers_data"], entry["pers_deal"])
+            and _side_deal_ready(entry["prop_data"], entry["prop_deal"])
+        )
+
+        ready_to_flush = (both_closed and both_deals_ready) \
+                         or (both_closed and elapsed >= _CLOSE_DEAL_TIMEOUT) \
+                         or (not both_closed and elapsed >= _CLOSE_WAIT_SECONDS)
+
+        if ready_to_flush:
             del _pending_closes[symbol]
-            _send_close_alert(symbol, entry["pers_data"], entry["prop_data"])
+            _send_close_alert(
+                symbol,
+                entry["pers_data"], entry["prop_data"],
+                entry["pers_deal"], entry["prop_deal"],
+            )
 
 
-def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: dict | None) -> None:
+def _send_close_alert(symbol: str,
+                      pers_pos_data: dict | None, prop_pos_data: dict | None,
+                      pers_deal: dict | None = None, prop_deal: dict | None = None) -> None:
     """Orchestrate the Position Closed alert: gather data from Layer 3, then
     hand off to telegram_handlers.msg_position_closed for the text.
+
+    `pers_deal` and `prop_deal` are pre-fetched by _detect_closes' deal-wait
+    loop (so the same poll cycle that flushes also carries the final P&L).
+    Either may be missing if MT5 history didn't surface the deal within
+    `_CLOSE_DEAL_TIMEOUT` — in that case msg_position_closed still falls back
+    to the estimated path with `(est.)`.
     """
     try:
         curr_prop = _query_positions(ZMQ_REQ_PROP)
@@ -365,9 +428,6 @@ def _send_close_alert(symbol: str, pers_pos_data: dict | None, prop_pos_data: di
         curr_pers = _query_positions(ZMQ_REQ_PERS)
     except Exception:
         curr_pers = []
-
-    pers_deal = _query_deal_pnl(ZMQ_REQ_PERS, symbol) if pers_pos_data else None
-    prop_deal = _query_deal_pnl(ZMQ_REQ_PROP, symbol) if prop_pos_data else None
 
     account_mode = "unknown"
     if pers_deal and pers_deal.get("account_mode"):

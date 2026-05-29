@@ -2934,10 +2934,16 @@ def msg_position_closed(*, symbol: str,
     """Position Closed — TP / SL / News / Other close for one symbol.
 
     Triggered when: the equity monitor's _detect_closes() flushes a pending
-    close (both sides confirmed OR 120 s wait window elapsed). Layout
-    mirrors Trade Opened: aligned label rows per side, four close-type emojis
-    (🟢 TP / 🔴 SL / 📰 News / ⚠️ Other). Account mode (demo/real) is
-    inferred from Layer 3's deal reply.
+    close. Flush happens AS SOON AS both sides report deals via MT5
+    history_deals_get — so Trade P&L / Commission match the trade journal
+    byte-for-byte. The `(est.)` fallback path only fires when MT5 history
+    didn't surface a deal within `_CLOSE_DEAL_TIMEOUT` (10 min), which is
+    the broker-side outlier — typically MetaQuotes Demo accounts under
+    their 2-3h indexing lag.
+
+    Layout mirrors Trade Opened: aligned label rows per side, four
+    close-type emojis (🟢 TP / 🔴 SL / 📰 News / ⚠️ Other). Account mode
+    (demo/real) is inferred from Layer 3's deal reply.
     """
     def _reason_label(deal: dict | None) -> str:
         if is_news_close:
