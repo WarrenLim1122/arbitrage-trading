@@ -6,9 +6,10 @@
 **Role:** Single Claude Code agent on the arbitrage-trading repo. Warren operates the live bot via Telegram + the two Windows VPSes; Claude edits code and pushes to `main` (standing auto-push permission).
 
 ## Status — updated 2026-05-29
-- All session-14 work committed + pushed to `main`, HEAD **`033b97e`**. Local tree matches `origin/main` (only pre-existing `docs/*` + untracked `uv.lock` / `Suggest To Delete/logs/` dirty — not this session's concern).
+- All session-14 work committed + pushed to `main`, HEAD **`3d4dbaa`**. Local tree matches `origin/main` (only pre-existing `docs/*` + untracked `uv.lock` / `Suggest To Delete/logs/` dirty — not this session's concern).
 - **Trading Fee is verified correct live** (personal −SGD 6.01, prop −$8.98) after the Layer 3 worker was actually restarted. Formula = `balance − Σ(every deal.profit)`.
-- The `/feedebug` diagnostic that was used to find the bug has been **removed** (`033b97e`) at Warren's request.
+- The `/feedebug` diagnostic that was used to find the bug has been **removed** at Warren's request.
+- **Trading list trimmed to 7 pairs** (`3d4dbaa`): dropped XAGUSD + NAS100/USTEC from every gate (allowed_pairs.json, symbol_map.json, layer1 ALLOWED_PAIRS, news_filter _TICKER_CURRENCIES, worker _DEFAULT_SYMBOL_MAP). Price-format helpers left as a harmless superset. Final: EURUSD GBPUSD USDCHF USDCAD USDJPY NZDUSD XAUUSD. Warren must also remove the XAGUSD + NAS100 charts/alerts on TradingView (not in-repo).
 - Tests: 90 pass.
 - Warren said he will run `/update` on all layers after this and close the session.
 
