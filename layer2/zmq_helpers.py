@@ -63,6 +63,12 @@ def _query_equity(zmq_url: str, ticker: str, want_fee: bool = False) -> dict:
             out["trading_fee_total"] = float(reply.get("trading_fee_total", 0.0))
         if "deposit_total" in reply:
             out["deposit_total"] = float(reply.get("deposit_total", 0.0))
+        # Trading-fee diagnostics (consumed by /feedebug). Pass through verbatim
+        # when present so we can see exactly what the worker summed + which build.
+        for _k in ("fee_build", "all_deal_profit", "gross_out",
+                   "commission_sum", "swap_sum", "trade_deal_count"):
+            if _k in reply:
+                out[_k] = reply[_k]
         return out
     finally:
         sock.close()
