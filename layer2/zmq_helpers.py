@@ -34,7 +34,7 @@ def _query_equity(zmq_url: str, ticker: str) -> dict:
         reply = sock.recv_json()
         if "balance" not in reply:
             raise RuntimeError(f"bad reply from {zmq_url}: {reply}")
-        return {
+        out = {
             "balance":            float(reply.get("balance",            0.0)),
             "equity":             float(reply.get("equity",             0.0)),
             "profit":             float(reply.get("profit",             0.0)),
@@ -50,6 +50,12 @@ def _query_equity(zmq_url: str, ticker: str) -> dict:
             "account_server":     reply.get("account_server"),
             "account_name":       reply.get("account_name"),
         }
+        # Pass commission through only when the worker actually reports it, so
+        # /equity shows the Commission row on updated workers and hides it
+        # (rather than faking 0.00) on a worker still running old code.
+        if "commission_total" in reply:
+            out["commission_total"] = float(reply.get("commission_total", 0.0))
+        return out
     finally:
         sock.close()
 
