@@ -1115,7 +1115,7 @@ def _usd_to_account_rate(account_currency: str) -> float:
     return 1.0
 
 
-def _build_equity_reply(ticker: str) -> dict:
+def _build_equity_reply(ticker: str, want_fee: bool = False) -> dict:
     try:
         with _mt5_lock:
             acct      = mt5.account_info()
@@ -1153,37 +1153,44 @@ def _build_equity_reply(ticker: str) -> dict:
         # other fee), derived by SIMPLE RECONCILIATION rather than trusting MT5's
         # commission line. The commission field alone under-reports: swaps and
         # other fees sit on separate fields, so a commission-only number never
-        # ties out to the real balance discrepancy. Instead, over the account's
-        # full deal history:
+        # ties out to the real balance discrepancy. Over the account's full deal
+        # history:
         #     deposit_total   = Σ profit of balance-type deals (capital in/out)
         #     gross_trade_pnl = Σ profit of trade deals (price-only realized P&L)
         #     balance         = deposit_total + gross_trade_pnl + (all fees)
         # ⇒ trading_fee_total = balance − deposit_total − gross_trade_pnl
-        #   (signed; negative = net cost paid). This captures the full discrepancy
+        #   (signed; negative = net cost paid). Captures the full discrepancy
         #   regardless of which fee fields MT5 used. (Spread is not a line item —
         #   it's baked into each fill price, already inside gross_trade_pnl.)
-        trading_fee_total = 0.0
-        deposit_total     = 0.0
-        try:
-            _from = datetime(2000, 1, 1, tzinfo=timezone.utc)
-            _to   = datetime.now(timezone.utc) + timedelta(seconds=30)
-            with _mt5_lock:
-                _all_deals = mt5.history_deals_get(_from, _to) or []
-            deposit_total = round(
-                sum(d.profit for d in _all_deals if d.type == mt5.DEAL_TYPE_BALANCE), 2)
-            gross_trade_pnl = round(
-                sum(d.profit for d in _all_deals
-                    if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)), 2)
-            trading_fee_total = round(balance - deposit_total - gross_trade_pnl, 2)
-        except Exception as exc:
-            logger.warning("trading-fee reconciliation query failed: %s", exc)
+        #
+        # GATED behind want_fee: the full-history scan is expensive, so it runs
+        # ONLY for the on-demand /equity command — never on the 30 s monitor
+        # poll. When not requested, the keys are omitted and Layer 2 hides the
+        # Trading Fee / Deposit rows (rather than faking 0.00).
+        fee_fields: dict = {}
+        if want_fee:
+            try:
+                _from = datetime(2000, 1, 1, tzinfo=timezone.utc)
+                _to   = datetime.now(timezone.utc) + timedelta(seconds=30)
+                with _mt5_lock:
+                    _all_deals = mt5.history_deals_get(_from, _to) or []
+                deposit_total = round(
+                    sum(d.profit for d in _all_deals if d.type == mt5.DEAL_TYPE_BALANCE), 2)
+                gross_trade_pnl = round(
+                    sum(d.profit for d in _all_deals
+                        if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)), 2)
+                fee_fields = {
+                    "trading_fee_total": round(balance - deposit_total - gross_trade_pnl, 2),
+                    "deposit_total":     deposit_total,
+                }
+            except Exception as exc:
+                logger.warning("trading-fee reconciliation query failed: %s", exc)
 
         return {
             "balance":            balance,
             "equity":             equity,
             "profit":             profit,
-            "trading_fee_total":  trading_fee_total,
-            "deposit_total":      deposit_total,
+            **fee_fields,
             "trade_allowed":      trade_allowed,
             "point":              point,
             "contract_size":      contract_size,
@@ -1201,7 +1208,6 @@ def _build_equity_reply(ticker: str) -> dict:
         return {
             "error": str(exc),
             "balance": 0.0, "equity": 0.0, "profit": 0.0,
-            "trading_fee_total": 0.0, "deposit_total": 0.0,
             "trade_allowed": True,
             "point": 0.0, "contract_size": 0.0,
             "trade_tick_size": 0.0, "trade_tick_value": 0.0, "digits": 5,
@@ -1405,7 +1411,7 @@ def _rep_loop(ctx: zmq.Context) -> None:
         elif query == "account_mode":
             reply = _build_account_mode_reply()
         else:
-            reply = _build_equity_reply(ticker)
+            reply = _build_equity_reply(ticker, want_fee=bool(msg.get("want_fee", False)))
         try:
             sock.send_json(reply)
         except Exception as exc:

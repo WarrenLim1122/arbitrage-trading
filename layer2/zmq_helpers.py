@@ -16,19 +16,24 @@ from layer2.state import (
 logger = logging.getLogger("layer2")
 
 
-def _query_equity(zmq_url: str, ticker: str) -> dict:
+def _query_equity(zmq_url: str, ticker: str, want_fee: bool = False) -> dict:
     """Query Layer 3 worker. Returns dict with keys:
       balance, equity, point, contract_size, trade_tick_size, trade_tick_value, digits
 
     Pass ticker="" for balance/equity-only queries (monitor, baseline lock).
     Pass the canonical ticker (e.g. "EURUSD") for signal handler contract queries.
     trade_tick_size (not point) must be used in lot sizing — they differ on some instruments.
+
+    want_fee=True asks the worker to also run the (expensive) full-history
+    trading-fee reconciliation and return trading_fee_total + deposit_total.
+    Only /equity sets this; the 30 s monitor poll leaves it False so the hot
+    path stays light.
     """
     sock = _zmq_ctx.socket(zmq.REQ)
     sock.setsockopt(zmq.LINGER, 0)
     sock.connect(zmq_url)
     try:
-        sock.send_json({"query": "equity", "ticker": ticker})
+        sock.send_json({"query": "equity", "ticker": ticker, "want_fee": want_fee})
         if not sock.poll(EQUITY_TIMEOUT):
             raise RuntimeError(f"equity query timed out ({zmq_url})")
         reply = sock.recv_json()
