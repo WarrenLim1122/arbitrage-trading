@@ -1191,34 +1191,9 @@ def _build_equity_reply(ticker: str, want_fee: bool = False) -> dict:
                 all_deal_profit = round(sum(d.profit for d in _all_deals), 2)
                 deposit_total   = round(
                     sum(d.profit for d in _all_deals if d.type == mt5.DEAL_TYPE_BALANCE), 2)
-                commission_sum  = round(sum(d.commission for d in _all_deals), 2)
-                swap_sum        = round(sum(d.swap for d in _all_deals), 2)
-                gross_out       = round(
-                    sum(d.profit for d in _all_deals if d.entry == mt5.DEAL_ENTRY_OUT), 2)
-                trade_deal_count = sum(
-                    1 for d in _all_deals
-                    if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL))
-                # WORKER_FEE_BUILD bump this string on every fee-math change so a
-                # stale (not-restarted) worker is obvious in /feedebug.
-                fee_build = "2026-05-29c"
-                logger.info(
-                    "FEE DEBUG [%s] balance=%.2f deposit=%.2f all_profit=%.2f "
-                    "gross_out=%.2f commission=%.2f swap=%.2f trade_deals=%d → fee=%.2f",
-                    fee_build, balance, deposit_total, all_deal_profit, gross_out,
-                    commission_sum, swap_sum, trade_deal_count,
-                    round(balance - all_deal_profit, 2),
-                )
                 fee_fields = {
                     "trading_fee_total": round(balance - all_deal_profit, 2),
                     "deposit_total":     deposit_total,
-                    # Diagnostics (consumed by /feedebug) — let us see exactly what
-                    # the worker summed, and confirm which build is running.
-                    "fee_build":         fee_build,
-                    "all_deal_profit":   all_deal_profit,
-                    "gross_out":         gross_out,
-                    "commission_sum":    commission_sum,
-                    "swap_sum":          swap_sum,
-                    "trade_deal_count":  trade_deal_count,
                 }
             except Exception as exc:
                 logger.warning("trading-fee reconciliation query failed: %s", exc)

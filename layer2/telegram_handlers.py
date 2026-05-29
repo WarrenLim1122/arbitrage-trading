@@ -1485,67 +1485,6 @@ async def _cmd_setdeposit(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
     logger.warning("Telegram: %s %s set to %.2f via /setdeposit", label, key, amount)
 
 
-async def _cmd_feedebug(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Diagnostic — dump the raw trading-fee components each worker computes.
-
-    Lets us see exactly what the worker summed (and which build it's running),
-    so a wrong Trading Fee can be pinned to either stale code (fee_build old /
-    diag fields missing) or unexpected deal data (trade_deal_count, gross_out vs
-    the MT5 History footer). The accounting identity must hold:
-        balance − deposit − gross_out == commission_sum + swap_sum == trading_fee
-    """
-    if not _auth(update):
-        return
-
-    def _block(label: str, d: dict, ccy: str) -> str:
-        if "fee_build" not in d:
-            return (f"<b>{label}</b>\n⚠️ No fee diagnostics in reply — worker is "
-                    f"running OLD code (not restarted with the latest build).")
-        bal   = d.get("balance", 0.0)
-        dep   = d.get("deposit_total", 0.0)
-        allp  = d.get("all_deal_profit", 0.0)
-        gout  = d.get("gross_out", 0.0)
-        comm  = d.get("commission_sum", 0.0)
-        swap  = d.get("swap_sum", 0.0)
-        cnt   = d.get("trade_deal_count", 0)
-        fee   = d.get("trading_fee_total", 0.0)
-        ident = round(comm + swap, 2)              # should equal fee
-        recon = round(bal - dep - gout, 2)         # should also equal fee
-        rows = _msg_aligned_rows([
-            ("Build",          str(d.get("fee_build"))),
-            ("Balance",        _money(bal, ccy)),
-            ("Deposit",        _money(dep, ccy)),
-            ("Σ all profit",   _money(allp, ccy, signed=True)),
-            ("Gross (OUT)",    _money(gout, ccy, signed=True)),
-            ("Σ commission",   _money(comm, ccy, signed=True)),
-            ("Σ swap",         _money(swap, ccy, signed=True)),
-            ("Trade deals",    str(cnt)),
-            ("Fee (bal−Σprofit)", _money(fee, ccy, signed=True)),
-            ("Check comm+swap",   _money(ident, ccy, signed=True)),
-            ("Check bal−dep−gross", _money(recon, ccy, signed=True)),
-        ])
-        return f"<b>{label}</b>\n{rows}"
-
-    try:
-        pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "", True)
-        pers_ccy = pers.get("account_currency", "USD")
-        pers_block = _block("Personal Signal", pers, pers_ccy)
-    except Exception as exc:
-        pers_block = f"<b>Personal Signal</b>\nOffline — {exc}"
-    try:
-        prop = await asyncio.to_thread(_query_equity, ZMQ_REQ_PROP, "", True)
-        prop_block = _block("Prop Hedge", prop, "USD")
-    except Exception as exc:
-        prop_block = f"<b>Prop Hedge</b>\nOffline — {exc}"
-
-    await update.message.reply_text(
-        f"{_cmd_header('🔧 <b>Trading-Fee Diagnostics</b>')}{pers_block}\n\n{prop_block}\n\n"
-        "<i>All three of Fee / comm+swap / bal−dep−gross must match. "
-        "If Build is old or this section is missing, the worker didn't restart.</i>",
-        parse_mode="HTML",
-    )
-
-
 async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
         return ConversationHandler.END
@@ -4158,7 +4097,6 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("equity",         _cmd_equity))
     tg_app.add_handler(CommandHandler("setbaseline",    _cmd_setbaseline))
     tg_app.add_handler(CommandHandler("setdeposit",     _cmd_setdeposit))
-    tg_app.add_handler(CommandHandler("feedebug",       _cmd_feedebug))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
