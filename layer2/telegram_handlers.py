@@ -77,6 +77,68 @@ def _auth(update: Update) -> bool:
     return update.effective_chat is not None and update.effective_chat.id == CHAT_ID
 
 
+def _cmd_header(title: str) -> str:
+    """Top + bottom ━ rule bracketing a command-output title.
+
+    Same header format as the alert templates (msg_* functions / _MSG_SEP) so
+    on-demand command replies (/positions, /status, …) read identically to the
+    bot's pushed alerts. `title` must already include any leading emoji and
+    <b></b> tags. Returns the header with a trailing blank line, ready to
+    prepend body sections.
+    """
+    sep = "━" * 12
+    return f"{sep}\n{title}\n{sep}\n\n"
+
+
+def _cmd_pos_block(label: str, positions, err, currency: str = "USD",
+                   detail: bool = True, show_pnl: bool = True) -> str:
+    """Render one account's open positions as a structured block.
+
+    Shared by /positions, /emergency, /closepair, /stop and /resume so every
+    command renders positions the same way.
+
+    detail=True  → per-position aligned rows (Size/Entry/SL/TP[/P&L]).
+    detail=False → one compact line per position (symbol · dir · lots[ · P&L]).
+    `currency` formats P&L in the account's deposit currency (USD for prop,
+    e.g. SGD for personal) so personal-side money is never mislabelled '$'.
+    show_pnl=False drops the P&L entirely (used by /stop, /resume).
+    """
+    if err:
+        return f"<b>{label}</b>\nOffline — {err}"
+    if not positions:
+        return f"<b>{label}</b>\nNo open positions"
+    parts = []
+    for p in positions:
+        arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
+        pnl   = _msg_signed_money(p["profit"], currency)
+        if detail:
+            rows = [
+                ("Size",  f"{p['volume']:.2f} lots"),
+                ("Entry", _fmt_price(p["symbol"], p["price_open"])),
+                ("SL",    _fmt_price(p["symbol"], p["sl"])),
+                ("TP",    _fmt_price(p["symbol"], p["tp"])),
+            ]
+            if show_pnl:
+                rows.append(("P&amp;L", pnl))
+            parts.append(f"{p['symbol']}  {arrow}\n{_msg_aligned_rows(rows)}")
+        else:
+            tail = f"  {pnl}" if show_pnl else ""
+            parts.append(f"{p['symbol']}  {arrow}  {p['volume']:.2f} lots{tail}")
+    body = "\n\n".join(parts) if detail else "\n".join(parts)
+    return f"<b>{label}</b>\n{body}"
+
+
+async def _pers_currency() -> str:
+    """Best-effort personal-account deposit currency (SGD on the live Fusion
+    account). Falls back to 'USD' if the worker is unreachable. Used to label
+    personal-side P&L in command outputs."""
+    try:
+        pers = await asyncio.to_thread(_query_equity, ZMQ_REQ_PERS, "")
+        return pers.get("account_currency", "USD")
+    except Exception:
+        return "USD"
+
+
 async def _cmd_changepropfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
         return ConversationHandler.END
@@ -190,7 +252,7 @@ async def _wiz_max_dd_daily(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
     elif v_lower == "dynamic":
         _wizard_data["_dd_type_confirming"] = True
         await update.message.reply_text(
-            "⚠️ <b>Dynamic Drawdown Flagged</b>\n\n"
+            f"{_cmd_header('⚠️ <b>Dynamic Drawdown Flagged</b>')}"
             "This system is designed mainly for static drawdown accounts.\n\n"
             "Reply <b>CONFIRM</b> to continue with dynamic,\n"
             "or type <code>static</code> to correct.",
@@ -242,7 +304,7 @@ async def _wiz_dd_type(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     elif v_lower == "no":
         _wizard_data["_raw_spread_confirming"] = True
         await update.message.reply_text(
-            "⚠️ <b>Non-Raw Spread Flagged</b>\n\n"
+            f"{_cmd_header('⚠️ <b>Non-Raw Spread Flagged</b>')}"
             "This system is designed mainly for raw spread accounts.\n\n"
             "Reply <b>CONFIRM</b> to continue,\n"
             "or type <code>yes</code> to correct.",
@@ -371,7 +433,7 @@ async def _wiz_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) 
     target_lvl   = round(prop_b * (1.0 + _wizard_data["profit_target_pct"] / 100.0), 2)
 
     summary = (
-        f"📊 <b>Review Account Setup</b>\n\n"
+        f"{_cmd_header('📊 <b>Review Account Setup</b>')}"
         f"<b>Prop Rules</b>\n"
         f"Profit target: {_wizard_data['profit_target_pct']:.1f}%\n"
         f"Overall DD: {_wizard_data['max_drawdown_overall_pct']:.1f}%\n"
@@ -401,7 +463,7 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if v == "NO":
         _wizard_data.clear()
         await update.message.reply_text(
-            "🟡 <b>Cancelled</b>\n\nNo changes were saved.",
+            f"{_cmd_header('🟡 <b>Cancelled</b>')}No changes were saved.",
             parse_mode="HTML",
         )
         return ConversationHandler.END
@@ -470,7 +532,7 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     _wizard_data.clear()
     await update.message.reply_text(
-        f"✅ <b>Account Setup Saved</b>\n\n"
+        f"{_cmd_header('✅ <b>Account Setup Saved</b>')}"
         f"<b>Baselines</b>\n"
         f"Prop: ${baseline:,.2f}\n"
         f"Personal: ${pers_baseline:,.2f}\n\n"
@@ -492,7 +554,7 @@ async def _wiz_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     _wizard_data.clear()
     await update.message.reply_text(
-        "🟡 <b>Cancelled</b>\n\nNo changes were saved.",
+        f"{_cmd_header('🟡 <b>Cancelled</b>')}No changes were saved.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -618,7 +680,8 @@ async def _p1_input(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         balance, err = await asyncio.to_thread(_lock_baseline_from_live)
         if err:
             await update.message.reply_text(
-                f"⚠️ <b>Baseline Missing</b>\n\nCould not set baseline: <code>{err}</code>\n\n"
+                f"{_cmd_header('⚠️ <b>Baseline Missing</b>')}"
+                f"Could not set baseline: <code>{err}</code>\n\n"
                 f"Run /changepropfirm first, then /phase1 again.",
                 parse_mode="HTML",
             )
@@ -629,7 +692,7 @@ async def _p1_input(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         first_reward, fixed_risk, baseline, target_pct, min_days)
     if verr:
         await update.message.reply_text(
-            f"⚠️ <b>Cannot Configure Phase 1</b>\n\n{verr}",
+            f"{_cmd_header('⚠️ <b>Cannot Configure Phase 1</b>')}{verr}",
             parse_mode="HTML",
         )
         return ConversationHandler.END
@@ -651,7 +714,7 @@ async def _p1_input(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
                 f"— only one losing trade fits per day.")
 
     await update.message.reply_text(
-        f"✅ <b>Phase 1 Ready</b>\n\n"
+        f"{_cmd_header('✅ <b>Phase 1 Ready</b>')}"
         f"First reward : ${first_reward:,.0f}  → Stage 1 = ${stages[0]:,.0f}\n"
         f"Fixed risk   : ${fixed_risk:,.0f}   (every trade)\n"
         f"Stages       : {stage_str}\n"
@@ -689,7 +752,7 @@ async def _p1_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     stage_str = "  →  ".join(f"${s:,.0f}" for s in d["stages"])
     await update.message.reply_text(
-        f"🟢 <b>Phase 1 Active</b>\n\n"
+        f"{_cmd_header('🟢 <b>Phase 1 Active</b>')}"
         f"Personal multiplier: ×{PHASE_MULT[1]:.2f}\n"
         f"Prop baseline: ${d['baseline']:,.2f}\n"
         f"Fixed risk: ${d['fixed_risk']:,.0f} / trade\n"
@@ -719,7 +782,7 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if not phase1_cfg:
         await update.message.reply_text(
-            "⚠️ <b>Phase 1 Config Missing</b>\n\n"
+            f"{_cmd_header('⚠️ <b>Phase 1 Config Missing</b>')}"
             "Run /changepropfirm first to configure Phase 1 settings.",
             parse_mode="HTML",
         )
@@ -732,7 +795,7 @@ async def _cmd_phase2(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     block = _p2_settings_block(phase1_cfg)
     await update.message.reply_text(
-        f"🟢 <b>Phase 2 Setup</b>\n\n"
+        f"{_cmd_header('🟢 <b>Phase 2 Setup</b>')}"
         f"<b>Phase 1 Settings</b>\n<pre>{block}</pre>\n\n"
         f"Use the same details for Phase 2? Reply <b>yes</b> or <b>no</b>.",
         parse_mode="HTML",
@@ -869,7 +932,7 @@ async def _p2_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
     v = update.message.text.strip().upper()
     if v == "NO":
         _p2_wizard_data.clear()
-        await update.message.reply_text("🟡 <b>Cancelled</b>\n\nNo changes were saved.", parse_mode="HTML")
+        await update.message.reply_text(f"{_cmd_header('🟡 <b>Cancelled</b>')}No changes were saved.", parse_mode="HTML")
         return ConversationHandler.END
     if v != "YES":
         await update.message.reply_text("Reply <b>YES</b> to proceed, or <b>NO</b> to cancel.", parse_mode="HTML")
@@ -967,7 +1030,7 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     _p2_wizard_data.clear()
     await update.message.reply_text(
-        f"🟢 <b>Phase 2 Active</b>\n\n"
+        f"{_cmd_header('🟢 <b>Phase 2 Active</b>')}"
         f"<b>Risk Mode</b>\n"
         f"Personal multiplier: ×{PHASE_MULT[2]:.2f}\n\n"
         f"<b>Baselines</b>\n"
@@ -990,7 +1053,7 @@ async def _p2_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     _p2_wizard_data.clear()
     await update.message.reply_text(
-        "🟡 <b>Cancelled</b>\n\nNo changes were saved.",
+        f"{_cmd_header('🟡 <b>Cancelled</b>')}No changes were saved.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -1806,7 +1869,7 @@ async def _cmd_setwindow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
     args = (update.message.text or "").split()[1:]
     if len(args) != 2:
         await update.message.reply_text(
-            "🕒 <b>Trading Window Usage</b>\n\n"
+            f"{_cmd_header('🕒 <b>Trading Window Usage</b>')}"
             "Format: <code>/setwindow HH:MM HH:MM</code>\n"
             "Example: <code>/setwindow 09:00 00:00</code>\n"
             "Note: <code>00:00</code> = midnight",
@@ -1832,7 +1895,7 @@ async def _cmd_setwindow(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
     _setwindow_data["start"] = start_str
     _setwindow_data["end"]   = end_str
     await update.message.reply_text(
-        f"🕒 <b>Update Trading Window</b>\n\n"
+        f"{_cmd_header('🕒 <b>Update Trading Window</b>')}"
         f"<b>New Window</b>\n{start_str}–{end_str} SGT\n\n"
         f"<b>Current Window</b>\n{curr['start']}–{curr['end']} SGT\n\n"
         "<b>Apply When?</b>\n"
@@ -1856,7 +1919,7 @@ async def _setwindow_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
             _trading_window["next_window"]    = None
             _save_trading_window()
         await update.message.reply_text(
-            f"🕒 <b>Trading Window Updated</b>\n\n"
+            f"{_cmd_header('🕒 <b>Trading Window Updated</b>')}"
             f"Applied: Today, effective immediately\n"
             f"Window: <b>{start}–{end} SGT</b>",
             parse_mode="HTML",
@@ -1866,7 +1929,7 @@ async def _setwindow_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
             _trading_window["next_window"] = new_window
             _save_trading_window()
         await update.message.reply_text(
-            f"🕒 <b>Trading Window Scheduled</b>\n\n"
+            f"{_cmd_header('🕒 <b>Trading Window Scheduled</b>')}"
             f"Applied: Tomorrow, next session rollover at 11:00 SGT\n"
             f"Window: <b>{start}–{end} SGT</b>",
             parse_mode="HTML",
@@ -1886,7 +1949,7 @@ async def _setwindow_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
         return ConversationHandler.END
     _setwindow_data.clear()
     await update.message.reply_text(
-        "🟡 <b>Cancelled</b>\n\nNo changes were applied.",
+        f"{_cmd_header('🟡 <b>Cancelled</b>')}No changes were applied.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -1895,14 +1958,17 @@ async def _setwindow_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
 async def _cmd_cancel_noop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
-    await update.message.reply_text("No active wizard to cancel.", parse_mode="HTML")
+    await update.message.reply_text(
+        f"{_cmd_header('🟡 <b>Nothing to Cancel</b>')}No active wizard is running.",
+        parse_mode="HTML",
+    )
 
 
 # ── /changeaccount wizard ─────────────────────────────────────────────────
 
 def _changeaccount_text_personal() -> str:
     return (
-        "🔧 <b>Change Personal Signal MT5 Account</b>\n\n"
+        f"{_cmd_header('🔧 <b>Change Personal Signal MT5 Account</b>')}"
         "1. Open PowerShell on the Personal worker VPS\n\n"
         "2. Stop the current worker with Ctrl+C\n"
         "   If that does not work, close the PowerShell window\n\n"
@@ -1925,7 +1991,7 @@ def _changeaccount_text_personal() -> str:
 
 def _changeaccount_text_prop() -> str:
     return (
-        "🔧 <b>Change Prop Hedge MT5 Account</b>\n\n"
+        f"{_cmd_header('🔧 <b>Change Prop Hedge MT5 Account</b>')}"
         "1. Open PowerShell on the Prop worker VPS\n\n"
         "2. Stop the current worker with Ctrl+C\n"
         "   If that does not work, close the PowerShell window\n\n"
@@ -2144,7 +2210,10 @@ async def _update_layer3_choose(update: Update, _ctx: ContextTypes.DEFAULT_TYPE)
 async def _update_cancel(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if not _auth(update):
         return ConversationHandler.END
-    await update.message.reply_text("Cancelled.", parse_mode="HTML")
+    await update.message.reply_text(
+        f"{_cmd_header('🟡 <b>Cancelled</b>')}Update wizard aborted.",
+        parse_mode="HTML",
+    )
     return ConversationHandler.END
 
 
