@@ -182,14 +182,16 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ### Session 14 — Telegram reporting overhaul + baseline/deposit split — SHIPPED to `main`, awaiting deploy on BOTH layers
 
-Pending: `/update layer2` AND `/update layer3` (×2 — `_worker_core.py` changed, so both Personal and Prop workers must restart). No `pyproject.toml` change → no `uv sync`.
+Pending: `/update layer2` AND `/update layer3` (×2 — `_worker_core.py` changed, so both Personal and Prop workers must restart). No `pyproject.toml` change → no `uv sync`. **Layer 3 trading-fee work was verified live on 2026-05-29 (fee reconciles); HEAD `033b97e` is the version to deploy.**
 
-Commits (chronological): `968f9bb` `f2c02dd` `7495ebd` `783dba1` `95ee73c` `d32f316` `43b1ccd` `d42fde8`.
+Commits (chronological): `968f9bb` `f2c02dd` `7495ebd` `783dba1` `95ee73c` `d32f316` `43b1ccd` `d42fde8` `aeb7757` `40203e5` `033b97e`.
+
+⚠️ **Layer 3 workers do NOT pick up new code on `git pull` alone — the Python process must be Ctrl+C'd and re-run.** This caused the trading-fee value to stay wrong across "redeploys" until the worker was truly restarted. Closing/reopening the noVNC tab does not restart it. Confirm via the `FEE DEBUG`/build markers or simply that the value changed.
 
 What shipped:
 - **All on-demand command outputs restructured** to the `━` header + `Label: value` format (matching the alert templates) via new helpers `_cmd_header()` / `_cmd_pos_block()` / `_pers_currency()` in `telegram_handlers.py`. (Note: `968f9bb` referenced those helpers before they were defined — broken at runtime; `f2c02dd` defined them. Both are on `main`; HEAD is fine.)
 - **Risk baseline vs initial deposit are now separate concepts** (see Hard Constraints): `baseline_equity` = prop-only risk anchor (sizing + kills K1-K5); `prop_initial_deposit`/`pers_initial_deposit` = actual capital for equity-% + fee reporting only. New commands: `/setbaseline <amount>` (prop risk), `/setdeposit <prop|personal> <amount>`. Legacy `pers_baseline_equity` read as fallback for `pers_initial_deposit`.
-- **`/equity` "Trading Fee"** (renamed from "Commission") = reconciliation `balance − MT5 deposit − gross trade P&L`, NOT MT5's commission field (which under-reports swap). Gated behind a `want_fee` flag so the expensive full-history scan runs ONLY for `/equity`, never the 30s monitor poll.
+- **`/equity` "Trading Fee"** (renamed from "Commission") = the all-in cost via the robust identity **`balance − Σ(every deal.profit)`** (Σ profit = deposits + gross realized P&L, since commission/swap live in separate fields). Equivalent to `balance − deposit − gross` and to `Σ(commission)+Σ(swap)`. NOT MT5's commission field alone (under-reports swap). Gated behind a `want_fee` flag so the full-history scan runs ONLY for `/equity`, never the 30s monitor poll. Verified live: personal −SGD 6.01, prop −$8.98 (2026-05-29).
 - **Close-alert wrong-P&L bug FIXED** (`d42fde8`): `_build_deal_pnl_reply` now matches the realized deal by the exact closed-position `ticket` (`position_id`), not symbol+latest-exit — which previously paired one ticket's metadata with another trade's P&L when multiple same-symbol trades closed / MetaQuotes history lagged. If the ticket's deal hasn't surfaced, returns `found=False` → shows `(est.)` rather than a wrong number. Close alert also shows "Trading Fee" (commission+swap) not "Commission".
 - Verified fact (this session): lot sizing + ALL kills are PROP-only; the personal account has no kill conditions and its lots = `prop_lots × phase_multiplier`. The personal baseline was always cosmetic.
 - Tests: 90 pass. Updated stale `test_buffers.py` to the shipped 1pp daily-DD buffer.
