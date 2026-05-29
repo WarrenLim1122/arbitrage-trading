@@ -152,8 +152,6 @@ _DEFAULT_SYMBOL_MAP: dict[str, str] = {
     "USDJPY": "USDJPY",
     "NZDUSD": "NZDUSD",
     "XAUUSD": "XAUUSD",
-    "XAGUSD": "XAGUSD",
-    "NAS100": "NAS100",
 }
 
 _symbol_map: dict[str, str] = {}

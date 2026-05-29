@@ -25,8 +25,6 @@ _TICKER_CURRENCIES: dict[str, frozenset[str]] = {
     "USDJPY": frozenset({"USD", "JPY"}),
     "NZDUSD": frozenset({"NZD", "USD"}),
     "XAUUSD": frozenset({"USD"}),
-    "XAGUSD": frozenset({"USD"}),
-    "NAS100": frozenset({"USD"}),
 }
 
 

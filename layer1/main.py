@@ -56,7 +56,7 @@ _suppression_notified: set[tuple[str, str]] = set()
 
 ALLOWED_PAIRS: frozenset[str] = frozenset({
     "EURUSD", "GBPUSD", "USDCHF", "USDCAD", "USDJPY",
-    "NZDUSD", "XAUUSD", "XAGUSD", "NAS100",
+    "NZDUSD", "XAUUSD",
 })
 
 # ── Telegram suppression alert ────────────────────────────────────────────

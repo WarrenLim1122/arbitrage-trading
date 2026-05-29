@@ -5,6 +5,5 @@
   "USDCAD": ["USD", "CAD"],
   "USDJPY": ["USD", "JPY"],
   "NZDUSD": ["NZD", "USD"],
-  "XAUUSD": ["USD"],
-  "XAGUSD": ["USD"]
+  "XAUUSD": ["USD"]
 }

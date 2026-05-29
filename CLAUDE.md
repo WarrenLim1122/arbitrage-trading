@@ -73,20 +73,22 @@ VPS #1 layers run as systemd services (auto-restart). VPS #2/#3 workers run in P
 
 | Layer | Files | Status |
 |---|---|---|
-| 0 — Signal Engine | `layer0/1D-15m Breakout INDICATOR.pine` | ✅ LIVE — 8 alerts active, `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
+| 0 — Signal Engine | `layer0/1D-15m Breakout INDICATOR.pine` | ✅ LIVE — 7 alerts active (XAGUSD + NAS100 dropped 2026-05-29), `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `news_filter.py`, `ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
 | 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). **Critical phase1-persistence fix shipped session 13** (see Current State). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
 | 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ **Live cutover UNBLOCKED (2026-05-26)** — both VPS desktops streaming live (459166 SGD + 12250900 USD). Connection rewrite shipped (`72b3921` + `75f55f5`): self-launch + hard account guard. Awaiting `git pull` + worker start on both VPSes. See Current State + VPS MT5 Setup. |
 
 ## Covered Instruments
 
-8 pairs — any other ticker rejected at Layer 1:
+7 pairs — any other ticker rejected at Layer 1:
 
 ```
-EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
+EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD
 ```
 
 `pip_type`: `"jpy"` for USDJPY, `"standard"` for all others.
+
+> **Dropped 2026-05-29:** XAGUSD (silver) and NAS100/USTEC are no longer traded. The trading gates — `config/allowed_pairs.json`, `config/symbol_map.json`, `layer1/main.py` `ALLOWED_PAIRS`, `layer1/news_filter.py` `_TICKER_CURRENCIES`, and `layer3/_worker_core.py` `_DEFAULT_SYMBOL_MAP` — are all the 7 above. Price-formatting helpers (`_fmt_price` in `state.py`, the journal metals/index classifiers) intentionally still recognise XAGUSD/indices as a harmless superset so historical records render. The Layer 0 `.pine` and the TradingView chart/alert set are managed on TradingView, not in-repo.
 
 ---
 
@@ -103,7 +105,7 @@ EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD  XAGUSD
 - **MT5 connection (Layer 3):** the `MetaTrader5` lib only gets IPC for a terminal **it self-launches** via `mt5.initialize(path)`. Runtime account switching (creds in `initialize()` or `login()` off the saved default) kills the pipe → `-10005`. **A terminal whose generic install has no broker server endpoints configured will silently never even attempt to connect** — Journal stays empty when you select that account, bottom-right shows `n/a` / `0/0 Kb`, prices appear "frozen" at stale values. This was the multi-week 2026-05 blocker (NOT funding/feed-side, as wrongly diagnosed earlier — both accounts streamed on mobile fine). Fix = follow one of the two workflows in **VPS MT5 Setup** below. Code enforces hard guard `account_info().login == MT5_LOGIN` (fatal exit on mismatch, never trades on the wrong account).
 - ZeroMQ ports 5555 (PUSH/PULL) and 5556 (REQ/REP) must be open between VPS #1 and VPS #2/#3.
 - TradingView Premium required for webhook delivery.
-- One TradingView chart per instrument — 8 charts, 8 pairs.
+- One TradingView chart per instrument — 7 charts, 7 pairs.
 - Demo-first mandatory: ≥7 trading days before live capital.
 
 ---

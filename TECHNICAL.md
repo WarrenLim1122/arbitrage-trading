@@ -78,7 +78,7 @@ Example BUY (entry=1.08500, sl=1.08300, tp=1.08554):
 
 ## Layer 0 — Signal Engine (`layer0/1D-15m Breakout INDICATOR.pine`, Pine Script v6)
 
-**Timeframe**: 15m chart. One chart per instrument. 8 charts total.
+**Timeframe**: 15m chart. One chart per instrument. 7 charts total (XAGUSD + NAS100 dropped 2026-05-29).
 
 **HTF (1-Day) — Sticky Trend:**
 - `request.security("D", ...)`, pivot N=2 bars each side.
@@ -123,7 +123,7 @@ Mirrors `strategy.position_size == 0` logic.
 
 `layer0/1D-15m Breakout STRATEGY.pine` — same logic with `strategy()` for Strategy Tester.
 
-**TradingView alert settings (all 8 alerts):**
+**TradingView alert settings (all 7 alerts):**
 - Condition: Any alert() function call
 - Expiration: Open-ended
 - Timeframe: 15m
