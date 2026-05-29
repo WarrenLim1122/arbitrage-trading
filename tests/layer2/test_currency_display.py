@@ -1,12 +1,14 @@
 """Issue 7 — per-account currency display (SGD personal / USD prop).
 
-Lot-sizing and risk MATH stay USD; only the *display* of personal-account figures
-becomes SGD, with personal Risk/Reward shown as USD plus an SGD equivalent.
+Lot-sizing and risk MATH stay USD; only the *display* of personal-account
+figures becomes SGD. Personal Risk/Reward render in the account currency only
+(no parenthetical USD equivalent) — that decision was made 2026-05-29 when
+Warren asked for a single-currency layout.
 """
 from layer2.state import _money, _ccy_prefix
 from layer2.telegram_handlers import (
     _msg_split_pers_amount as _split_pers_amount,
-    _msg_pers_money_dual as _pers_money_dual,
+    _msg_pers_money_acct as _pers_money_acct,
 )
 
 
@@ -56,18 +58,18 @@ def test_split_rate_unknown_passes_through():
     assert usd == 500.0 and acct == 500.0
 
 
-# ── logic_core._pers_money_dual ───────────────────────────────────────────────
+# ── logic_core._pers_money_acct ───────────────────────────────────────────────
 
-def test_dual_usd_account_is_plain_usd():
-    # USD personal account → no SGD parenthetical, behaviour unchanged
-    assert _pers_money_dual("EURUSD", 670.0, "USD", 1.0) == "$670.00"
-
-
-def test_dual_sgd_account_shows_both():
-    out = _pers_money_dual("EURUSD", 670.0, "SGD", 1.35)
-    assert out == "$670.00 (≈ SGD 904.50)"
+def test_acct_usd_account_is_plain_usd():
+    # USD personal account → just "$X.XX"
+    assert _pers_money_acct("EURUSD", 670.0, "USD", 1.0) == "$670.00"
 
 
-def test_dual_sgd_usd_base_pair():
-    out = _pers_money_dual("USDJPY", 904.5, "SGD", 1.35)
-    assert out == "$670.00 (≈ SGD 904.50)"
+def test_acct_sgd_usd_quote_pair():
+    # EURUSD: geometry value is USD; converted to SGD for display
+    assert _pers_money_acct("EURUSD", 670.0, "SGD", 1.35) == "SGD 904.50"
+
+
+def test_acct_sgd_usd_base_pair():
+    # USDJPY: geometry value already in SGD; displayed as-is
+    assert _pers_money_acct("USDJPY", 904.5, "SGD", 1.35) == "SGD 904.50"

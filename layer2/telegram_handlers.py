@@ -2284,18 +2284,20 @@ def _msg_positions_lines(positions: list[dict]) -> str:
 
 
 def _msg_aligned_rows(rows: list[tuple[str, str]], pad: int = 2) -> str:
-    """Render a stack of (label, value) rows with the label column left-padded.
+    """Render a stack of (label, value) rows as 'Label: value'.
 
-    Width = max(label length) + pad spaces. Used for the Trade Opened /
-    Position Closed metric blocks and for diagnostic 'key = value' lists.
+    Telegram uses a proportional font, so space-padding labels for column
+    alignment never visually aligns the values — it just looks messy. A
+    colon gives a consistent anchor instead.
+
     Drop any (label, value) where value is falsy (None/'') so callers can
-    conditionally include rows.
+    conditionally include rows. `pad` is accepted for backward compat and
+    ignored.
     """
     rows = [(label, value) for label, value in rows if value not in (None, "")]
     if not rows:
         return ""
-    width = max(len(label) for label, _ in rows) + pad
-    return "\n".join(f"{label:<{width}}{value}" for label, value in rows)
+    return "\n".join(f"{label}: {value}" for label, value in rows)
 
 
 def _msg_side_label(side: str) -> str:
@@ -2303,8 +2305,12 @@ def _msg_side_label(side: str) -> str:
     return "Prop Hedge" if side == "prop" else "Personal Signal"
 
 
-def _msg_order_check_leg_line(label: str, chk: dict) -> str:
+def _msg_order_check_leg_line(label: str, chk: dict, currency: str = "USD") -> str:
     """Per-leg block for the pre-flight 'Signal Not Placed' alert (Issue 2).
+
+    `currency` is the MT5 deposit currency of the worker that ran order_check
+    (USD for prop, account currency for personal — e.g. SGD). Margin and free
+    margin are reported by MT5 in that currency.
 
     Returns:
         <b>label</b>
@@ -2324,9 +2330,9 @@ def _msg_order_check_leg_line(label: str, chk: dict) -> str:
     if rc == 10019 or (isinstance(mf, (int, float)) and mf < 0):
         detail_lines = []
         if isinstance(mneed, (int, float)):
-            detail_lines.append(f"Needs ${mneed:,.2f} margin")
+            detail_lines.append(f"Needs {_money(mneed, currency)} margin")
         if isinstance(mf, (int, float)):
-            detail_lines.append(f"Free: {_msg_signed_money(mf)}")
+            detail_lines.append(f"Free: {_msg_signed_money(mf, currency)}")
         if not detail_lines:
             detail_lines.append("Not enough money")
         return f"<b>{label}</b>\nREJECTED\n\n" + "\n".join(detail_lines)
@@ -2348,13 +2354,19 @@ def _msg_split_pers_amount(ticker: str, pers_value: float, usd_to_acct_rate: flo
     return round(pers_value / rate, 2), round(pers_value, 2)
 
 
-def _msg_pers_money_dual(ticker: str, pers_value: float, currency: str, rate: float,
+def _msg_pers_money_acct(ticker: str, pers_value: float, currency: str, rate: float,
                          signed: bool = False) -> str:
-    """Personal money as USD with parenthetical account-currency equivalent."""
+    """Personal money in the account currency MT5 reports for the personal leg.
+
+    Geometry hands us `pers_value` either in USD (for xxxUSD pairs whose P&L
+    naturally lands in USD) or already in the account currency (for non-xxxUSD
+    pairs sized via tick_value, which MT5 returns in account currency).
+    `_msg_split_pers_amount` recovers (usd, acct); we format only `acct`.
+    """
     if (currency or "USD").upper() == "USD":
         return _money(pers_value, "USD", signed)
-    usd, acct = _msg_split_pers_amount(ticker, pers_value, rate)
-    return f"{_money(usd, 'USD', signed)} (≈ {_money(acct, currency, signed)})"
+    _, acct = _msg_split_pers_amount(ticker, pers_value, rate)
+    return _money(acct, currency, signed)
 
 
 # ── Worker / system state ─────────────────────────────────────────────────
@@ -2808,8 +2820,9 @@ def msg_trade_opened(*, ticker: str, phase: int,
     """Trade Opened — both legs filled successfully.
 
     Triggered when: after _verify_and_notify polls Layer 3 and both prop and
-    personal report status=FILLED. Includes phase context (Phase 1 stage or
-    Phase 2 baseline) and dual-currency display for the personal account.
+    personal report status=FILLED. Personal Risk/Reward render in the MT5
+    account currency (SGD for the live personal account); prop in USD. Prices
+    (Entry/SL/TP) are raw forex quotes — no currency symbol.
     """
     pers_levels = _msg_aligned_rows([
         ("Size",  f"{pers_lots:.2f} lots"),
@@ -2818,11 +2831,11 @@ def msg_trade_opened(*, ticker: str, phase: int,
         ("TP",    pers_tp_fmt),
     ])
     pers_risk_block = _msg_aligned_rows([
-        ("Risk",   _msg_pers_money_dual(ticker, pers_dollar_risk, pers_currency, pers_usd_to_acct_rate)),
-        ("Reward", _msg_pers_money_dual(ticker, pers_reward,      pers_currency, pers_usd_to_acct_rate)),
+        ("Risk",   _msg_pers_money_acct(ticker, pers_dollar_risk, pers_currency, pers_usd_to_acct_rate)),
+        ("Reward", _msg_pers_money_acct(ticker, pers_reward,      pers_currency, pers_usd_to_acct_rate)),
         ("RR",     f"{pers_rr:.2f}"),
     ])
-    pers_ticket_row = _msg_aligned_rows([("Ticket", f"{pers_ticket}")])
+    pers_ticket_row = _msg_aligned_rows([("Ticket", f"#{pers_ticket}")])
 
     prop_levels = _msg_aligned_rows([
         ("Size",  f"{prop_lots:.2f} lots"),
@@ -2835,7 +2848,7 @@ def msg_trade_opened(*, ticker: str, phase: int,
         ("Reward", f"${prop_reward:,.2f}"),
         ("RR",     f"{prop_rr:.2f}"),
     ])
-    prop_ticket_row = _msg_aligned_rows([("Ticket", f"{prop_ticket}")])
+    prop_ticket_row = _msg_aligned_rows([("Ticket", f"#{prop_ticket}")])
 
     return (
         f"🟢 <b>{ticker} — Trade Opened</b>\n"
@@ -2931,7 +2944,7 @@ def msg_position_closed(*, symbol: str,
             ("Commission", comm_str),  # empty rows dropped by helper
         ])
         ticket_row = (
-            _msg_aligned_rows([("Ticket", str(pos_data['ticket']))])
+            _msg_aligned_rows([("Ticket", f"#{pos_data['ticket']}")])
             if pos_data.get("ticket") else ""
         )
         block = (
@@ -3026,11 +3039,14 @@ def msg_signal_not_placed_terminal(*, ticker: str,
 def msg_signal_not_placed_preflight(*, ticker: str,
                                     pers_chk: dict, prop_chk: dict,
                                     pers_arrow: str,
-                                    entry_fmt: str, pers_sl_fmt: str, pers_tp_fmt: str) -> str:
+                                    entry_fmt: str, pers_sl_fmt: str, pers_tp_fmt: str,
+                                    pers_currency: str = "USD") -> str:
     """Signal Not Placed — pre-flight order_check rejected one leg.
 
     Triggered when: order_check on at least one leg returned verdict=reject
     BEFORE either order was sent (Issue 2 guard). Prevents orphaned trades.
+    `pers_currency` is the personal MT5 account currency so margin/free are
+    labeled correctly (SGD for personal, USD for prop).
     """
     signal_rows = _msg_aligned_rows([
         ("Entry", entry_fmt),
@@ -3043,8 +3059,8 @@ def msg_signal_not_placed_preflight(*, ticker: str,
         f"One leg cannot fill,\n"
         f"so no order was placed.\n\n"
         f"<i>(prevents orphan trades\nand wasted commissions)</i>\n\n"
-        f"{_msg_order_check_leg_line('Personal Signal', pers_chk)}\n\n"
-        f"{_msg_order_check_leg_line('Prop Hedge', prop_chk)}\n\n"
+        f"{_msg_order_check_leg_line('Personal Signal', pers_chk, pers_currency)}\n\n"
+        f"{_msg_order_check_leg_line('Prop Hedge', prop_chk, 'USD')}\n\n"
         f"<b>Signal</b>\n"
         f"{pers_arrow}\n\n"
         f"{signal_rows}"
@@ -3099,9 +3115,9 @@ def msg_order_not_filled(*, ticker: str, resting: bool,
     if not tickets:
         ticket_block = ""
     elif len(tickets) == 1:
-        ticket_block = f"\n\n<b>Ticket</b>\n{tickets[0][1]}"
+        ticket_block = f"\n\n<b>Ticket</b>\n#{tickets[0][1]}"
     else:
-        ticket_lines = "\n".join(f"{side}: {num}" for side, num in tickets)
+        ticket_lines = "\n".join(f"{side}: #{num}" for side, num in tickets)
         ticket_block = f"\n\n<b>Tickets</b>\n{ticket_lines}"
 
     header = (f"⏳ <b>Limit Order Resting — {ticker}</b>" if resting
@@ -3334,9 +3350,9 @@ def msg_invalid_contract_data(ticker: str, tick_size: float, tick_value: float) 
     ≤ 0 for the signal's ticker. Means MT5 has no live contract for it.
     """
     rows = _msg_aligned_rows([
-        ("tick_size",  f"= {tick_size}"),
-        ("tick_value", f"= {tick_value}"),
-    ], pad=1)
+        ("tick_size",  f"{tick_size}"),
+        ("tick_value", f"{tick_value}"),
+    ])
     return (
         f"⚠️ <b>Invalid Contract Data</b>\n"
         f"{_MSG_SEP}\n\n"
@@ -3354,9 +3370,9 @@ def msg_tp_distance_zero(ticker: str, tp: float, entry: float) -> str:
     divide by zero; signal is rejected with 422.
     """
     rows = _msg_aligned_rows([
-        ("tp",    f"= {tp}"),
-        ("entry", f"= {entry}"),
-    ], pad=1)
+        ("tp",    f"{tp}"),
+        ("entry", f"{entry}"),
+    ])
     return (
         f"⚠️ <b>TP Distance Zero — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
@@ -3491,7 +3507,7 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
          pers_arrow="↑ LONG", pers_lots=0.10,
          pers_entry_fmt="1.08234", pers_sl_fmt="1.07900", pers_tp_fmt="1.08600",
          pers_dollar_risk=33.40, pers_reward=36.60, pers_rr=1.10,
-         pers_ticket=987654321, pers_currency="USD", pers_usd_to_acct_rate=1.0,
+         pers_ticket=987654321, pers_currency="SGD", pers_usd_to_acct_rate=1.34,
          prop_arrow="↓ SHORT", prop_lots=0.50,
          prop_entry_fmt="1.08234", prop_sl_fmt="1.08600", prop_tp_fmt="1.07900",
          prop_dollar_risk=167.00, prop_reward=183.00, prop_rr=1.10,
@@ -3505,7 +3521,7 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
          pers_deal=_demo_close_deal_found(),
          prop_deal={**_demo_close_deal_found(), "net_pnl": 10.0, "close_reason": "TP", "close_price": 1.07900},
          curr_pers=[], curr_prop=[],
-         pers_currency="USD", pers_eq_str="$5,012.45", prop_eq_str="$99,987.55",
+         pers_currency="SGD", pers_eq_str="SGD 6,716.68", prop_eq_str="$99,987.55",
          is_news_close=False, account_mode="real",
      )),
     ("msg_signal_not_placed_terminal",
@@ -3526,6 +3542,7 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
          prop_chk={"verdict": "ok"},
          pers_arrow="↑ LONG",
          entry_fmt="1.08234", pers_sl_fmt="1.07900", pers_tp_fmt="1.08600",
+         pers_currency="SGD",
      )),
     ("msg_order_not_filled",
      "At least one leg didn't reach FILLED in the poll horizon (or LIMIT resting)",

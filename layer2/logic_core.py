@@ -1509,6 +1509,7 @@ async def receive_signal(request: Request):
             entry_fmt=_fmt_price(payload.ticker, payload.entry),
             pers_sl_fmt=_fmt_price(payload.ticker, pers_sl),
             pers_tp_fmt=_fmt_price(payload.ticker, pers_tp),
+            pers_currency=pers_info.get("account_currency", "USD"),
         ))
         return JSONResponse({
             "status": "rejected",
