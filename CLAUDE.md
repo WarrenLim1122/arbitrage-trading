@@ -21,19 +21,16 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 Surface this the first time Warren returns:
 
-**Read `handoff/SESSION-HANDOFF.md`** — it contains the queued tasks for the next session:
+**Read `handoff/SESSION-HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy session-14 work to both layers** (`/update layer2` + `/update layer3` ×2 — worker changed). See `## Current State` below for what shipped.
 
-1. **Apply 20-37 layout fixes to templates 1-19** — the three fixes (`:`-separated rows, `#` ticket prefix, single-currency personal display) shipped 2026-05-29 only touch messages 20-37. Messages 1-19 still use the older format from `8940848`.
-2. **Deep discussion on overall message structure** — Warren wants a one-paragraph message structure spec (information hierarchy, when to use aligned rows vs prose, currency labeling rules, ticket placement convention) to land in CLAUDE.md/TECHNICAL.md so future redesigns don't redrive these decisions.
-3. **Refresh CLAUDE.md** — once the structure spec is settled, fold it in.
-4. **Folder reorganization** (still queued, lower priority) — deletion table in the prior handoff at git `accd561`.
+Lower-priority queued (not yet done):
+1. **Folder reorganization** — deletion table in the prior handoff at git `accd561`.
+2. **Message-structure spec** (optional) — the ━ header + `Label: value` format is now the de-facto standard across ALL alerts AND command outputs; a one-paragraph written spec in TECHNICAL.md would formalize it but isn't blocking.
 
 **Already shipped (don't re-do):**
-- All Telegram message text lives in `layer2/telegram_handlers.py` as 37 named `msg_*()` functions, each with a docstring describing its trigger. `logic_core.py` is pure orchestration.
-- `/messages` (page 1) and `/messages2` (page 2) Telegram commands print the catalog for review.
-- All 37 templates use the header + ━ separator + labeled-block format. Audit confirmed zero orphans.
-- **Messages 20-37 (b7da59a + c212ce5, 2026-05-29):** every label/value row renders `Label: value` instead of space-padded alignment; tickets render `#<id>` and now sit directly under the side header (Warren's mental model: ticket IS the trade's name); personal account money (Risk/Reward/P&L/Commission/Margin/Equity) renders in whatever currency MT5 reports (auto-detected — SGD on the live account, would be GBP/EUR/etc. transparently); prop stays `$`; forex prices (Entry/SL/TP) stay raw quotes with no currency symbol. `_msg_pers_money_dual` → `_msg_pers_money_acct` (dual-display dropped).
-- The previous "Telegram close-alert P&L breakdown" pending item is **done** for msg 21 — `msg_position_closed` shows Reason / Trade P&L / Commission as separate currency-correct rows.
+- All Telegram message text lives in `layer2/telegram_handlers.py` as named `msg_*()` functions; `logic_core.py` is pure orchestration. `/messages` + `/messages2` print the catalog.
+- **All alert templates AND all on-demand command outputs** use the `━`×12 header + `Label: value` format. Commands route through `_cmd_header()` + `_cmd_pos_block()`; alerts through `_MSG_SEP`. (Message-formatting work from sessions 12-14 is complete — the old "apply 20-37 fixes to 1-19" task is obsolete; the full restructure superseded it.)
+- Money is currency-correct everywhere: prop `$` (USD), personal in MT5-reported account currency (SGD) via `_msg_signed_money(value, currency)`; forex prices carry no symbol.
 
 ---
 
@@ -182,6 +179,22 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 ---
 
 ## Current State (as of 2026-05-29)
+
+### Session 14 — Telegram reporting overhaul + baseline/deposit split — SHIPPED to `main`, awaiting deploy on BOTH layers
+
+Pending: `/update layer2` AND `/update layer3` (×2 — `_worker_core.py` changed, so both Personal and Prop workers must restart). No `pyproject.toml` change → no `uv sync`.
+
+Commits (chronological): `968f9bb` `f2c02dd` `7495ebd` `783dba1` `95ee73c` `d32f316` `43b1ccd` `d42fde8`.
+
+What shipped:
+- **All on-demand command outputs restructured** to the `━` header + `Label: value` format (matching the alert templates) via new helpers `_cmd_header()` / `_cmd_pos_block()` / `_pers_currency()` in `telegram_handlers.py`. (Note: `968f9bb` referenced those helpers before they were defined — broken at runtime; `f2c02dd` defined them. Both are on `main`; HEAD is fine.)
+- **Risk baseline vs initial deposit are now separate concepts** (see Hard Constraints): `baseline_equity` = prop-only risk anchor (sizing + kills K1-K5); `prop_initial_deposit`/`pers_initial_deposit` = actual capital for equity-% + fee reporting only. New commands: `/setbaseline <amount>` (prop risk), `/setdeposit <prop|personal> <amount>`. Legacy `pers_baseline_equity` read as fallback for `pers_initial_deposit`.
+- **`/equity` "Trading Fee"** (renamed from "Commission") = reconciliation `balance − MT5 deposit − gross trade P&L`, NOT MT5's commission field (which under-reports swap). Gated behind a `want_fee` flag so the expensive full-history scan runs ONLY for `/equity`, never the 30s monitor poll.
+- **Close-alert wrong-P&L bug FIXED** (`d42fde8`): `_build_deal_pnl_reply` now matches the realized deal by the exact closed-position `ticket` (`position_id`), not symbol+latest-exit — which previously paired one ticket's metadata with another trade's P&L when multiple same-symbol trades closed / MetaQuotes history lagged. If the ticket's deal hasn't surfaced, returns `found=False` → shows `(est.)` rather than a wrong number. Close alert also shows "Trading Fee" (commission+swap) not "Commission".
+- Verified fact (this session): lot sizing + ALL kills are PROP-only; the personal account has no kill conditions and its lots = `prop_lots × phase_multiplier`. The personal baseline was always cosmetic.
+- Tests: 90 pass. Updated stale `test_buffers.py` to the shipped 1pp daily-DD buffer.
+
+> A rewind mid-session reverted working files behind git HEAD; recovered via `git restore`. If files ever look older than `git log`, that's the cause — `git restore <files>` to resync to `origin/main`.
 
 ### Live trading state — UNBLOCKED, awaiting VPS deploy
 
