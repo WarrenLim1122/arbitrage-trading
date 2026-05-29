@@ -2267,18 +2267,20 @@ def _msg_signed_money(value: float, currency: str = "USD") -> str:
     return f"{sign}{currency} {mag:,.2f}"
 
 
-def _msg_positions_lines(positions: list[dict]) -> str:
+def _msg_positions_lines(positions: list[dict], currency: str = "USD") -> str:
     """Format a list of position dicts as plain lines (one per position).
 
     No account prefix, no leading indent, no 'lots'/'P&L:' filler. Used by
-    msg_news_pre_close inside per-account sub-blocks.
+    msg_news_pre_close inside per-account sub-blocks. `currency` is the
+    account currency of the side these positions belong to — MT5 returns
+    position.profit in that currency.
     """
     if not positions:
         return "No open positions"
     out = []
     for p in positions:
         arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
-        pnl   = _msg_signed_money(p["profit"], "USD")
+        pnl   = _msg_signed_money(p["profit"], currency)
         out.append(f"{p['symbol']} {arrow} {p['volume']:.2f} {pnl}")
     return "\n".join(out)
 
@@ -2518,6 +2520,10 @@ def msg_mismatch_resolved(*, ticker: str, mismatch_type: str,
         else:
             status = "⚠️ Action required — check MT5 immediately."
 
+    final_state = _msg_aligned_rows([
+        ("Personal Signal", pers_state),
+        ("Prop Hedge",      prop_state),
+    ])
     return (
         f"⚠️ <b>Position Mismatch — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
@@ -2525,8 +2531,7 @@ def msg_mismatch_resolved(*, ticker: str, mismatch_type: str,
         f"<b>Action</b>\n"
         f"{action_line}\n\n"
         f"<b>Final State</b>\n"
-        f"Personal Signal: {pers_state}\n"
-        f"Prop Hedge: {prop_state}\n\n"
+        f"{final_state}\n\n"
         f"{status}"
     )
 
@@ -2553,13 +2558,18 @@ def msg_news_window_cleared(expired_pairs: list[tuple[str, str]]) -> str:
 def msg_news_pre_close(*, currency: str, event_title: str,
                        event_time_sgt: str, mins_to_event: int,
                        affected_pers: list[dict], affected_prop: list[dict],
-                       suppression_end_sgt: str) -> str:
+                       suppression_end_sgt: str,
+                       pers_currency: str = "USD") -> str:
     """High-impact news event entered the ban zone — positions are closing.
 
     Triggered when: a ForexFactory high-impact event for one of the tracked
     currencies is within ±NEWS_TRADING_BAN_WINDOW minutes of now. Fires once
     per (ticker, event_time) pair; affected positions are force-closed and
     new signals on those pairs are blocked until ban_window_min after the event.
+
+    `currency` is the news event's currency (USD/GBP/EUR/etc.). `pers_currency`
+    is the personal MT5 account currency used to format personal-side P&L
+    (SGD on the live Fusion account). Prop stays USD.
     """
     if mins_to_event >= 0:
         time_detail = f"{event_time_sgt} (in {mins_to_event} min)"
@@ -2573,9 +2583,9 @@ def msg_news_pre_close(*, currency: str, event_title: str,
         f"{time_detail}\n\n"
         f"<b>Closing Positions</b>\n\n"
         f"<b>Personal Signal</b>\n"
-        f"{_msg_positions_lines(affected_pers)}\n\n"
+        f"{_msg_positions_lines(affected_pers, pers_currency)}\n\n"
         f"<b>Prop Hedge</b>\n"
-        f"{_msg_positions_lines(affected_prop)}\n\n"
+        f"{_msg_positions_lines(affected_prop, 'USD')}\n\n"
         f"<b>Signals blocked until</b>\n"
         f"{suppression_end_sgt}"
     )
@@ -2591,11 +2601,14 @@ def msg_phase1_stage_reached(prop_equity: float, stage_value: float,
     Positions are force-closed; system auto-resumes next session aiming
     at the next stage. NOT permanent.
     """
+    rows = _msg_aligned_rows([
+        ("Equity", f"${prop_equity:,.2f}"),
+        ("Stage",  f"${stage_value:,.2f}"),
+    ])
     return (
         f"🎯 <b>Phase 1 — Stage Reached</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Prop equity</b>\n"
-        f"${prop_equity:,.2f} ≥ ${stage_value:,.2f}\n\n"
+        f"{rows}\n\n"
         f"Profitable day locked.\n"
         f"Positions force-closed.\n\n"
         f"<b>Auto-resume</b>\n"
@@ -2611,12 +2624,15 @@ def msg_kill1_phase1(prop_equity: float, daily_floor: float, day_start: float,
     Soft kill: system halts for the day and auto-resumes next session.
     Suppressed by same-day /resume override.
     """
+    rows = _msg_aligned_rows([
+        ("Equity",      f"${prop_equity:,.2f}"),
+        ("Daily floor", f"${daily_floor:,.2f}"),
+        ("Day-start",   f"${day_start:,.2f}"),
+    ])
     return (
         f"🔴 <b>KILL 1 — Daily Loss Limit</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
-        f"<b>Daily floor</b>\n${daily_floor:,.2f}\n\n"
-        f"<b>Day-start</b>\n${day_start:,.2f}\n\n"
+        f"{rows}\n\n"
         f"All positions closed.\n"
         f"Trading halted for today.\n\n"
         f"<b>Auto-resume</b>\n{next_resume_text}\n\n"
@@ -2630,11 +2646,14 @@ def msg_kill2_phase1(prop_equity: float, overall_floor: float) -> str:
     Triggered when: in Phase 1, prop equity ≤ baseline - (baseline × dd_overall_pct).
     Permanent halt: requires /changepropfirm → /phase1 → /resume to restart.
     """
+    rows = _msg_aligned_rows([
+        ("Equity", f"${prop_equity:,.2f}"),
+        ("Floor",  f"${overall_floor:,.2f}"),
+    ])
     return (
         f"🔴 <b>KILL 2 — Max Drawdown Hit</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
-        f"<b>Floor</b>\n${overall_floor:,.2f}\n\n"
+        f"{rows}\n\n"
         f"All positions closed.\n"
         f"Permanent halt.\n\n"
         f"<b>Next</b>\n"
@@ -2650,11 +2669,14 @@ def msg_kill4_phase1_passed(prop_equity: float) -> str:
     Triggered when: in Phase 1, prop equity ≥ funded-line stage value.
     Reported via the phase1_strategy decision path.
     """
+    rows = _msg_aligned_rows([
+        ("Equity", f"${prop_equity:,.2f}"),
+        ("Target", "≥ funded line"),
+    ])
     return (
         f"🏆 <b>Phase 1 PASSED</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Prop equity</b>\n"
-        f"${prop_equity:,.2f} ≥ funded line\n\n"
+        f"{rows}\n\n"
         f"All positions closed.\n"
         f"System halted.\n\n"
         f"/phase2\n"
@@ -2669,13 +2691,16 @@ def msg_kill2_phase2plus(prop_equity: float, overall_floor: float,
     Triggered when: in Phase 2 or later, prop equity ≤ baseline -
     (baseline × dd_overall_pct). System permanently halted.
     """
+    rows = _msg_aligned_rows([
+        ("Equity",     f"${prop_equity:,.2f}"),
+        ("Floor",      f"${overall_floor:,.2f}"),
+        ("Overall DD", f"{dd_overall_pct:.1f}%"),
+        ("Baseline",   f"${baseline:,.2f}"),
+    ])
     return (
         f"🔴 <b>KILL 2 — Max Drawdown Hit</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
-        f"<b>Floor</b>\n${overall_floor:,.2f}\n\n"
-        f"<b>Overall DD</b>\n{dd_overall_pct:.1f}%\n\n"
-        f"<b>Baseline</b>\n${baseline:,.2f}\n\n"
+        f"{rows}\n\n"
         f"<b>Positions</b>\n\n"
         f"{pos_str}\n\n"
         f"All positions closed.\n"
@@ -2696,18 +2721,21 @@ def msg_kill1_phase2plus(prop_equity: float, daily_floor: float, day_start: floa
     where daily_loss_amt = day_start × dd_daily_pct/100. Soft kill — system
     auto-resumes next session. Suppressed by same-day /resume override.
     """
+    rows = _msg_aligned_rows([
+        ("Equity",            f"${prop_equity:,.2f}"),
+        ("Daily floor",       f"${daily_floor:,.2f}"),
+        ("Day-start",         f"${day_start:,.2f}"),
+        ("Max loss",          f"${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)"),
+        ("Overall DD floor",  f"${overall_floor:,.2f}"),
+    ])
     return (
         f"🔴 <b>KILL 1 — Daily Loss Limit</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
-        f"<b>Daily floor</b>\n${daily_floor:,.2f}\n\n"
-        f"<b>Day-start</b>\n${day_start:,.2f}\n\n"
-        f"<b>Max loss</b>\n${daily_loss_amt:,.2f} ({dd_daily_pct:.1f}%)\n\n"
+        f"{rows}\n\n"
         f"<b>Positions</b>\n\n"
         f"{pos_str}\n\n"
         f"All positions closed.\n"
         f"Trading halted for today.\n\n"
-        f"<b>Overall DD floor</b>\n${overall_floor:,.2f}\n\n"
         f"<b>Auto-resume</b>\n{next_resume_text}\n\n"
         f"/resume to restart\n"
         f"/changepropfirm to switch challenge"
@@ -2723,13 +2751,16 @@ def msg_kill3_daily_profit_cap(prop_equity: float, daily_cap_level: float,
     Soft kill — system auto-resumes next session. Suppressed by same-day
     /resume override.
     """
+    rows = _msg_aligned_rows([
+        ("Equity",    f"${prop_equity:,.2f}"),
+        ("Cap level", f"${daily_cap_level:,.2f}"),
+        ("Day-start", f"${day_start:,.2f}"),
+        ("Cap",       f"+${layer_cap_amt:,.2f}"),
+    ])
     return (
         f"🟡 <b>KILL 3 — Daily Profit Cap</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
-        f"<b>Cap level</b>\n${daily_cap_level:,.2f}\n\n"
-        f"<b>Day-start</b>\n${day_start:,.2f}\n\n"
-        f"<b>Cap</b>\n+${layer_cap_amt:,.2f}\n\n"
+        f"{rows}\n\n"
         f"<b>Positions</b>\n\n"
         f"{pos_str}\n\n"
         f"All positions closed.\n"
@@ -2747,11 +2778,14 @@ def msg_kill4_phase1_via_target(prop_equity: float, overall_pct: float,
     Same outcome as msg_kill4_phase1_passed but reached via the unified K4
     branch with the position snapshot included.
     """
+    rows = _msg_aligned_rows([
+        ("Profit", f"{overall_pct:.1f}% ≥ target"),
+        ("Equity", f"${prop_equity:,.2f}"),
+    ])
     return (
         f"🏆 <b>Phase 1 PASSED</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Profit</b>\n{overall_pct:.1f}% ≥ target\n\n"
-        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"{rows}\n\n"
         f"<b>Positions</b>\n\n"
         f"{pos_str}\n\n"
         f"All positions closed.\n"
@@ -2768,11 +2802,14 @@ def msg_kill4_phase2plus(phase: int, prop_equity: float, overall_pct: float,
     Triggered when: in Phase 2 or later, (equity-baseline)/baseline ≥
     profit_target_pct. Permanent halt — user must /phase2 or /stop.
     """
+    rows = _msg_aligned_rows([
+        ("Profit", f"{overall_pct:.1f}% ≥ target"),
+        ("Equity", f"${prop_equity:,.2f}"),
+    ])
     return (
         f"🏆 <b>Phase {phase} Target Reached</b>\n"
         f"{_MSG_SEP}\n\n"
-        f"<b>Profit</b>\n{overall_pct:.1f}% ≥ target\n\n"
-        f"<b>Equity</b>\n${prop_equity:,.2f}\n\n"
+        f"{rows}\n\n"
         f"<b>Positions</b>\n\n"
         f"{pos_str}\n\n"
         f"All positions closed.\n"
@@ -3407,8 +3444,9 @@ def msg_dispatch_failed(side: str, exc: object) -> str:
 # /messages, so he can decide which to redesign.
 
 def _demo_pos_str() -> str:
+    """Demo snapshot that mirrors live rendering — personal in SGD, prop in USD."""
     return (
-        "Personal: EURUSD ↑ LONG 0.10 -$12.50\n"
+        "Personal: EURUSD ↑ LONG 0.10 -SGD 12.50\n"
         "Prop: XAUUSD ↓ SHORT 0.05 +$34.20"
     )
 
@@ -3466,6 +3504,7 @@ MESSAGE_CATALOG: list[tuple[str, str, "callable"]] = [
          affected_pers=[{"symbol": "EURUSD", "type": 1, "volume": 0.10, "profit": 8.20}],
          affected_prop=[{"symbol": "EURUSD", "type": 0, "volume": 0.50, "profit": -41.00}],
          suppression_end_sgt="21:00 SGT",
+         pers_currency="SGD",
      )),
     ("msg_phase1_stage_reached",
      "Phase 1: prop equity ≥ active stage value (profitable day locked)",

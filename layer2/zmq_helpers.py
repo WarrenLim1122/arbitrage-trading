@@ -183,23 +183,35 @@ def _query_positions(zmq_url: str) -> list[dict]:
         sock.close()
 
 
-def _snapshot_positions_str() -> str:
+def _snapshot_positions_str(pers_currency: str = "USD") -> str:
     """Query both accounts and return a formatted positions summary (sync, for kill alerts).
 
+    MT5 reports position.profit in the account currency. Personal P&L renders
+    in `pers_currency` (auto-detected — SGD on the live Fusion account); prop
+    stays USD per the hard constraint.
+
     Output format (one line per position; one line per account if flat/offline):
-        Personal: EURUSD ↑ LONG 0.10 -$12.50
+        Personal: EURUSD ↑ LONG 0.10 -SGD 12.50
         Prop: No open positions
     """
+    def _fmt_pnl(value: float, currency: str) -> str:
+        sign = "+" if value >= 0 else "-"
+        mag  = abs(value)
+        if (currency or "USD").upper() == "USD":
+            return f"{sign}${mag:,.2f}"
+        return f"{sign}{currency} {mag:,.2f}"
+
     lines = []
-    for label, url in [("Personal", ZMQ_REQ_PERS), ("Prop", ZMQ_REQ_PROP)]:
+    for label, url, ccy in [
+        ("Personal", ZMQ_REQ_PERS, pers_currency),
+        ("Prop",     ZMQ_REQ_PROP, "USD"),
+    ]:
         try:
             positions = _query_positions(url)
             if positions:
                 for p in positions:
                     arrow = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
-                    pnl_v = p["profit"]
-                    sign  = "+" if pnl_v >= 0 else "-"
-                    pnl   = f"{sign}${abs(pnl_v):,.2f}"
+                    pnl   = _fmt_pnl(p["profit"], ccy)
                     lines.append(
                         f"{label}: {p['symbol']} {arrow} {p['volume']:.2f} {pnl}"
                     )

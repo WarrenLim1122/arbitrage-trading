@@ -551,6 +551,10 @@ def _run_news_preclose_check() -> None:
 
         logger.warning("NEWS BAN [%s] %s %s  affected: %s",
                        meta["currency"], meta["title"], event_time_sgt, tickers)
+        try:
+            _news_pers_ccy = _query_equity(ZMQ_REQ_PERS, "").get("account_currency", "USD")
+        except Exception:
+            _news_pers_ccy = "USD"
         _alert_sync(telegram_handlers.msg_news_pre_close(
             currency=meta["currency"],
             event_title=meta["title"],
@@ -558,6 +562,7 @@ def _run_news_preclose_check() -> None:
             mins_to_event=int(mins),
             affected_pers=affected_pers, affected_prop=affected_prop,
             suppression_end_sgt=f"{(sup_end + _sgt).strftime('%H:%M')} SGT",
+            pers_currency=_news_pers_ccy,
         ))
 
         for ticker in tickers:
@@ -607,7 +612,11 @@ def _run_equity_check() -> None:
     if curfew:
         if _last_curfew_close_date != today:
             logger.info("Monitor: SGT curfew transition — dispatching force-close (positions only)")
-            pos_str = _snapshot_positions_str()
+            try:
+                _curfew_pers_ccy = _query_equity(ZMQ_REQ_PERS, "").get("account_currency", "USD")
+            except Exception:
+                _curfew_pers_ccy = "USD"
+            pos_str = _snapshot_positions_str(_curfew_pers_ccy)
             _dispatch_force_close("sgt_curfew", halt=False)
             _alert_sync(telegram_handlers.msg_curfew_close(
                 pos_str=pos_str, next_open_text=_next_window_open_text(),
@@ -651,9 +660,11 @@ def _run_equity_check() -> None:
         return
 
     pers_equity_live: float | None = None
+    pers_currency: str = "USD"
     try:
         _pers_result = _query_equity(ZMQ_REQ_PERS, "")
         pers_equity_live = _pers_result["equity"]
+        pers_currency = _pers_result.get("account_currency", "USD")
         if _pers_down:
             _pers_down = False
             _pers_fail_count = 0
@@ -778,7 +789,7 @@ def _run_equity_check() -> None:
         if not permanent and _soft_kill_overridden(now_sgt):
             logger.info("Phase1 kill suppressed by /resume override: reason=%s", reason)
             return
-        pos_str    = _snapshot_positions_str()
+        pos_str    = _snapshot_positions_str(pers_currency)
         _dispatch_force_close(reason, halt=True, permanent=permanent)
         if not permanent:
             with _state_lock:
@@ -815,7 +826,7 @@ def _run_equity_check() -> None:
     if phase != 1:
         # Kill 2 — static overall floor from baseline (permanent halt)
         if dd_overall_pct > 0 and prop_equity <= overall_floor:
-            pos_str = _snapshot_positions_str()
+            pos_str = _snapshot_positions_str(pers_currency)
             _dispatch_force_close("overall_drawdown_limit", halt=True, permanent=True)
             logger.warning("KILL2: equity=%.2f floor=%.2f", prop_equity, overall_floor)
             _alert_sync(telegram_handlers.msg_kill2_phase2plus(
@@ -831,7 +842,7 @@ def _run_equity_check() -> None:
         if daily_loss_amt > 0 and day_start > 0:
             daily_floor = day_start - daily_loss_amt
             if prop_equity <= daily_floor and not _soft_kill_overridden(now_sgt):
-                pos_str = _snapshot_positions_str()
+                pos_str = _snapshot_positions_str(pers_currency)
                 _dispatch_force_close("daily_loss_limit", halt=True)
                 with _state_lock:
                     _phase_state["daily_halted"] = True
@@ -855,7 +866,7 @@ def _run_equity_check() -> None:
         if layer_cap_amt > 0 and day_start > 0:
             daily_cap_level = day_start + layer_cap_amt
             if prop_equity >= daily_cap_level and not _soft_kill_overridden(now_sgt):
-                pos_str = _snapshot_positions_str()
+                pos_str = _snapshot_positions_str(pers_currency)
                 _dispatch_force_close("daily_profit_cap", halt=True)
                 with _state_lock:
                     _phase_state["daily_halted"] = True
@@ -876,7 +887,7 @@ def _run_equity_check() -> None:
             overall_pct = (prop_equity - baseline) / baseline * 100
             target      = pf.get("profit_target_pct", 0.0)
             if target > 0 and overall_pct >= target:
-                pos_str = _snapshot_positions_str()
+                pos_str = _snapshot_positions_str(pers_currency)
                 _dispatch_force_close("profit_target", halt=True, permanent=True)
                 if phase == 1:
                     msg = telegram_handlers.msg_kill4_phase1_via_target(
