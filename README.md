@@ -24,7 +24,8 @@ Telegram Bot API ←→ layer2/logic_core.py
 | `layer2/` | Logic core — risk math, kill conditions, Telegram bot, dispatches to workers |
 | `layer3/` | MT5 execution workers (Windows VPSes) + trade-journal pipeline writing to Firestore |
 | `config/` | JSON runtime config — phase, risk params, trading window, prop firm limits |
-| `scripts/` | One-off operational utilities (backfill, dry-run tests, VPS bootstrap) |
+| `scripts/vps-setup/` | One-time PowerShell bootstrap for VPS #2/#3 (`setup_worker_*.ps1`) |
+| `scripts/dev-tests/` | Local dry-run utilities (`test_firebase_write.py`, `test_journal_dryrun.py`) |
 | `secrets/` | Gitignored — Firebase service account, MT5 creds (per-VPS) |
 | `docs/` | Reference docs (architecture, project overview, sample logs) |
 
