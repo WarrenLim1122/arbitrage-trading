@@ -855,7 +855,7 @@ async def _p2_show_review(update) -> int:
     dd_flag = "  <b>[FLAGGED]</b>" if not new.get("drawdown_is_static") else ""
     rs_flag = "  <b>[FLAGGED]</b>" if not new.get("raw_spread_account") else ""
     await update.message.reply_text(
-        f"📊 <b>Phase 2 Review</b>\n\n"
+        f"{_cmd_header('📊 <b>Phase 2 Review</b>')}"
         f"<pre>{block}</pre>\n\n"
         f"Drawdown: {_p2_display('drawdown_is_static', new['drawdown_is_static'])}{dd_flag}\n"
         f"Raw spread: {_p2_display('raw_spread_account', new['raw_spread_account'])}{rs_flag}\n\n"
@@ -1013,26 +1013,21 @@ async def _cmd_stop(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pers_pos = []
 
-    def _pos_line(positions: list[dict]) -> str:
-        if not positions:
-            return "No open positions"
-        return ", ".join(
-            f"{p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
-            for p in positions
-        )
-
-    lines: list[str] = [
-        "🟡 <b>Signal Processing Halted</b>\n",
-        "New signals will be ignored.",
-        "Existing open trades remain active unless closed manually.\n",
-        "<b>Open Positions</b>",
-        f"Personal Signal: {_pos_line(pers_pos)}",
-        f"Prop Hedge: {_pos_line(prop_pos)}\n",
-        "<b>Next Step</b>",
-        "/resume — re-enable signals",
-        "/emergency — force-close all positions",
-    ]
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    pers_block = _cmd_pos_block("Personal Signal", pers_pos, None, detail=False, show_pnl=False)
+    prop_block = _cmd_pos_block("Prop Hedge", prop_pos, None, detail=False, show_pnl=False)
+    body = (
+        "New signals will be ignored.\n"
+        "Existing open trades remain active unless closed manually.\n\n"
+        "<b>Open Positions</b>\n\n"
+        f"{pers_block}\n\n{prop_block}\n\n"
+        "<b>Next Step</b>\n"
+        "/resume — re-enable signals\n"
+        "/emergency — force-close all positions"
+    )
+    await update.message.reply_text(
+        f"{_cmd_header('🟡 <b>Signal Processing Halted</b>')}{body}",
+        parse_mode="HTML",
+    )
     logger.warning("Telegram: halted by user")
 
 
@@ -1043,7 +1038,7 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         p_halt = _phase_state.get("permanently_halted", False)
     if p_halt:
         await update.message.reply_text(
-            "🔴 <b>Resume Blocked</b>\n\n"
+            f"{_cmd_header('🔴 <b>Resume Blocked</b>')}"
             "Profit target has already been reached.\n\n"
             "<b>Next Step</b>\nSend /phase2 to configure and start the next phase.",
             parse_mode="HTML",
@@ -1074,32 +1069,23 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception:
         pers_pos = []
 
-    def _pos_line(positions: list[dict]) -> str:
-        if not positions:
-            return "No open positions"
-        return ", ".join(
-            f"{p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots"
-            for p in positions
-        )
-
     curfew_note = "\n\n<i>Trading window is currently closed. Signals resume when the window opens.</i>" if _is_sgt_curfew() else ""
     override_note = (
         "\n\n<i>Today's daily-loss / profit-cap kills are suppressed until the next session — manual override active.</i>"
         if had_daily_halt else ""
     )
-    lines: list[str] = [
-        f"🟢 <b>Signal Processing Resumed</b>",
-        "",
-        "New signals are now allowed.\n",
-        "<b>Open Positions</b>",
-        f"Personal Signal: {_pos_line(pers_pos)}",
-        f"Prop Hedge: {_pos_line(prop_pos)}",
-    ]
-    if override_note:
-        lines.append(override_note)
-    if curfew_note:
-        lines.append(curfew_note)
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    pers_block = _cmd_pos_block("Personal Signal", pers_pos, None, detail=False, show_pnl=False)
+    prop_block = _cmd_pos_block("Prop Hedge", prop_pos, None, detail=False, show_pnl=False)
+    body = (
+        "New signals are now allowed.\n\n"
+        "<b>Open Positions</b>\n\n"
+        f"{pers_block}\n\n{prop_block}"
+        f"{override_note}{curfew_note}"
+    )
+    await update.message.reply_text(
+        f"{_cmd_header('🟢 <b>Signal Processing Resumed</b>')}{body}",
+        parse_mode="HTML",
+    )
     logger.info("Telegram: resumed by user — soft_kill_override_day=%s", today_day)
 
 
@@ -1143,7 +1129,7 @@ async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     await update.message.reply_text(
-        f"📊 <b>System Status</b>\n\n"
+        f"{_cmd_header('📊 <b>System Status</b>')}"
         f"<b>Trading</b>\n"
         f"Phase: {phase} (×{mult})\n"
         f"Status: {'🟢 Active' if active else '🟡 Halted'}\n"
@@ -1175,7 +1161,7 @@ async def _cmd_propfirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None
     except Exception:
         pers_ccy = "USD"
     await update.message.reply_text(
-        f"📊 <b>Prop Account Rules</b>\n\n"
+        f"{_cmd_header('📊 <b>Prop Account Rules</b>')}"
         f"<b>Targets</b>\n"
         f"Profit target: {pf.get('profit_target_pct', 0):.1f}%\n"
         f"Daily profit cap: {pf.get('daily_profit_cap_pct', 0):.1f}%\n\n"
@@ -1234,7 +1220,7 @@ async def _cmd_equity(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         prop_block = f"<b>Prop Hedge</b>\nOffline — {exc}"
 
     await update.message.reply_text(
-        f"📊 <b>Account Equity Snapshot</b>\n\n{pers_block}\n\n{prop_block}",
+        f"{_cmd_header('📊 <b>Account Equity Snapshot</b>')}{pers_block}\n\n{prop_block}",
         parse_mode="HTML",
     )
 
@@ -1256,31 +1242,21 @@ async def _cmd_emergency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int
         pers_pos = []
         pers_err = str(exc)
 
-    def _fmt_positions(positions: list[dict], err: str | None) -> str:
-        if err:
-            return f"Offline — {err}"
-        if not positions:
-            return "No open positions"
-        return "\n".join(
-            f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots  P&amp;L: ${p['profit']:+,.2f}"
-            for p in positions
-        )
-
-    lines = [
-        "🔴 <b>Emergency Halt — Confirm Action</b>\n",
-        "This will:\n• Force-close all open positions\n• Halt signal processing\n",
-        "<b>Open Positions</b>",
-        "",
-        "<b>Personal Signal</b>",
-        _fmt_positions(pers_pos, pers_err),
-        "",
-        "<b>Prop Hedge</b>",
-        _fmt_positions(prop_pos, prop_err),
-        "",
-        "Reply <code>CONFIRM</code> to proceed.",
-        "Send /cancel to abort.",
-    ]
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    pers_ccy = await _pers_currency()
+    body = (
+        "This will:\n"
+        "• Force-close all open positions\n"
+        "• Halt signal processing\n\n"
+        "<b>Open Positions</b>\n\n"
+        f"{_cmd_pos_block('Personal Signal', pers_pos, pers_err, pers_ccy)}\n\n"
+        f"{_cmd_pos_block('Prop Hedge', prop_pos, prop_err, 'USD')}\n\n"
+        "Reply <code>CONFIRM</code> to proceed.\n"
+        "Send /cancel to abort."
+    )
+    await update.message.reply_text(
+        f"{_cmd_header('🔴 <b>Emergency Halt — Confirm Action</b>')}{body}",
+        parse_mode="HTML",
+    )
     return EMERGENCY_CONFIRM
 
 
@@ -1305,7 +1281,7 @@ async def _emergency_execute(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) ->
     except Exception:
         eq_lines = "Could not query equity"
     await update.message.reply_text(
-        f"🔴 <b>Emergency Halt Executed</b>\n\n"
+        f"{_cmd_header('🔴 <b>Emergency Halt Executed</b>')}"
         f"<b>Action Taken</b>\n"
         f"All positions force-closed.\n"
         f"Signal processing halted.\n\n"
@@ -1321,7 +1297,7 @@ async def _emergency_abort(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> i
     if not _auth(update):
         return ConversationHandler.END
     await update.message.reply_text(
-        "🟡 <b>Emergency Cancelled</b>\n\nNo positions were closed.",
+        f"{_cmd_header('🟡 <b>Emergency Cancelled</b>')}No positions were closed.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -1343,27 +1319,13 @@ async def _cmd_positions(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         pers_pos = None
         pers_err = str(exc)
 
-    def _fmt_block(label: str, positions: list[dict] | None, err: str | None) -> str:
-        out = [f"<b>{label}</b>"]
-        if err:
-            out.append(f"Offline — {err}")
-        elif not positions:
-            out.append("No open positions")
-        else:
-            for p in positions:
-                direction = "↑ LONG" if p["type"] == 0 else "↓ SHORT"
-                out.append(
-                    f"{p['symbol']} {direction} · {p['volume']:.2f} lots\n"
-                    f"Entry {_fmt_price(p['symbol'], p['price_open'])} | SL {_fmt_price(p['symbol'], p['sl'])} | TP {_fmt_price(p['symbol'], p['tp'])}\n"
-                    f"P&amp;L: ${p['profit']:+,.2f}"
-                )
-        return "\n".join(out)
-
-    pers_block = _fmt_block("Personal Signal", pers_pos, pers_err)
-    prop_block = _fmt_block("Prop Hedge", prop_pos, prop_err)
+    pers_ccy   = await _pers_currency()
+    pers_block = _cmd_pos_block("Personal Signal", pers_pos, pers_err, pers_ccy)
+    prop_block = _cmd_pos_block("Prop Hedge", prop_pos, prop_err, "USD")
 
     await update.message.reply_text(
-        f"📊 <b>Open Positions</b>\n\n{pers_block}\n\n{prop_block}",
+        f"{_cmd_header('📊 <b>Open Positions</b>')}"
+        f"{pers_block}\n\n{prop_block}",
         parse_mode="HTML",
     )
 
@@ -1418,10 +1380,9 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     k4_bar_pct  = max(0.0, overall_pnl) / target_amt * 100 if target_amt > 0 else 0.0
 
     lines = [
-        f"📊 <b>P&amp;L Dashboard — Prop Hedge</b>\n",
         f"<b>Account</b>",
-        f"Baseline:      ${baseline:,.2f}",
-        f"Day-start:     ${day_start:,.2f}",
+        f"Baseline: ${baseline:,.2f}",
+        f"Day-start: ${day_start:,.2f}",
         f"Current equity: ${equity:,.2f}",
     ]
     if daily_loss_amt > 0:
@@ -1460,7 +1421,10 @@ async def _cmd_pnl(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "K4: progress toward profit target</i>"
     )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    await update.message.reply_text(
+        _cmd_header("📊 <b>P&amp;L Dashboard — Prop Hedge</b>") + "\n".join(lines),
+        parse_mode="HTML",
+    )
 
 
 async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1484,7 +1448,7 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         pers_h = f"🔴 Offline — {exc}"
 
     await update.message.reply_text(
-        f"📊 <b>System Health</b>\n\n"
+        f"{_cmd_header('📊 <b>System Health</b>')}"
         f"Layer 1 (VPS #1): {l1}\n"
         f"Layer 2 (VPS #1): 🟢 Alive\n"
         f"Personal Signal (VPS #2): {pers_h}\n"
@@ -1525,19 +1489,24 @@ async def _cmd_news(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
     if not relevant:
         await update.message.reply_text(
-            "📰 <b>Upcoming High-Impact News</b>\n\n"
+            f"{_cmd_header('📰 <b>Upcoming High-Impact News</b>')}"
             "🟢 No high-impact events in the next 4 hours for covered pairs.",
             parse_mode="HTML",
         )
         return
 
-    lines = ["📰 <b>Upcoming High-Impact News</b> <i>Next 4 hours · Covered pairs only</i>\n"]
+    lines = []
     for t, ccy, title, pairs in relevant:
         sgt_str   = (t + sgt_off).strftime("%H:%M SGT")
         pairs_str = ", ".join(pairs) if pairs else "—"
         lines.append(f"🟠 {sgt_str} — {ccy}: {title}\nAffects: {pairs_str}")
 
-    await update.message.reply_text("\n\n".join(lines), parse_mode="HTML")
+    await update.message.reply_text(
+        _cmd_header("📰 <b>Upcoming High-Impact News</b>")
+        + "<i>Next 4 hours · Covered pairs only</i>\n\n"
+        + "\n\n".join(lines),
+        parse_mode="HTML",
+    )
 
 
 async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1545,7 +1514,6 @@ async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
         return
     now     = datetime.now(timezone.utc)
     sgt_off = timedelta(hours=8)
-    lines   = ["📊 <b>Suppression Blackboard</b>\n"]
 
     with _news_suppressed_lock:
         news_active = {t: e for t, e in _news_suppressed_pairs.items() if e > now}
@@ -1555,14 +1523,14 @@ async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
     all_pairs = set(news_active) | manual_active
     if not all_pairs:
         await update.message.reply_text(
-            "📊 <b>Suppression Blackboard</b>\n\n"
+            f"{_cmd_header('📊 <b>Suppression Blackboard</b>')}"
             "🟢 No active suppressions.\n"
             "All covered pairs are clear for new signals.",
             parse_mode="HTML",
         )
         return
 
-    blocks: list[str] = ["📊 <b>Suppression Blackboard</b>"]
+    blocks: list[str] = []
     for ticker in sorted(all_pairs):
         entry_lines = [f"🔴 <b>{ticker}</b>"]
         if ticker in news_active:
@@ -1574,7 +1542,10 @@ async def _cmd_blackboard(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
             entry_lines.append(f"Unblock: /resumepair {ticker}")
         blocks.append("\n".join(entry_lines))
 
-    await update.message.reply_text("\n\n".join(blocks), parse_mode="HTML")
+    await update.message.reply_text(
+        _cmd_header("📊 <b>Suppression Blackboard</b>") + "\n\n".join(blocks),
+        parse_mode="HTML",
+    )
 
 
 async def _cmd_closepair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1597,42 +1568,32 @@ async def _cmd_closepair(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     ctx.chat_data["closepair_ticker"] = ticker
     broker_symbol = _SYMBOL_MAP.get(ticker, ticker)
 
-    def _fmt_pair_positions(positions: list[dict], symbols: tuple) -> str:
-        pair_pos = [p for p in positions if p["symbol"] in symbols]
-        if not pair_pos:
-            return "No open positions"
-        return "\n".join(
-            f"  {p['symbol']} {'↑ LONG' if p['type'] == 0 else '↓ SHORT'} {p['volume']:.2f} lots  P&amp;L: ${p['profit']:+,.2f}"
-            for p in pair_pos
-        )
-
-    syms = (ticker, broker_symbol)
+    syms     = (ticker, broker_symbol)
+    pers_ccy = await _pers_currency()
     try:
-        pers_pos     = await asyncio.to_thread(_query_positions, ZMQ_REQ_PERS)
-        pers_pos_str = _fmt_pair_positions(pers_pos, syms)
+        pers_pos   = [p for p in await asyncio.to_thread(_query_positions, ZMQ_REQ_PERS) if p["symbol"] in syms]
+        pers_block = _cmd_pos_block("Personal Signal", pers_pos, None, pers_ccy)
     except Exception as exc:
-        pers_pos_str = f"Offline — {exc}"
+        pers_block = f"<b>Personal Signal</b>\nOffline — {exc}"
     try:
-        prop_pos     = await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP)
-        prop_pos_str = _fmt_pair_positions(prop_pos, syms)
+        prop_pos   = [p for p in await asyncio.to_thread(_query_positions, ZMQ_REQ_PROP) if p["symbol"] in syms]
+        prop_block = _cmd_pos_block("Prop Hedge", prop_pos, None, "USD")
     except Exception as exc:
-        prop_pos_str = f"Offline — {exc}"
+        prop_block = f"<b>Prop Hedge</b>\nOffline — {exc}"
 
-    lines = [
-        f"🟡 <b>Close Pair — {ticker}</b>\n",
-        "This will:\n• Close all positions\n• Block new signals\n",
-        "<b>Open Positions</b>",
-        "",
-        "<b>Personal Signal</b>",
-        pers_pos_str,
-        "",
-        "<b>Prop Hedge</b>",
-        prop_pos_str,
-        "",
-        "Reply <code>CONFIRM</code> to proceed.",
-        "Send /cancel to abort.",
-    ]
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    body = (
+        "This will:\n"
+        "• Close all positions\n"
+        "• Block new signals\n\n"
+        "<b>Open Positions</b>\n\n"
+        f"{pers_block}\n\n{prop_block}\n\n"
+        "Reply <code>CONFIRM</code> to proceed.\n"
+        "Send /cancel to abort."
+    )
+    await update.message.reply_text(
+        f"{_cmd_header(f'🟡 <b>Close Pair — {ticker}</b>')}{body}",
+        parse_mode="HTML",
+    )
     return CLOSEPAIR_CONFIRM
 
 
@@ -1661,7 +1622,7 @@ async def _closepair_execute(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
     except Exception:
         eq_lines = "Could not query equity"
     await update.message.reply_text(
-        f"✅ <b>Pair Closed and Blocked — {ticker}</b>\n\n"
+        f"{_cmd_header(f'✅ <b>Pair Closed and Blocked — {ticker}</b>')}"
         f"<b>Action Taken</b>\n"
         f"All {ticker} positions closed.\n"
         f"New {ticker} signals are blocked.\n\n"
@@ -1678,7 +1639,7 @@ async def _closepair_abort(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
     ticker = ctx.chat_data.get("closepair_ticker", "")
     await update.message.reply_text(
-        f"🟡 <b>Close Pair Cancelled — {ticker}</b>\n\nNo positions were closed.",
+        f"{_cmd_header(f'🟡 <b>Close Pair Cancelled — {ticker}</b>')}No positions were closed.",
         parse_mode="HTML",
     )
     return ConversationHandler.END
@@ -1706,7 +1667,7 @@ async def _cmd_resumepair(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> No
     _dispatch_news_clear(ticker)
 
     await update.message.reply_text(
-        f"🟢 <b>Pair Resumed — {ticker}</b>\n\nNew {ticker} signals are now allowed.",
+        f"{_cmd_header(f'🟢 <b>Pair Resumed — {ticker}</b>')}New {ticker} signals are now allowed.",
         parse_mode="HTML",
     )
     logger.info("Manual resumepair: %s", ticker)
@@ -1742,7 +1703,7 @@ async def _cmd_setmaxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> Non
         _save_phase(_phase_state)
 
     await update.message.reply_text(
-        f"📊 <b>Max Position Limit Updated</b>\n\n"
+        f"{_cmd_header('📊 <b>Max Position Limit Updated</b>')}"
         f"Before: {old_max}\n"
         f"After: <b>{n}</b>",
         parse_mode="HTML",
@@ -1768,7 +1729,7 @@ async def _cmd_maxpos(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         count_str = f"unknown ({exc})"
     await update.message.reply_text(
-        f"📊 <b>Position Limit</b>\n\n"
+        f"{_cmd_header('📊 <b>Position Limit</b>')}"
         f"Max allowed: {limit}\n"
         f"Currently open: {count_str}",
         parse_mode="HTML",
@@ -1783,7 +1744,7 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
 
     if phase != 2:
         await update.message.reply_text(
-            "📊 <b>Consistency Tracker</b>\n\n"
+            f"{_cmd_header('📊 <b>Consistency Tracker</b>')}"
             "Not active.\n"
             "Consistency tracking is Phase 2 only.\n\n"
             "<b>Next step</b>\n/phase2",
@@ -1817,7 +1778,7 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
 
     if rule_met:
         await update.message.reply_text(
-            f"🟢 <b>Consistency Rule Met</b>\n\n"
+            f"{_cmd_header('🟢 <b>Consistency Rule Met</b>')}"
             f"<pre>{table_str}</pre>\n\n"
             f"Ready to submit payout claim.",
             parse_mode="HTML",
@@ -1831,7 +1792,7 @@ async def _cmd_consistency(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
         status_line = f"Not met yet — largest day is {ratio_pct:.1f}% of total profit (need &lt; {threshold:.1f}%)."
 
     await update.message.reply_text(
-        f"📊 <b>Consistency Tracker</b>\n\n"
+        f"{_cmd_header('📊 <b>Consistency Tracker</b>')}"
         f"Threshold: &lt; {threshold:.1f}%\n\n"
         f"<pre>{table_str}</pre>\n\n"
         f"<b>Status</b>\n{status_line}",
@@ -2022,7 +1983,7 @@ async def _cmd_checkaccount(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
         )
 
     await update.message.reply_text(
-        f"<b>Account Check</b>\n\n{pers_block}\n\n{prop_block}",
+        f"{_cmd_header('📋 <b>Account Check</b>')}{pers_block}\n\n{prop_block}",
         parse_mode="HTML",
     )
 
@@ -2031,7 +1992,7 @@ async def _cmd_checkaccount(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> 
 
 def _update_menu_text() -> str:
     return (
-        "🛠️ <b>Update Guide</b>\n\n"
+        f"{_cmd_header('🛠️ <b>Update Guide</b>')}"
         "Choose what you want to update:\n\n"
         "/update local — Push local code to GitHub\n"
         "/update layer2 — Deploy latest code to VPS #1\n"
@@ -2042,7 +2003,7 @@ def _update_menu_text() -> str:
 
 def _update_local_text() -> str:
     return (
-        "🛠️ <b>Update Local Code → GitHub</b>\n\n"
+        f"{_cmd_header('🛠️ <b>Update Local Code → GitHub</b>')}"
         "Run on Mac terminal:\n\n"
         "<code>cd ~/arbitrage-trading</code>\n"
         "Go into the local project folder.\n\n"
@@ -2066,7 +2027,7 @@ def _update_local_text() -> str:
 
 def _update_layer2_text() -> str:
     return (
-        "🛠️ <b>Deploy Layer 2 — VPS #1</b>\n\n"
+        f"{_cmd_header('🛠️ <b>Deploy Layer 2 — VPS #1</b>')}"
         "Run on Mac terminal:\n\n"
         "<code>ssh root@152.42.213.98</code>\n"
         "Log in to the Linux VPS that runs Layer 1 / Layer 2.\n\n"
@@ -2088,7 +2049,7 @@ def _update_layer2_text() -> str:
 
 def _update_personal_text() -> str:
     return (
-        "🛠️ <b>Update Personal Worker</b>\n\n"
+        f"{_cmd_header('🛠️ <b>Update Personal Worker</b>')}"
         "On Personal worker VPS:\n\n"
         "<code>Ctrl+C</code>\n"
         "Stop the currently running worker in PowerShell. If this does not work, close the PowerShell window.\n\n"
@@ -2114,7 +2075,7 @@ def _update_personal_text() -> str:
 
 def _update_prop_text() -> str:
     return (
-        "🛠️ <b>Update Prop Worker</b>\n\n"
+        f"{_cmd_header('🛠️ <b>Update Prop Worker</b>')}"
         "On Prop worker VPS:\n\n"
         "<code>Ctrl+C</code>\n"
         "Stop the currently running worker in PowerShell. If this does not work, close the PowerShell window.\n\n"
@@ -2148,7 +2109,7 @@ async def _cmd_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(_update_layer2_text(), parse_mode="HTML")
     elif arg == "layer3":
         await update.message.reply_text(
-            "🛠️ <b>Update Layer 3 Worker</b>\n\n"
+            f"{_cmd_header('🛠️ <b>Update Layer 3 Worker</b>')}"
             "Which worker?\n\n"
             "1 — Personal Signal\n"
             "2 — Prop Hedge",
@@ -2191,7 +2152,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
     await update.message.reply_text(
-        "<b>HedgeHog Command Menu</b>\n\n"
+        _cmd_header("📖 <b>HedgeHog Command Menu</b>") +
 
         "<b>Emergency</b>\n"
         "/emergency — Force-close all positions and halt\n\n"
