@@ -2249,10 +2249,11 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-# Heavy-rule separator placed under every alert header.  18 characters wide:
-# wide enough to give a clear visual break, narrow enough to never wrap on a
-# phone in either landscape or portrait. Change here once to restyle everywhere.
-_MSG_SEP = "━" * 18
+# Heavy-rule separator that brackets every alert header (one rule above the
+# title, one below). 12 characters wide — 18 wrapped on Warren's iPhone, 12
+# fits comfortably in portrait. The top rule also creates breathing room
+# between the bot-name chrome and the title line.
+_MSG_SEP = "━" * 12
 
 
 def _msg_signed_money(value: float, currency: str = "USD") -> str:
@@ -2384,6 +2385,7 @@ def msg_worker_offline(side: str, down_threshold_secs: int) -> str:
     vps   = "#3" if side == "prop" else "#2"
     worker_file = "worker_prop.py" if side == "prop" else "worker_personal.py"
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>{label} — Worker OFFLINE</b>\n"
         f"{_MSG_SEP}\n\n"
         f"No response for ~{down_threshold_secs}s.\n"
@@ -2402,6 +2404,7 @@ def msg_worker_back_online(side: str) -> str:
     marked offline. Clears msg_worker_offline.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"✅ <b>{_msg_side_label(side)} — Worker Restored</b>\n"
         f"{_MSG_SEP}\n\n"
         f"Worker responding normally again.\n"
@@ -2416,6 +2419,7 @@ def msg_algo_trading_disabled(side: str) -> str:
     worker that was previously enabled.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>{_msg_side_label(side)} — Algo Trading OFF</b>\n"
         f"{_MSG_SEP}\n\n"
         f"MT5 algo trading is disabled.\n"
@@ -2435,6 +2439,7 @@ def msg_algo_trading_restored(side: str) -> str:
     previously marked disabled.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"✅ <b>{_msg_side_label(side)} — Algo Trading Restored</b>\n"
         f"{_MSG_SEP}\n\n"
         f"MT5 trade_allowed restored to True.\n"
@@ -2450,6 +2455,7 @@ def msg_new_session_auto_resumed() -> str:
     system not curfewed and not permanently halted.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"🟢 <b>New Session Started</b>\n"
         f"{_MSG_SEP}\n\n"
         f"Daily halt cleared.\n"
@@ -2464,6 +2470,7 @@ def msg_curfew_close(pos_str: str, next_open_text: str) -> str:
     first time today. Dispatches FORCE_CLOSE for positions only (no halt).
     """
     return (
+        f"{_MSG_SEP}\n"
         f"🌙 <b>Curfew — Positions Closed</b>\n"
         f"{_MSG_SEP}\n\n"
         f"<b>Positions</b>\n\n"
@@ -2525,6 +2532,7 @@ def msg_mismatch_resolved(*, ticker: str, mismatch_type: str,
         ("Prop Hedge",      prop_state),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>Position Mismatch — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{problem_block}\n\n"
@@ -2548,6 +2556,7 @@ def msg_news_window_cleared(expired_pairs: list[tuple[str, str]]) -> str:
         for ticker, end_sgt in expired_pairs
     )
     return (
+        f"{_MSG_SEP}\n"
         f"🟢 <b>News Window Cleared</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{pair_blocks}\n\n"
@@ -2577,6 +2586,7 @@ def msg_news_pre_close(*, currency: str, event_title: str,
         time_detail = f"{event_time_sgt} ({abs(mins_to_event)} min ago)"
 
     return (
+        f"{_MSG_SEP}\n"
         f"📰 <b>News Pre-Close — {currency}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"<b>{currency} {event_title}</b>\n"
@@ -2606,6 +2616,7 @@ def msg_phase1_stage_reached(prop_equity: float, stage_value: float,
         ("Stage",  f"${stage_value:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🎯 <b>Phase 1 — Stage Reached</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2630,6 +2641,7 @@ def msg_kill1_phase1(prop_equity: float, daily_floor: float, day_start: float,
         ("Day-start",   f"${day_start:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🔴 <b>KILL 1 — Daily Loss Limit</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2651,6 +2663,7 @@ def msg_kill2_phase1(prop_equity: float, overall_floor: float) -> str:
         ("Floor",  f"${overall_floor:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🔴 <b>KILL 2 — Max Drawdown Hit</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2674,6 +2687,7 @@ def msg_kill4_phase1_passed(prop_equity: float) -> str:
         ("Target", "≥ funded line"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🏆 <b>Phase 1 PASSED</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2698,6 +2712,7 @@ def msg_kill2_phase2plus(prop_equity: float, overall_floor: float,
         ("Baseline",   f"${baseline:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🔴 <b>KILL 2 — Max Drawdown Hit</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2729,6 +2744,7 @@ def msg_kill1_phase2plus(prop_equity: float, daily_floor: float, day_start: floa
         ("Overall DD floor",  f"${overall_floor:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🔴 <b>KILL 1 — Daily Loss Limit</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2758,6 +2774,7 @@ def msg_kill3_daily_profit_cap(prop_equity: float, daily_cap_level: float,
         ("Cap",       f"+${layer_cap_amt:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🟡 <b>KILL 3 — Daily Profit Cap</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2783,6 +2800,7 @@ def msg_kill4_phase1_via_target(prop_equity: float, overall_pct: float,
         ("Equity", f"${prop_equity:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🏆 <b>Phase 1 PASSED</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2807,6 +2825,7 @@ def msg_kill4_phase2plus(phase: int, prop_equity: float, overall_pct: float,
         ("Equity", f"${prop_equity:,.2f}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🏆 <b>Phase {phase} Target Reached</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{rows}\n\n"
@@ -2831,6 +2850,7 @@ def msg_kill5_consistency() -> str:
     /consistency, /pnl and /positions surface it on demand.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"🏆 <b>Consistency Rule Met</b>\n"
         f"{_MSG_SEP}\n\n"
         f"Consistency requirement satisfied.\n\n"
@@ -2888,6 +2908,7 @@ def msg_trade_opened(*, ticker: str, phase: int,
     prop_ticket_row = _msg_aligned_rows([("Ticket", f"#{prop_ticket}")])
 
     return (
+        f"{_MSG_SEP}\n"
         f"🟢 <b>{ticker} — Trade Opened</b>\n"
         f"{_MSG_SEP}\n\n"
         f"<b>Personal Signal</b>  {pers_arrow}\n"
@@ -3029,7 +3050,7 @@ def msg_position_closed(*, symbol: str,
             footer = "⚠️ Deal data unavailable — check journal shortly."
 
     sections = [
-        f"{title}\n{_MSG_SEP}",
+        f"{_MSG_SEP}\n{title}\n{_MSG_SEP}",
         pers_block,
         prop_block,
         after_block,
@@ -3063,6 +3084,7 @@ def msg_signal_not_placed_terminal(*, ticker: str,
         ("TP",    pers_tp_fmt),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🚫 <b>Signal Not Placed — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{_side_block(pers_status, 'Personal Signal')}\n\n"
@@ -3091,6 +3113,7 @@ def msg_signal_not_placed_preflight(*, ticker: str,
         ("TP",    pers_tp_fmt),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"🚫 <b>Signal Not Placed — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"One leg cannot fill,\n"
@@ -3170,6 +3193,7 @@ def msg_order_not_filled(*, ticker: str, resting: bool,
         f"Prop {prop_lots:.2f}"
     )
     return (
+        f"{_MSG_SEP}\n"
         f"{header}\n"
         f"{_MSG_SEP}\n\n"
         f"{pers_block}\n\n"
@@ -3192,6 +3216,7 @@ def msg_signal_blocked_p_halt(ticker: str, signal: str) -> str:
     set. Dedup'd via _maybe_block_alert to one per (ticker, p_halt) per 30 min.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"🔴 <b>Signal Blocked — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"System permanently halted.\n"
@@ -3211,6 +3236,7 @@ def msg_signal_skipped_halted(ticker: str, signal: str) -> str:
     daily halt or user issued /stop). Dedup'd to 30 min per ticker.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"⏸️ <b>Signal Skipped — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"System halted.\n"
@@ -3229,6 +3255,7 @@ def msg_signal_suppressed(ticker: str, signal: str, reason: str) -> str:
     Dedup'd to 30 min per (ticker, reason).
     """
     return (
+        f"{_MSG_SEP}\n"
         f"📰 <b>Signal Suppressed — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"<b>Reason</b>\n{reason}\n\n"
@@ -3246,6 +3273,7 @@ def msg_signal_skipped_max_pos(ticker: str, signal: str,
     already holds ≥ max_open_positions positions.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"🚫 <b>Signal Skipped — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"Max open positions reached.\n"
@@ -3265,6 +3293,7 @@ def msg_signal_blocked_algo_disabled(ticker: str, side: str) -> str:
     """
     label = _msg_side_label(side)
     return (
+        f"{_MSG_SEP}\n"
         f"🚫 <b>Signal Blocked — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{label} algo trading\n"
@@ -3296,6 +3325,7 @@ def msg_signal_blocked_generic(ticker: str, *, main: str,
     elif command:
         body = f"{main}\n\n<b>Run</b>\n{command}"
     return (
+        f"{_MSG_SEP}\n"
         f"🚫 <b>Signal Blocked — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{body}"
@@ -3309,6 +3339,7 @@ def msg_geometry_reject(ticker: str, phase: int, reject_reason: str, signal: str
     key — e.g. SL too tight, lots below broker minimum, max_prop_lots cap hit.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"🚫 <b>Signal Skipped — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"Phase {phase} sizing rejected.\n\n"
@@ -3335,6 +3366,7 @@ def msg_internal_error(ticker: str, exc: object) -> str:
     else:
         exc_block = exc_str
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>Internal Error — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"Order confirmation task crashed.\n\n"
@@ -3355,6 +3387,7 @@ def msg_contract_query_failed(side: str, exc: object) -> str:
     """
     label = _msg_side_label(side)
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>Contract Query Failed</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{label} contract query failed.\n\n"
@@ -3369,6 +3402,7 @@ def msg_baseline_missing() -> str:
     baseline_equity. The bot refuses to size without a static baseline.
     """
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>Baseline Missing</b>\n"
         f"{_MSG_SEP}\n\n"
         f"baseline_equity not set.\n\n"
@@ -3391,6 +3425,7 @@ def msg_invalid_contract_data(ticker: str, tick_size: float, tick_value: float) 
         ("tick_value", f"{tick_value}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>Invalid Contract Data</b>\n"
         f"{_MSG_SEP}\n\n"
         f"Invalid contract data\n"
@@ -3411,6 +3446,7 @@ def msg_tp_distance_zero(ticker: str, tp: float, entry: float) -> str:
         ("entry", f"{entry}"),
     ])
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>TP Distance Zero — {ticker}</b>\n"
         f"{_MSG_SEP}\n\n"
         f"TP distance is zero.\n\n"
@@ -3427,6 +3463,7 @@ def msg_dispatch_failed(side: str, exc: object) -> str:
     """
     label = _msg_side_label(side)
     return (
+        f"{_MSG_SEP}\n"
         f"⚠️ <b>Dispatch Failed</b>\n"
         f"{_MSG_SEP}\n\n"
         f"{label} dispatch failed.\n\n"
