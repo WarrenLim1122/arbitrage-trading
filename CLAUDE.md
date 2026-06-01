@@ -21,10 +21,10 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 Surface this the first time Warren returns:
 
-**Read `handoff/SESSION-HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy session-14 work to both layers** (`/update layer2` + `/update layer3` ×2 — worker changed). See `## Current State` below for what shipped.
+**Read `handoff/SESSION-HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy the symbol-mapper + session-14 work to both layers** (`/update layer2` + `/update layer3` ×2 — Layer 1/2 and `_worker_core.py` changed). No `pyproject.toml` change → no `uv sync`. After workers restart, run **`/checksymbols`** to capture each broker's real FOUND/MISSING tables. See `## Current State` below.
 
 Lower-priority queued (not yet done):
-1. **Folder reorganization** — deletion table in the prior handoff at git `accd561`.
+1. **Folder reorganization** — deletion table in the prior handoff at git `accd561`. (The `Suggest To Delete/` pen was emptied this session; an empty dir shell remains for Warren to `rmdir`.)
 2. **Message-structure spec** (optional) — the ━ header + `Label: value` format is now the de-facto standard across ALL alerts AND command outputs; a one-paragraph written spec in TECHNICAL.md would formalize it but isn't blocking.
 
 **Already shipped (don't re-do):**
@@ -180,7 +180,18 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ---
 
-## Current State (as of 2026-05-29)
+## Current State (as of 2026-06-01)
+
+### Session 15 — Universal symbol mapper + TradingView webhook 422 fix — SHIPPED to `main`, pending deploy
+
+Commits: `575af7d` (symbol mapper), `8c77009` (webhook pine + folder cleanup).
+
+- **Single source of truth = `config/symbols.json`** (canonical = TradingView names). Expanded **7 → 33 symbols** (31 FX + XAUUSD + XAGUSD). Loader `layer2/symbols.py` (stdlib-only, imported by L1/L2/L3). Layer 1 `ALLOWED_PAIRS`/`_TICKER_CURRENCIES` and Layer 2 `state.py` now derive from it; `config/allowed_pairs.json` **deleted**. See §Covered Instruments.
+- **Broker translation isolated to `layer3/symbol_mapper.py`** — discovers each broker's MT5 name via `symbols_get()` at startup, validates every canonical, caches per-account (`config/symbol_cache_<login>.json`, gitignored), refuses cross-currency matches (USDCNY≠USDCNH). New **`/checksymbols`** Telegram cmd reports per-broker SUPPORTED/FOUND/MISSING. `config/symbol_map.json` is now an empty manual-override file. Two gates: registry opens a pair; the TradingView alert is the real on/off — only arm an alert for a pair shown FOUND.
+- Most exotic/NDF/pegged tier will report MISSING on retail/prop MT5 — expected. Tests: **104 pass** (+14 mapper).
+- **TradingView 422 fixed:** root cause = AlgoAlpha NW indicator emitted only 6 fields; L1 needs 9, L2 needs 14. Fix shipped via Option B (enrich the Pine payload, schemas untouched) in `layer0/Nadaraya-Watson Webhook INDICATOR.pine` — Warren pastes that into TradingView + recreates the alert. See [[webhook-payload-contract]] (memory) for the full contract + the `str.tostring(na)`→"NaN" 422 trap.
+
+> Env FS constraint hit this session: cannot create new top-level dirs/files or delete root dirs (EPERM). That's why the shared loader lives in `layer2/symbols.py` not `common/`. See memory `repo-fs-write-constraints`.
 
 ### Session 14 — Telegram reporting overhaul + baseline/deposit split — SHIPPED to `main`, awaiting deploy on BOTH layers
 
