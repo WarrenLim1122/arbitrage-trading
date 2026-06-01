@@ -339,6 +339,27 @@ def _query_deal_pnl(zmq_url: str, symbol: str, ticket: int | None = None) -> dic
         sock.close()
 
 
+def _query_checksymbols(zmq_url: str) -> dict:
+    """Ask a Layer 3 worker for its symbol-resolution report.
+
+    Returns {supported, found, missing, mapping} from the broker discovery the
+    worker ran at startup. On transport error returns {error: ...} so the
+    command can show the leg as OFFLINE rather than blocking.
+    """
+    sock = _zmq_ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.connect(zmq_url)
+    try:
+        sock.send_json({"query": "checksymbols"})
+        if not sock.poll(EQUITY_TIMEOUT):
+            return {"error": "timeout"}
+        return sock.recv_json()
+    except Exception as exc:
+        return {"error": str(exc)}
+    finally:
+        sock.close()
+
+
 def _query_account_mode(zmq_url: str) -> str:
     """Query Layer 3 for the MT5 account mode (demo/real/contest).
     Reads account_info.trade_mode cached at worker startup — fully automatic, no env var needed.

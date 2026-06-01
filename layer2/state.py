@@ -45,21 +45,12 @@ ZMQ_REQ_PROP   = _risk["layer3_zmq"]["prop"]["rep"]
 ZMQ_REQ_PERS   = _risk["layer3_zmq"]["personal"]["rep"]
 EQUITY_TIMEOUT = 3_000  # ms
 
-# ── Allowed pairs + news-filter currencies — loaded from config/allowed_pairs.json ──
-# To add or remove a pair, edit that file and restart Layer 2. No code change needed.
-# Format: { "EURUSD": ["EUR", "USD"], ... }
-_ALLOWED_PAIRS_PATH = ROOT / "config" / "allowed_pairs.json"
-with _ALLOWED_PAIRS_PATH.open() as _f:
-    _pair_config: dict[str, list[str]] = json.load(_f)
-
-ALLOWED_PAIRS: frozenset[str] = frozenset(_pair_config.keys())
-
-# ForexFactory currency codes that each pair is sensitive to.
-# FF tags events with currency codes directly (e.g. "USD", "EUR") — no country mapping needed.
-_TICKER_CURRENCIES: dict[str, frozenset[str]] = {
-    ticker: frozenset(currencies)
-    for ticker, currencies in _pair_config.items()
-}
+# ── Allowed pairs + news-filter currencies — derived from the canonical
+#    registry (config/symbols.json via layer2.symbols). Single source of truth:
+#    add a pair there and restart; no edit here. _TICKER_CURRENCIES holds the
+#    ForexFactory currency codes each pair is sensitive to (FF tags events with
+#    the currency code directly, e.g. "USD"/"EUR").
+from layer2.symbols import ALLOWED_PAIRS, TICKER_CURRENCIES as _TICKER_CURRENCIES
 
 _NEWS_AWARENESS_WINDOW   = 60   # minutes before news → scan / log only
 _NEWS_TRADING_BAN_WINDOW = 30   # minutes before news → close positions + suppress

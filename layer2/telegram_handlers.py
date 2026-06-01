@@ -36,6 +36,7 @@ from layer2.state import (
 )
 from layer2.zmq_helpers import (
     _query_equity, _query_positions, _snapshot_positions_str,
+    _query_checksymbols,
     _dispatch_force_close, _dispatch_close_ticker, _dispatch_news_suppress,
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
@@ -1713,6 +1714,45 @@ async def _cmd_health(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         f"Layer 2 (VPS #1): 🟢 Alive\n"
         f"Personal Signal (VPS #2): {pers_h}\n"
         f"Prop Hedge (VPS #3): {prop_h}",
+        parse_mode="HTML",
+    )
+
+
+def _fmt_checksymbols_leg(label: str, rep: dict) -> str:
+    """One account's symbol-resolution block for /checksymbols."""
+    if rep.get("error"):
+        return f"<b>{label}</b>: 🔴 {rep['error']}\n"
+    supported = rep.get("supported", [])
+    found     = rep.get("found", [])
+    missing   = rep.get("missing", [])
+    mapping   = rep.get("mapping", {})
+    n_sup, n_found = len(supported), len(found)
+    out = (
+        f"<b>{label}</b>\n"
+        f"Supported: {n_sup}   Found: {n_found}   Missing: {n_sup - n_found}\n"
+    )
+    # Reveal the broker's discovered suffix on a few non-identity mappings.
+    examples = [f"{c}→{b}" for c, b in mapping.items() if b != c][:4]
+    if examples:
+        out += f"Broker naming: <code>{', '.join(examples)}</code>\n"
+    if missing:
+        out += f"❌ Missing: <code>{', '.join(missing)}</code>\n"
+    return out
+
+
+async def _cmd_checksymbols(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Per-broker symbol-resolution health check. Asks each Layer 3 worker which
+    canonical tickers resolved to a real MT5 symbol and which are MISSING."""
+    if not _auth(update):
+        return
+    pers = await asyncio.to_thread(_query_checksymbols, ZMQ_REQ_PERS)
+    prop = await asyncio.to_thread(_query_checksymbols, ZMQ_REQ_PROP)
+    await update.message.reply_text(
+        f"{_cmd_header('🧭 <b>Symbol Check</b>')}"
+        f"{_fmt_checksymbols_leg('Personal (VPS #2)', pers)}\n"
+        f"{_fmt_checksymbols_leg('Prop (VPS #3)', prop)}\n"
+        f"<i>Only arm a TradingView alert for pairs shown FOUND on the broker "
+        f"that trades them.</i>",
         parse_mode="HTML",
     )
 
@@ -4101,6 +4141,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))
     tg_app.add_handler(CommandHandler("pnl",           _cmd_pnl))
     tg_app.add_handler(CommandHandler("health",        _cmd_health))
+    tg_app.add_handler(CommandHandler("checksymbols",  _cmd_checksymbols))
     tg_app.add_handler(CommandHandler("news",          _cmd_news))
     tg_app.add_handler(CommandHandler("blackboard",    _cmd_blackboard))
     tg_app.add_handler(CommandHandler("resumepair",    _cmd_resumepair))

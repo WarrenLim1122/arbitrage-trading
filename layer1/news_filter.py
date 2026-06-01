@@ -11,21 +11,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from layer1.ff_calendar import fetch_events_sync
+from layer2.symbols import TICKER_CURRENCIES as _TICKER_CURRENCIES
 
 logger = logging.getLogger(__name__)
 
-# Maps each traded pair to the currencies that can trigger a news block.
-# ForexFactory tags events with the currency code directly (e.g. "EUR" for ECB events,
-# "USD" for Fed events) — no country→currency mapping needed.
-_TICKER_CURRENCIES: dict[str, frozenset[str]] = {
-    "EURUSD": frozenset({"EUR", "USD"}),
-    "GBPUSD": frozenset({"GBP", "USD"}),
-    "USDCHF": frozenset({"USD", "CHF"}),
-    "USDCAD": frozenset({"USD", "CAD"}),
-    "USDJPY": frozenset({"USD", "JPY"}),
-    "NZDUSD": frozenset({"NZD", "USD"}),
-    "XAUUSD": frozenset({"USD"}),
-}
+# _TICKER_CURRENCIES maps each pair to the currencies that can trigger a news
+# block. It is derived from the canonical registry (config/symbols.json) so a
+# new pair's news-currency exposure comes for free. ForexFactory tags events
+# with the currency code directly (e.g. "EUR" for ECB, "USD" for Fed).
 
 
 async def check_news_window(

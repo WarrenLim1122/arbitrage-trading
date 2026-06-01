@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
 from layer1.news_filter import check_news_window
+from layer2.symbols import ALLOWED_PAIRS  # canonical registry — single source of truth
 
 # ── Logging setup ─────────────────────────────────────────────────────────
 LOG_DIR = Path(__file__).parent.parent / "logs"
@@ -54,10 +55,8 @@ _TG_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
 # for the same blocking event.
 _suppression_notified: set[tuple[str, str]] = set()
 
-ALLOWED_PAIRS: frozenset[str] = frozenset({
-    "EURUSD", "GBPUSD", "USDCHF", "USDCAD", "USDJPY",
-    "NZDUSD", "XAUUSD",
-})
+# ALLOWED_PAIRS is imported from layer2.symbols (config/symbols.json). Add a
+# pair there once and Layer 1 accepts it automatically — no edit here.
 
 # ── Telegram suppression alert ────────────────────────────────────────────
 

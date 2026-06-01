@@ -140,40 +140,14 @@ def _save_dd_params() -> None:
         json.dump(_dd_params, f, indent=2)
 
 
-# ── Symbol map — broker-specific ticker name resolution ───────────────────
+# ── Symbol resolution — delegated to symbol_mapper ─────────────────────────
+# symbol_mapper is the ONE authority on broker naming. The canonical→broker
+# table is discovered from mt5.symbols_get() at startup (see _discover_symbols,
+# called from main() after MT5 connects). _resolve_symbol stays a thin alias so
+# every existing call site is unchanged; it reads the live mapping at call time.
+from . import symbol_mapper
 
-SYMBOL_MAP_PATH = Path(__file__).parent.parent / "config" / "symbol_map.json"
-
-_DEFAULT_SYMBOL_MAP: dict[str, str] = {
-    "EURUSD": "EURUSD",
-    "GBPUSD": "GBPUSD",
-    "USDCHF": "USDCHF",
-    "USDCAD": "USDCAD",
-    "USDJPY": "USDJPY",
-    "NZDUSD": "NZDUSD",
-    "XAUUSD": "XAUUSD",
-}
-
-_symbol_map: dict[str, str] = {}
-
-
-def _load_symbol_map() -> None:
-    global _symbol_map
-    if SYMBOL_MAP_PATH.exists():
-        with SYMBOL_MAP_PATH.open() as f:
-            _symbol_map = json.load(f)
-        logger.info("Symbol map loaded: %s", _symbol_map)
-    else:
-        _symbol_map = dict(_DEFAULT_SYMBOL_MAP)
-        SYMBOL_MAP_PATH.parent.mkdir(exist_ok=True)
-        with SYMBOL_MAP_PATH.open("w") as f:
-            json.dump(_symbol_map, f, indent=2)
-        logger.info("Symbol map created with defaults: %s", _symbol_map)
-
-
-def _resolve_symbol(canonical: str) -> str:
-    """Map canonical ticker to this broker's actual MT5 symbol name."""
-    return _symbol_map.get(canonical, canonical)
+_resolve_symbol = symbol_mapper.resolve
 
 
 # ── MT5 connection ────────────────────────────────────────────────────────
@@ -1327,6 +1301,23 @@ def _build_order_check_reply(msg: dict) -> dict:
     }
 
 
+def _build_checksymbols_reply() -> dict:
+    """Return the symbol-resolution report for /checksymbols.
+
+    Uses the mapping discovered at startup. `mapping` is {canonical: broker};
+    `missing` lists canonicals with no broker symbol on this account.
+    """
+    report = symbol_mapper.last_report()
+    if report is None:
+        return {"supported": [], "found": [], "missing": [], "mapping": {}, "error": "discovery not run"}
+    return {
+        "supported": report["supported"],
+        "found":     report["found"],
+        "missing":   report["missing"],
+        "mapping":   report["mapping"],
+    }
+
+
 def _build_account_mode_reply() -> dict:
     """Return cached MT5 account mode (queried from account_info.trade_mode at connect)."""
     return {"account_mode": _account_mode}
@@ -1444,6 +1435,8 @@ def _rep_loop(ctx: zmq.Context) -> None:
             reply = _build_order_check_reply(msg)
         elif query == "account_mode":
             reply = _build_account_mode_reply()
+        elif query == "checksymbols":
+            reply = _build_checksymbols_reply()
         else:
             reply = _build_equity_reply(ticker, want_fee=bool(msg.get("want_fee", False)))
         try:
@@ -1546,26 +1539,43 @@ def _pull_loop(ctx: zmq.Context) -> None:
 
 # ── Entrypoint ────────────────────────────────────────────────────────────
 
-def _ensure_symbols_in_market_watch() -> None:
-    """Add all symbols from the symbol map to MT5 MarketWatch so tick data is available.
+def _discover_symbols() -> None:
+    """Discover this broker's symbol names, validate every canonical, cache the
+    mapping, and add each resolved symbol to MarketWatch.
 
-    symbol_info_tick() returns None for symbols not in MarketWatch, which causes
-    _execute_order to abort silently. Calling symbol_select() at startup prevents this.
+    Must run AFTER _connect_mt5() — mt5.symbols_get() needs a live terminal.
+    symbol_info_tick() returns None for symbols not in MarketWatch, which makes
+    _execute_order abort silently; symbol_select() at startup prevents that.
+    Missing symbols are logged as [ERROR] (loud, never silent) and surfaced
+    on demand via the /checksymbols Telegram command.
     """
     with _mt5_lock:
-        for resolved in _symbol_map.values():
-            ok = mt5.symbol_select(resolved, True)
-            if not ok:
+        raw = mt5.symbols_get() or []
+    available = [s.name for s in raw]
+    login = MT5_LOGIN
+    report = symbol_mapper.discover(available, login)
+
+    logger.info(
+        "Symbol discovery (%d broker symbols scanned):\n%s",
+        len(available), symbol_mapper.format_report(report),
+    )
+    if report["missing"]:
+        logger.error(
+            "SYMBOL VALIDATION — %d canonical ticker(s) NOT found on this broker: %s. "
+            "Do not arm a TradingView alert for these — signals would die at execution.",
+            len(report["missing"]), ", ".join(report["missing"]),
+        )
+
+    with _mt5_lock:
+        for resolved in report["mapping"].values():
+            if not mt5.symbol_select(resolved, True):
                 logger.warning("symbol_select failed for %s — tick data may be unavailable", resolved)
-            else:
-                logger.info("symbol_select OK: %s", resolved)
 
 
 def main() -> None:
-    _load_symbol_map()
     _load_dd_params()
     _connect_mt5()
-    _ensure_symbols_in_market_watch()
+    _discover_symbols()
     ctx = zmq.Context.instance()
     threading.Thread(target=_rep_loop,      args=(ctx,), daemon=True, name="rep-equity").start()
     threading.Thread(target=_sgt_scheduler, daemon=True, name="sgt-scheduler").start()

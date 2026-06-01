@@ -78,17 +78,17 @@ VPS #1 layers run as systemd services (auto-restart). VPS #2/#3 workers run in P
 | 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). **Critical phase1-persistence fix shipped session 13** (see Current State). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
 | 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ **Live cutover UNBLOCKED (2026-05-26)** — both VPS desktops streaming live (459166 SGD + 12250900 USD). Connection rewrite shipped (`72b3921` + `75f55f5`): self-launch + hard account guard. Awaiting `git pull` + worker start on both VPSes. See Current State + VPS MT5 Setup. |
 
-## Covered Instruments
+## Covered Instruments — single source of truth: `config/symbols.json`
 
-7 pairs — any other ticker rejected at Layer 1:
+The canonical registry (`config/symbols.json`, loaded by `layer2/symbols.py`) is **the** list. **33 symbols** today (31 FX + XAUUSD + XAGUSD): 7 majors, 8 Asian, 4 other, 12 exotic/NDF, 2 metals. Canonical names = **TradingView names** — the permanent standard. To add a pair (e.g. USDMXN): add one line to `config/symbols.json` and restart. No code change.
 
-```
-EURUSD  GBPUSD  USDCHF  USDCAD  USDJPY  NZDUSD  XAUUSD
-```
+Every gate now derives from that file: `layer1/main.py ALLOWED_PAIRS`, `layer1/news_filter.py _TICKER_CURRENCIES`, `layer2/state.py ALLOWED_PAIRS/_TICKER_CURRENCIES` all import from `layer2.symbols`. (`config/allowed_pairs.json` was **deleted** — superseded.)
 
-`pip_type`: `"jpy"` for USDJPY, `"standard"` for all others.
+**Broker translation is isolated to Layer 3** (`layer3/symbol_mapper.py`): it discovers each broker's MT5 symbol name from `mt5.symbols_get()` at startup (`EURUSD`→`EURUSD.a`/`.pro`/`m`/…), validates every canonical, caches per-account at `config/symbol_cache_<login>.json`, and refuses cross-currency matches (USDCNY never maps to USDCNH). Missing symbols log `[ERROR]` at startup and show in **`/checksymbols`** (per-broker SUPPORTED/FOUND/MISSING). `config/symbol_map.json` is now an optional manual-override file (canonical→broker), empty by default. Layers 1/2 never see a broker suffix.
 
-> **Dropped 2026-05-29:** XAGUSD (silver) and NAS100/USTEC are no longer traded. The trading gates — `config/allowed_pairs.json`, `config/symbol_map.json`, `layer1/main.py` `ALLOWED_PAIRS`, `layer1/news_filter.py` `_TICKER_CURRENCIES`, and `layer3/_worker_core.py` `_DEFAULT_SYMBOL_MAP` — are all the 7 above. Price-formatting helpers (`_fmt_price` in `state.py`, the journal metals/index classifiers) intentionally still recognise XAGUSD/indices as a harmless superset so historical records render. The Layer 0 `.pine` and the TradingView chart/alert set are managed on TradingView, not in-repo.
+> **Two gates, by design:** the registry *opens* the system to a pair; the **TradingView alert** is the real on/off switch (no alert → no signal → no trade). Only arm an alert for a pair `/checksymbols` shows FOUND on the broker that trades it — otherwise the signal dies at Layer 3 execution. Most exotic/NDF/pegged tier (USDIDR, USDVND, USDPKR, USDLKR, USDBDT, USDCNY, USDSAR/AED/QAR, …) will report MISSING on retail/prop MT5; that is expected, not a bug.
+
+`pip_type`: `"jpy"` for USDJPY, `"standard"` otherwise (display only — lot sizing reads live `contract_size`/`tick_value` from MT5, so it generalises to any pair). Price-formatting helpers still recognise metals/indices as a harmless superset for historical records. The Layer 0 `.pine` + TradingView chart/alert set are managed on TradingView, not in-repo.
 
 ---
 

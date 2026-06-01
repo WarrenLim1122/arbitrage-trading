@@ -1,0 +1,39 @@
+{
+  "EURUSD": {"currencies": ["EUR", "USD"], "tier": "major"},
+  "GBPUSD": {"currencies": ["GBP", "USD"], "tier": "major"},
+  "AUDUSD": {"currencies": ["AUD", "USD"], "tier": "major"},
+  "NZDUSD": {"currencies": ["NZD", "USD"], "tier": "major"},
+  "USDJPY": {"currencies": ["USD", "JPY"], "tier": "major"},
+  "USDCHF": {"currencies": ["USD", "CHF"], "tier": "major"},
+  "USDCAD": {"currencies": ["USD", "CAD"], "tier": "major"},
+
+  "USDSGD": {"currencies": ["USD", "SGD"], "tier": "asian"},
+  "USDTHB": {"currencies": ["USD", "THB"], "tier": "asian"},
+  "USDPHP": {"currencies": ["USD", "PHP"], "tier": "asian"},
+  "USDTWD": {"currencies": ["USD", "TWD"], "tier": "asian"},
+  "USDHKD": {"currencies": ["USD", "HKD"], "tier": "asian"},
+  "USDKRW": {"currencies": ["USD", "KRW"], "tier": "asian"},
+  "USDINR": {"currencies": ["USD", "INR"], "tier": "asian"},
+  "USDCNH": {"currencies": ["USD", "CNH"], "tier": "asian"},
+
+  "USDZAR": {"currencies": ["USD", "ZAR"], "tier": "other"},
+  "USDNOK": {"currencies": ["USD", "NOK"], "tier": "other"},
+  "USDDKK": {"currencies": ["USD", "DKK"], "tier": "other"},
+  "USDSEK": {"currencies": ["USD", "SEK"], "tier": "other"},
+
+  "USDMYR": {"currencies": ["USD", "MYR"], "tier": "exotic"},
+  "USDBND": {"currencies": ["USD", "BND"], "tier": "exotic"},
+  "USDCNY": {"currencies": ["USD", "CNY"], "tier": "exotic"},
+  "USDIDR": {"currencies": ["USD", "IDR"], "tier": "exotic"},
+  "USDVND": {"currencies": ["USD", "VND"], "tier": "exotic"},
+  "USDSAR": {"currencies": ["USD", "SAR"], "tier": "exotic"},
+  "USDAED": {"currencies": ["USD", "AED"], "tier": "exotic"},
+  "USDQAR": {"currencies": ["USD", "QAR"], "tier": "exotic"},
+  "USDPGK": {"currencies": ["USD", "PGK"], "tier": "exotic"},
+  "USDPKR": {"currencies": ["USD", "PKR"], "tier": "exotic"},
+  "USDLKR": {"currencies": ["USD", "LKR"], "tier": "exotic"},
+  "USDBDT": {"currencies": ["USD", "BDT"], "tier": "exotic"},
+
+  "XAUUSD": {"currencies": ["USD"], "tier": "metal"},
+  "XAGUSD": {"currencies": ["USD"], "tier": "metal"}
+}
