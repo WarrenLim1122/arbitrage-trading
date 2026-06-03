@@ -17,11 +17,11 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 ---
 
-## 🔔 Next Session — RESUME FROM `handoff/SESSION-HANDOFF.md`
+## 🔔 Next Session — RESUME FROM `docs/SESSION_HANDOFF.md`
 
 Surface this the first time Warren returns:
 
-**Read `handoff/SESSION-HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy the symbol-mapper + session-14 work to both layers** (`/update layer2` + `/update layer3` ×2 — Layer 1/2 and `_worker_core.py` changed). No `pyproject.toml` change → no `uv sync`. After workers restart, run **`/checksymbols`** to capture each broker's real FOUND/MISSING tables. See `## Current State` below.
+**Read `docs/SESSION_HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy the symbol-mapper (session 15) + the deal-history timezone fix (session 16) to Layer 3** — `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed) and `/update layer2` (session 15 Layer 1/2). No `pyproject.toml` change → no `uv sync`. After workers restart, run **`/checksymbols`** (capture each broker's FOUND/MISSING) and **close one trade to confirm the close alert arrives ≤30s with real P&L, no `(est.)`, no "Journal Queued"**. See `## Current State` below.
 
 Lower-priority queued (not yet done):
 1. **Folder reorganization** — deletion table in the prior handoff at git `accd561`. (The `Suggest To Delete/` pen was emptied this session; an empty dir shell remains for Warren to `rmdir`.)
@@ -180,7 +180,17 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ---
 
-## Current State (as of 2026-06-01)
+## Current State (as of 2026-06-03)
+
+### Session 16 — Deal-history timezone window fix (journal lag / `(est.)` close alerts) — SHIPPED to `main`, pending Layer 3 deploy
+
+Commits: `884eb02` (retry backoff extend), `4a2222a` (the real fix — `to_dt` window), `855a421` (presentation test).
+
+- **Real root cause found:** `mt5.history_deals_get(from,to)` filters on `deal.time`, which MT5 reports in the **trade server's timezone (≈UTC+2/+3), not UTC**. Both deal-history queries set `to_dt = UTC-now + a few seconds`, so a just-closed deal — stamped 2-3h ahead — fell outside the window and stayed invisible for hours. THAT (not broker lag) is why journaling always queued and close alerts showed `(est.)`, **on the live account too**. The "MetaQuotes Demo lags 2-3h" note in old comments was this same bug misdiagnosed. Memory: [[mt5-deal-history-server-timezone]].
+- **Fix (read-window only, zero execution risk):** `to_dt = UTC-now + 1 day` in `layer3/journal/journaling_worker.py::_get_deals` AND `layer3/_worker_core.py::_build_deal_pnl_reply`. Both still filter by exact `position_id` + `DEAL_ENTRY_OUT` → a wide future window can't match a wrong deal. Deal now surfaces on the first query → Layer 2's 30s monitor flushes `msg_position_closed` with real P&L/exit/fee, no `(est.)`, and the journal rarely queues.
+- Also extended the Layer 3 inline retry backoff to ~735s (>L2's ~630s close-alert cap) as a backstop so any genuine outage orders "Journal Queued" *after* the close alert, not before.
+- **Tests: 107 pass** (+3 new `tests/layer2/test_position_closed_alert.py` pinning the no-`(est.)` presentation contract). `msg_position_closed` text logic was verified correct and **left unchanged** — it already renders real values whenever `deal['found']`.
+- **Deploy:** `/update layer3` ×2 (both `_worker_core.py` + `journaling_worker.py` changed). No `pyproject.toml` change. Confirm by closing one trade: alert ≤30s, real P&L, no `(est.)`.
 
 ### Session 15 — Universal symbol mapper + TradingView webhook 422 fix — SHIPPED to `main`, pending deploy
 
@@ -252,4 +262,4 @@ Templates 20-37 received an additional layout retrofit on 2026-05-29: `Label: va
 
 ### Next session
 
-Read `handoff/SESSION-HANDOFF.md` — it queues (A) retrofit msgs 1-19 with the three 20-37 layout fixes, (B) deep discussion with Warren on overall message structure + write a one-paragraph spec into this file, (C) fold (B)'s spec back into CLAUDE.md. Folder reorganization (from the prior handoff at `accd561`) is still queued at lower priority.
+Read `docs/SESSION_HANDOFF.md` — it carries the in-flight delta. Lower-priority queued items still open: (A) retrofit msgs 1-19 with the three 20-37 layout fixes, (B) deep discussion with Warren on overall message structure + write a one-paragraph spec, (C) fold (B)'s spec back into CLAUDE.md. Folder reorganization (from the prior handoff at `accd561`) is still queued at lower priority.
