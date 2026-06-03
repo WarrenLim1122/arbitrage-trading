@@ -352,11 +352,18 @@ def handle_closed_position(
         if not exit_deals and not skip_retry:
             import time
             # MT5 history can lag several minutes after close (MetaQuotes Demo in particular
-            # can take >2 min to sync deal history). Extended backoff covers ~7 min total.
-            for attempt, wait in enumerate([5, 10, 20, 40, 60, 120, 180], start=1):
+            # can take >2 min to sync deal history). Backoff sums to ~735s (~12 min) — chosen
+            # to OUTLAST Layer 2's close-alert buffer (_CLOSE_DEAL_TIMEOUT = 600s in
+            # logic_core.py, +~30s poll jitter ⇒ ~630s worst case). Two reasons:
+            #   1. More attempts ⇒ the deal usually surfaces, so "Journal Queued" is skipped.
+            #   2. If it still doesn't, the enqueue (and its "Journal Queued" notification)
+            #      now fires AFTER Layer 2's "Take Profit" close alert — fixing the
+            #      out-of-order race where the journal note appeared before the close report.
+            backoff = [5, 10, 20, 40, 60, 120, 180, 300]
+            for attempt, wait in enumerate(backoff, start=1):
                 logger.info(
-                    "Journal: no exit deal yet for position %d (attempt %d/7) — retrying in %ds",
-                    position_ticket, attempt, wait,
+                    "Journal: no exit deal yet for position %d (attempt %d/%d) — retrying in %ds",
+                    position_ticket, attempt, len(backoff), wait,
                 )
                 time.sleep(wait)
                 entry_deals, exit_deals = _get_deals(mt5_lock, position_ticket, open_time)
@@ -371,7 +378,7 @@ def handle_closed_position(
                     position_ticket,
                 )
             else:
-                # All 7 inline retries failed — save to persistent queue for later retry.
+                # All inline retries failed — save to persistent queue for later retry.
                 # pos_snapshot now includes _screenshot_fields so the screenshot is preserved.
                 _enqueue_pending_deal(position_ticket, pos_snapshot, mt5_account_id, worker_name)
                 logger.warning(

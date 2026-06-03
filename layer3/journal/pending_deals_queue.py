@@ -1,7 +1,7 @@
 """
 Persistent retry queue for journal entries where MT5 deal history wasn't available.
 
-When the inline 7-attempt retry in journaling_worker exhausts without finding the exit
+When the inline retry backoff in journaling_worker exhausts without finding the exit
 deal, the position snapshot is saved here. A background thread retries every
 RETRY_INTERVAL seconds, calling handle_closed_position with skip_retry=True (one attempt,
 no sleep). Entries older than MAX_AGE_HOURS are dropped.
