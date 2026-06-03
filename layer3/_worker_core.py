@@ -1344,7 +1344,14 @@ def _build_deal_pnl_reply(symbol: str, ticket: int | None = None) -> dict:
         return {**base, "found": False, "error": "no symbol"}
     try:
         from_dt = datetime.now(timezone.utc) - timedelta(hours=24)
-        to_dt   = datetime.now(timezone.utc) + timedelta(seconds=30)
+        # to_dt must lead UTC-now by more than the trade server's UTC offset.
+        # mt5.history_deals_get() filters on deal.time, reported in the SERVER
+        # timezone (≈ UTC+2/+3), not UTC — so a just-closed deal sits 2-3h ahead
+        # of UTC-now and a tight `now+30s` upper bound excludes it for hours,
+        # forcing the close alert to wait out its 600s cap and show (est.).
+        # +1 day covers any plausible offset; the strict position_id filter below
+        # means a wide future window can never attribute the wrong trade's P&L.
+        to_dt   = datetime.now(timezone.utc) + timedelta(days=1)
         with _mt5_lock:
             deals = mt5.history_deals_get(from_dt, to_dt) or []
 

@@ -179,7 +179,15 @@ def _get_deals(mt5_lock, position_ticket: int, open_time: datetime):
     # of the actual close time. The min() guard ensures from_dt is always before to_dt.
     safe_from = datetime.now(timezone.utc) - timedelta(hours=6)
     from_dt   = min(open_time - timedelta(hours=2), safe_from)
-    to_dt     = datetime.now(timezone.utc) + timedelta(seconds=60)
+    # to_dt must lead UTC-now by more than the trade server's UTC offset.
+    # mt5.history_deals_get() filters on deal.time, which MT5 reports in the
+    # SERVER timezone (Fusion/FundingPips/MetaQuotes ≈ UTC+2/+3), not UTC. A
+    # just-closed deal therefore carries a stamp 2-3h ahead of UTC-now; a tight
+    # `now+60s` upper bound excludes it until the UTC clock catches up — which is
+    # the real reason journaling "lagged" and queued even on the live account.
+    # +1 day covers any plausible offset (≤±14h); the exact position_id filter
+    # below means an over-wide future window can never match the wrong deal.
+    to_dt     = datetime.now(timezone.utc) + timedelta(days=1)
 
     with mt5_lock:
         all_deals = mt5.history_deals_get(from_dt, to_dt) or []
