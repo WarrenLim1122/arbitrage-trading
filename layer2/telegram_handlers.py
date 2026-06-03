@@ -1162,6 +1162,39 @@ async def _cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("Telegram: resumed by user — soft_kill_override_day=%s", today_day)
 
 
+async def _cmd_rearm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-arm today's SOFT kills after an accidental /resume.
+
+    /resume sets a same-day override that suppresses K1 (daily DD), K3 (daily
+    profit cap) and the Phase 1 stage halt for the rest of the session — so if
+    you /resume by mistake, today's daily halt stops working. This clears that
+    override so the monitor will halt again the moment a daily kill is tripped.
+    Permanent kills (K2/K4/K5) are never suppressed and are unaffected."""
+    if not _auth(update):
+        return
+    with _state_lock:
+        had_override = bool(_phase_state.get("soft_kill_override_day", ""))
+        _phase_state.pop("soft_kill_override_day", None)
+        _save_phase(_phase_state)
+    if had_override:
+        body = (
+            "Today's daily-loss (K1) and profit-cap (K3) kills — plus the Phase 1 "
+            "stage halt — are <b>active again</b>. If one is already tripped, the next "
+            "monitor tick will halt trading.\n\n"
+            "<i>Permanent kills (K2/K4/K5) were never suppressed.</i>"
+        )
+    else:
+        body = (
+            "No soft-kill override was active — nothing to re-arm.\n\n"
+            "Today's K1/K3 are already armed."
+        )
+    await update.message.reply_text(
+        f"{_cmd_header('🔁 <b>Soft Kills Re-armed</b>')}{body}",
+        parse_mode="HTML",
+    )
+    logger.info("Telegram: soft-kill override cleared by /rearm (had_override=%s)", had_override)
+
+
 async def _cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if not _auth(update):
         return
@@ -2475,6 +2508,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "<b>Trading Control</b>\n"
         "/resume — Resume signal processing\n"
         "/stop — Halt new signals\n"
+        "/rearm — Re-arm today's K1/K3 soft kills (undo /resume)\n"
         "/phase1 — Start Phase 1\n"
         "/phase2 — Start Phase 2\n\n"
 
@@ -4079,6 +4113,7 @@ def _run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", _wiz_cancel)],
         per_chat=True,
+        allow_reentry=True,
     )
 
     p2_wizard = ConversationHandler(
@@ -4093,6 +4128,7 @@ def _run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", _p2_cancel)],
         per_chat=True,
+        allow_reentry=True,
     )
 
     emergency_wizard = ConversationHandler(
@@ -4102,6 +4138,7 @@ def _run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", _emergency_abort)],
         per_chat=True,
+        allow_reentry=True,
     )
 
     closepair_wizard = ConversationHandler(
@@ -4111,6 +4148,7 @@ def _run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", _closepair_abort)],
         per_chat=True,
+        allow_reentry=True,
     )
 
     setwindow_wizard = ConversationHandler(
@@ -4120,6 +4158,7 @@ def _run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", _setwindow_abort)],
         per_chat=True,
+        allow_reentry=True,
     )
 
     phase1_wizard = ConversationHandler(
@@ -4130,6 +4169,7 @@ def _run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", _p1_cancel)],
         per_chat=True,
+        allow_reentry=True,
     )
 
     tg_app = Application.builder().token(BOT_TOKEN).build()
@@ -4141,6 +4181,7 @@ def _run_bot() -> None:
     tg_app.add_handler(phase1_wizard)
     tg_app.add_handler(CommandHandler("stop",          _cmd_stop))
     tg_app.add_handler(CommandHandler("resume",        _cmd_resume))
+    tg_app.add_handler(CommandHandler("rearm",         _cmd_rearm))
     tg_app.add_handler(CommandHandler("status",        _cmd_status))
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("equity",         _cmd_equity))
@@ -4164,6 +4205,7 @@ def _run_bot() -> None:
         },
         fallbacks=[CommandHandler("cancel", _update_cancel)],
         per_chat=True,
+        allow_reentry=True,
     )
     tg_app.add_handler(update_wizard)
     tg_app.add_handler(CommandHandler("checkaccount",  _cmd_checkaccount))
