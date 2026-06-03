@@ -311,6 +311,42 @@ def _dispatch_parameters() -> None:
         logger.error("SET_PARAMETERS dispatch failed: %s", exc)
 
 
+def _reset_fee_anchor(zmq_url: str) -> dict:
+    """Ask a worker to re-anchor its per-cycle trading fee to 'now' (fee → 0).
+
+    Returns the worker reply ({"ok": bool, ...}) or {"ok": False, "error": ...}
+    on transport failure. Never raises — a worker being offline must not block
+    the /changepropfirm or /phase2 confirmation.
+    """
+    sock = _zmq_ctx.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    sock.connect(zmq_url)
+    try:
+        sock.send_json({"query": "reset_fee_anchor"})
+        if not sock.poll(EQUITY_TIMEOUT):
+            return {"ok": False, "error": f"timed out ({zmq_url})"}
+        return sock.recv_json()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    finally:
+        sock.close()
+
+
+def _dispatch_fee_anchor_reset() -> None:
+    """Reset the per-cycle trading-fee anchor on BOTH workers (new cycle start).
+
+    Called after /changepropfirm confirm and /phase2 — each starts a fresh cycle,
+    so the Trading Fee shown in /equity restarts from 0. Best-effort: logs each
+    leg; an offline worker keeps its stale anchor until the next reset.
+    """
+    for name, url in (("prop", ZMQ_REQ_PROP), ("personal", ZMQ_REQ_PERS)):
+        res = _reset_fee_anchor(url)
+        if res.get("ok"):
+            logger.info("Fee anchor reset → %s: anchor=%.2f", name, res.get("anchor", 0.0))
+        else:
+            logger.warning("Fee anchor reset → %s FAILED: %s", name, res.get("error"))
+
+
 def _query_deal_pnl(zmq_url: str, symbol: str, ticket: int | None = None) -> dict | None:
     """Query Layer 3 for the actual realized P&L of a closed position.
 

@@ -33,3 +33,6 @@ skills-lock.json
 
 # Per-broker symbol resolution cache (runtime, machine-specific)
 config/symbol_cache_*.json
+
+# Per-account trading-fee cycle anchor (runtime, machine-specific)
+config/fee_anchor_*.json

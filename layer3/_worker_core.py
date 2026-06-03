@@ -1087,6 +1087,80 @@ def _usd_to_account_rate(account_currency: str) -> float:
     return 1.0
 
 
+# ── Trading-fee cycle anchor ──────────────────────────────────────────────
+# Trading Fee is reported PER CYCLE (since the last /changepropfirm or /phase2),
+# not since the account opened. We persist an "anchor" = the full-history fee
+# residual captured at cycle start, then report (residual_now − anchor).
+#
+# Why an anchor (not a since-timestamp filter): MT5's deal.time is in the trade
+# SERVER timezone, not UTC (see the session-16 fix), so a time-windowed deal sum
+# leaks neighbouring-cycle deals. The subtraction is timezone-free.
+#
+# It also FIXES a real bug: the residual is `balance − Σ(every deal.profit)`,
+# which only equals all-in cost when the deposit is booked as a balance-type
+# deal in history. A fresh demo (e.g. FundingPips set to $50k with no deposit
+# deal) has Σprofit=0 → residual=balance → bogus "Trading Fee: $50,000". The
+# unbooked deposit is a constant offset that CANCELS in (residual_now − anchor),
+# so the per-cycle figure is correct for both account types.
+_FEE_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+
+
+def _fee_anchor_path() -> Path:
+    return _FEE_CONFIG_DIR / f"fee_anchor_{MT5_LOGIN}.json"
+
+
+def _load_fee_anchor() -> float:
+    """Cycle-start fee residual. 0.0 when unset → legacy all-history behaviour."""
+    try:
+        with open(_fee_anchor_path()) as f:
+            return float(json.load(f).get("anchor", 0.0))
+    except Exception:
+        return 0.0
+
+
+def _save_fee_anchor(value: float) -> None:
+    with open(_fee_anchor_path(), "w") as f:
+        json.dump(
+            {"anchor": round(value, 2), "set_utc": datetime.now(timezone.utc).isoformat()},
+            f,
+        )
+
+
+def _fee_scan() -> tuple[float, float] | None:
+    """Full-history scan → (residual, deposit_total), or None on failure.
+
+    residual = balance − Σ(every deal.profit). deposit_total = Σ balance-type
+    deal profit. `to` leads UTC by a day so server-tz-stamped recent deals are
+    never missed (same reasoning as the deal_pnl / journaling window fix).
+    """
+    with _mt5_lock:
+        acct = mt5.account_info()
+        if not acct:
+            return None
+        balance = acct.balance
+        _from = datetime(2000, 1, 1, tzinfo=timezone.utc)
+        _to   = datetime.now(timezone.utc) + timedelta(days=1)
+        _all  = mt5.history_deals_get(_from, _to) or []
+    all_profit = round(sum(d.profit for d in _all), 2)
+    deposit    = round(sum(d.profit for d in _all if d.type == mt5.DEAL_TYPE_BALANCE), 2)
+    return round(balance - all_profit, 2), deposit
+
+
+def _build_reset_fee_anchor_reply() -> dict:
+    """Re-anchor the per-cycle trading fee to 'now' (fee resets to 0)."""
+    try:
+        scan = _fee_scan()
+        if scan is None:
+            return {"ok": False, "error": "account_info unavailable"}
+        residual, _ = scan
+        _save_fee_anchor(residual)
+        logger.info("Fee anchor reset: residual=%.2f (login=%s)", residual, MT5_LOGIN)
+        return {"ok": True, "anchor": round(residual, 2), "account_login": MT5_LOGIN}
+    except Exception as exc:
+        logger.error("Fee anchor reset failed: %s", exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _build_equity_reply(ticker: str, want_fee: bool = False) -> dict:
     try:
         with _mt5_lock:
@@ -1139,34 +1213,28 @@ def _build_equity_reply(ticker: str, want_fee: bool = False) -> dict:
         # ONLY for the on-demand /equity command — never on the 30 s monitor
         # poll. When not requested, the keys are omitted and Layer 2 hides the
         # Trading Fee / Deposit rows (rather than faking 0.00).
+        # ROBUST IDENTITY — the sum of EVERY deal's `profit` field equals
+        # (capital deposited) + (realized gross trade P&L), because MT5 puts the
+        # deposit amount in profit on balance-type deals and the price-only
+        # realized P&L on closing deals. Commission and swap are SEPARATE fields,
+        # never in profit. So the whole-account residual `balance − Σprofit` is
+        # the all-in trading cost. We then subtract the CYCLE ANCHOR so the
+        # reported fee covers only this cycle (since /changepropfirm or /phase2),
+        # and so an unbooked deposit (fresh demo) cancels out. Negative = net
+        # cost paid (positive only if net swap CREDIT exceeds commission).
+        #
+        # Worked example (live, 2026-05-29, anchor=0): Personal 542.81 −
+        # (486.88 + 61.54) = −5.61; Prop 4911.87 − (5000 + (−81.69)) = −6.44.
         fee_fields: dict = {}
         if want_fee:
             try:
-                _from = datetime(2000, 1, 1, tzinfo=timezone.utc)
-                _to   = datetime.now(timezone.utc) + timedelta(seconds=30)
-                with _mt5_lock:
-                    _all_deals = mt5.history_deals_get(_from, _to) or []
-                # ROBUST IDENTITY — the sum of EVERY deal's `profit` field equals
-                # (capital deposited) + (realized gross trade P&L), because MT5
-                # puts the deposit amount in profit on balance-type deals and the
-                # price-only realized P&L on closing deals (entry/open deals are
-                # 0). Commission and swap are SEPARATE fields, never in profit.
-                # Therefore the whole-account residual is the all-in trading cost:
-                #       trading_fee = balance − Σ(every deal.profit)
-                # No entry/type filtering, so it can't double-count or miss a
-                # closing deal. Negative = net cost paid (positive only if net
-                # swap CREDIT exceeds commission — rare but real).
-                #
-                # Worked example (live, 2026-05-29):
-                #   Personal: 542.81  − (486.88 + 61.54)  = −5.61
-                #   Prop:     4911.87 − (5000  + (−81.69)) = −6.44
-                all_deal_profit = round(sum(d.profit for d in _all_deals), 2)
-                deposit_total   = round(
-                    sum(d.profit for d in _all_deals if d.type == mt5.DEAL_TYPE_BALANCE), 2)
-                fee_fields = {
-                    "trading_fee_total": round(balance - all_deal_profit, 2),
-                    "deposit_total":     deposit_total,
-                }
+                scan = _fee_scan()
+                if scan is not None:
+                    residual, deposit_total = scan
+                    fee_fields = {
+                        "trading_fee_total": round(residual - _load_fee_anchor(), 2),
+                        "deposit_total":     deposit_total,
+                    }
             except Exception as exc:
                 logger.warning("trading-fee reconciliation query failed: %s", exc)
 
@@ -1444,6 +1512,8 @@ def _rep_loop(ctx: zmq.Context) -> None:
             reply = _build_account_mode_reply()
         elif query == "checksymbols":
             reply = _build_checksymbols_reply()
+        elif query == "reset_fee_anchor":
+            reply = _build_reset_fee_anchor_reply()
         else:
             reply = _build_equity_reply(ticker, want_fee=bool(msg.get("want_fee", False)))
         try:

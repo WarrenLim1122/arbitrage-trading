@@ -40,7 +40,7 @@ from layer2.zmq_helpers import (
     _dispatch_force_close, _dispatch_close_ticker, _dispatch_news_suppress,
     _dispatch_news_clear, _close_ticker_on_worker,
     _telegram_alert, _alert_sync,
-    _lock_baseline_from_live, _dispatch_parameters,
+    _lock_baseline_from_live, _dispatch_parameters, _dispatch_fee_anchor_reset,
     ZMQ_REQ_PROP, ZMQ_REQ_PERS, ZMQ_PUSH_PROP, ZMQ_PUSH_PERS,
 )
 from layer2 import phase1_strategy
@@ -432,6 +432,7 @@ async def _wiz_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) 
     floor_amt    = round(prop_b * (1.0 - eff["max_drawdown_overall_pct"] / 100.0), 2)
     cap_amt      = round(prop_b * eff["daily_profit_cap_pct"] / 100.0, 2)
     target_lvl   = round(prop_b * (1.0 + _wizard_data["profit_target_pct"] / 100.0), 2)
+    pers_ccy = await _pers_currency()   # personal baseline shown in account currency (SGD), never $
 
     summary = (
         f"{_cmd_header('📊 <b>Review Account Setup</b>')}"
@@ -442,7 +443,7 @@ async def _wiz_initial_balance(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) 
         f"Consistency: {cons_raw:.1f}% → {cons_eff:.1f}%\n\n"
         f"<b>Baselines</b>\n"
         f"Prop: ${prop_b:,.2f}\n"
-        f"Personal: ${v:,.2f}\n\n"
+        f"Personal: {_money(v, pers_ccy)}\n\n"
         f"<b>Account Type</b>\n"
         f"Drawdown: {'Static' if _wizard_data['drawdown_is_static'] else 'Dynamic'}{dd_flag}\n"
         f"Raw spread: {'Yes' if _wizard_data['raw_spread_account'] else 'No'}{rs_flag}\n"
@@ -522,6 +523,9 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if baseline > 0:
         _dispatch_parameters()
 
+    # New prop-firm = new cycle → restart the per-cycle trading-fee counter.
+    await asyncio.to_thread(_dispatch_fee_anchor_reset)
+
     dd_daily   = eff["max_drawdown_daily_pct"]
     dd_overall = eff["max_drawdown_overall_pct"]
     cap        = eff["daily_profit_cap_pct"]
@@ -532,11 +536,12 @@ async def _wiz_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     target_lvl   = round(baseline * (1.0 + target_pct / 100.0), 2) if baseline > 0 else 0.0
 
     _wizard_data.clear()
+    pers_ccy = await _pers_currency()   # personal baseline in account currency (SGD), never $
     await update.message.reply_text(
         f"{_cmd_header('✅ <b>Account Setup Saved</b>')}"
         f"<b>Baselines</b>\n"
         f"Prop: ${baseline:,.2f}\n"
-        f"Personal: ${pers_baseline:,.2f}\n\n"
+        f"Personal: {_money(pers_baseline, pers_ccy)}\n\n"
         f"<b>Risk Levels</b>\n"
         f"K1 Daily DD: −${daily_dd_amt:,.2f}\n"
         f"K2 Overall floor: ${overall_fl:,.2f}\n"
@@ -1024,19 +1029,23 @@ async def _p2_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     if baseline > 0:
         _dispatch_parameters()
 
+    # Phase 2 = fresh cycle → restart the per-cycle trading-fee counter.
+    await asyncio.to_thread(_dispatch_fee_anchor_reset)
+
     floor_amt    = round(baseline * (1.0 - eff["max_drawdown_overall_pct"] / 100.0), 2) if baseline > 0 else 0.0
     daily_dd_amt = round(baseline * eff["max_drawdown_daily_pct"]  / 100.0, 2) if baseline > 0 else 0.0
     cap_amt      = round(baseline * eff["daily_profit_cap_pct"]    / 100.0, 2) if baseline > 0 else 0.0
     target_lvl   = round(baseline * (1.0 + new["profit_target_pct"] / 100.0), 2) if baseline > 0 else 0.0
 
     _p2_wizard_data.clear()
+    pers_ccy = await _pers_currency()   # personal baseline in account currency (SGD), never $
     await update.message.reply_text(
         f"{_cmd_header('🟢 <b>Phase 2 Active</b>')}"
         f"<b>Risk Mode</b>\n"
         f"Personal multiplier: ×{PHASE_MULT[2]:.2f}\n\n"
         f"<b>Baselines</b>\n"
         f"Prop: ${baseline:,.2f}\n"
-        f"Personal: ${pers_baseline:,.2f}\n\n"
+        f"Personal: {_money(pers_baseline, pers_ccy)}\n\n"
         f"<b>Risk Levels</b>\n"
         f"K1 Daily DD: −${daily_dd_amt:,.2f}\n"
         f"K2 Overall floor: ${floor_amt:,.2f}\n"
