@@ -21,7 +21,7 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 Surface this the first time Warren returns:
 
-**Read `docs/SESSION_HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy the symbol-mapper (session 15) + the deal-history timezone fix (session 16) to Layer 3** — `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed) and `/update layer2` (session 15 Layer 1/2). No `pyproject.toml` change → no `uv sync`. After workers restart, run **`/checksymbols`** (capture each broker's FOUND/MISSING) and **close one trade to confirm the close alert arrives ≤30s with real P&L, no `(est.)`, no "Journal Queued"**. See `## Current State` below.
+**Read `docs/SESSION_HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy sessions 15–17** — `/update layer2` (Telegram changes) AND `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`. After workers restart: run **`/checksymbols`**; **close one trade** to confirm close alert ≤30s with real P&L (no `(est.)`); and run **`/changepropfirm` or `/phase2` once** so the new per-cycle fee anchor is captured (until then prop `/equity` still shows the bogus `$+50,000` Trading Fee). To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`. See `## Current State` below.
 
 Lower-priority queued (not yet done):
 1. **Folder reorganization** — deletion table in the prior handoff at git `accd561`. (The `Suggest To Delete/` pen was emptied this session; an empty dir shell remains for Warren to `rmdir`.)
@@ -181,6 +181,18 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 ---
 
 ## Current State (as of 2026-06-03)
+
+### Session 17 — Per-cycle trading-fee anchor + wizard re-entry / `/rearm` + final personal-`$`→SGD — SHIPPED to `main`, pending deploy
+
+Commits: `427828d` (fee anchor + currency), `2a26bad` (allow_reentry + /rearm).
+
+- **Trading Fee is now per-cycle, not since-account-open.** Root cause of the bogus prop `Trading Fee: $+50,000`: the identity `balance − Σ(deal.profit)` assumes the deposit is booked as a balance-type deal; a fresh demo (FundingPips set to $50k, no deposit deal) has `Σprofit=0` → `fee=balance`. Fix: worker persists a **fee anchor** = `(balance − Σdeal.profit)` at cycle start (`config/fee_anchor_<login>.json`, gitignored); `/equity` reports `(residual − anchor)`. The unbooked-deposit offset cancels in the subtraction, so it's correct for both account types. New worker query `reset_fee_anchor`; Layer 2 fires `_dispatch_fee_anchor_reset()` on **both** workers after `/changepropfirm` and `/phase2`. Also widened the fee-scan `to_dt` to `now+1day` (server-tz, same as session 16). **After deploy, prop fee still shows $+50,000 until a reset fires — run `/changepropfirm` or `/phase2` once to capture the anchor.**
+- **`/phase1` "no prompt" bug fixed:** no ConversationHandler had `allow_reentry`, so re-sending `/phase1` while already mid-conversation was silently ignored (no prompt reappeared). Added `allow_reentry=True` to all 7 wizards. Stuck-state recovery without deploy: `/cancel` then `/phase1`.
+- **New `/rearm` command** (in `/help` under Trading Control): clears `soft_kill_override_day` so today's K1/K3 + Phase 1 stage halt fire again after an accidental `/resume`. Permanent kills (K2/K4/K5) unaffected.
+- **Final personal-`$`→SGD:** the last 3 hardcoded `$` offenders (wizard baseline echoes — `/changepropfirm` review, Account Setup Saved, Phase 2 Active) now use `_money(v, await _pers_currency())`. Full audit confirms zero personal-context `$` remain. `$` on prop risk figures (`/pnl`, stages, reward:risk) is correct (prop-USD). Memory: [[telegram-reporting-standards]].
+- **Phase 1 reward:risk scales with baseline:** `9000:2000` was for the $100k account; the live $50k account uses `4500:1000` (first_reward must be < target = $5,000). Warren will configure it himself. Memory: [[phase1-reward-risk-scaling]].
+- Tests: **107 pass** (no test changes — behavior is config/transport).
+- **Deploy:** `/update layer2` (Telegram) + `/update layer3` ×2 (`_worker_core.py` changed). No `pyproject.toml` change.
 
 ### Session 16 — Deal-history timezone window fix (journal lag / `(est.)` close alerts) — SHIPPED to `main`, pending Layer 3 deploy
 

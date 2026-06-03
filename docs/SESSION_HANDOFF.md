@@ -1,34 +1,33 @@
-# Session handoff — deal-history timezone fix (journal lag / `(est.)` close alerts)
+# Session handoff — per-cycle fee anchor, wizard re-entry / `/rearm`, final personal-$→SGD
 
 > Persistent resume file. Paste into a fresh session (or auto-load via a SessionStart hook).
 > Delta only — project overview, roles, and decisions live in CLAUDE.md & docs (auto-loaded).
 
-**Role:** Single Claude agent + Warren (operator). Warren deploys via Telegram `/update`; Claude edits + pushes to `main`.
+**Role:** Single Claude agent + Warren (operator). Warren runs all Telegram `/update` deploys and VPS actions himself; agent edits code on `main` and pushes.
 
 ## Status — updated 2026-06-03
-- **This session (16) — SHIPPED + pushed to `main`, NOT yet deployed.** Commits `884eb02` `4a2222a` `855a421`. Full detail in CLAUDE.md §Current State → Session 16.
-- Root cause of the journal-queue / `(est.)` problem was found: `mt5.history_deals_get` filters on `deal.time` which is in **server tz (UTC+2/+3), not UTC**; the query `to_dt` was `UTC-now + secs`, excluding fresh deals for hours. Fixed `to_dt = UTC-now + 1 day` in both `journaling_worker._get_deals` and `_worker_core._build_deal_pnl_reply`. Read-window only — no execution/sizing/kill/connection code touched. Memory written: `mt5-deal-history-server-timezone`.
-- `msg_position_closed` (Telegram text) was traced and left **unchanged** — it already renders real P&L/exit/fee whenever `deal['found']`; `(est.)` is only the missing-deal fallback. 3 new tests pin this. 107 tests pass total.
-- **Still NOT deployed from session 15:** symbol mapper (`575af7d`) + webhook pine (`8c77009`). Those Layer 1/2 + `_worker_core.py` changes are on `main` but never ran on the VPSes.
+- Session 17 shipped to `main` (commits `427828d`, `2a26bad`), 107 tests pass. **Not yet deployed.**
+- **Per-cycle trading-fee anchor** — fixes the bogus prop `Trading Fee: $+50,000`. Worker persists `config/fee_anchor_<login>.json` (gitignored); `/equity` reports `residual − anchor`. Reset fires on `/changepropfirm` + `/phase2` for both workers. See CLAUDE.md §Current State → Session 17.
+- **`/phase1` "no prompt" bug** — was a stuck conversation (no `allow_reentry`). Now all 7 wizards have `allow_reentry=True`.
+- **`/rearm`** added — clears `soft_kill_override_day` to re-arm today's K1/K3 after an accidental `/resume`. In `/help`.
+- **Personal-`$`→SGD** — last 3 wizard baseline echoes fixed; full audit clean.
+- Sessions 15 + 16 are also still pending deploy (symbol mapper, deal-history tz fix) — same `/update` batch.
 
 ## Next actions
-1. **Deploy Layer 3** (covers both sessions 15 + 16): `/update layer3` ×2 — `_worker_core.py` AND `journaling_worker.py` changed. Workers need a true **Ctrl+C restart**, not just `git pull`. No `pyproject.toml` change → no `uv sync`.
-2. **Deploy Layer 2** (session 15 L1/2 symbol-mapper derivations): `/update layer2`.
-3. **Verify the fix live:** close one trade → confirm the Position Closed alert arrives within ~30s with real P&L, real exit, Trading Fee, no `(est.)`, and NO "📋 Journal Queued" message.
-4. **After workers restart, run `/checksymbols`** — capture which of the 33 canonicals resolve on Fusion (VPS #2) vs FundingPips (VPS #3). Most exotic/NDF/pegged expected MISSING.
-5. **Warren, on TradingView:** paste `layer0/Nadaraya-Watson Webhook INDICATOR.pine` into the NW indicator, save, recreate the alert (Any alert() function call → webhook URL) so it sends the 14-field payload.
-6. **Warren, manual:** `rmdir "Suggest To Delete"` — files deleted/committed but the empty dir shell remains (env EPERM on root dir deletion).
+1. **Deploy:** `/update layer2` + `/update layer3` ×2 (both VPSes — `_worker_core.py` changed). No `uv sync`.
+2. **VPS #2 only:** confirm `.env` `MT5_TERMINAL_PATH` points at the Fusion-branded terminal; confirm worker connected to the intended account (`448196` vs `459166` — Warren was switching accounts this session; verify via the worker's `MT5 connected — account=…` line or `/health`).
+3. After restart: `/checksymbols`; close one trade (alert ≤30s, real P&L, no `(est.)`); then run **`/changepropfirm` or `/phase2` once** to capture the fee anchor (else prop fee still reads `$+50,000`).
+4. Start Phase 1 when Warren asks: `/phase1` → `4500:1000` → `CONFIRM` (do NOT auto-start — he configures it himself).
 
 ## Running state
 - Background processes: none
 - Dev servers / ports: none
-- Worktrees / branches: none (on `main`, HEAD `855a421`, pushed)
+- Worktrees / branches: none (work on `main`)
 
 ## Open items
-- Lower-priority queued (not started): (A) retrofit msgs 1-19 with the three 20-37 layout fixes; (B) discuss overall message-structure spec with Warren + write one paragraph; (C) fold into CLAUDE.md. Folder reorg (prior handoff `accd561`) lower still.
-- Only arm a TradingView alert for a pair `/checksymbols` shows FOUND on the trading broker — else the signal dies at Layer 3 (two-gate model).
-- Pre-existing unstaged edits remain in `docs/Project_Overview.md` + `docs/System_Architecture.md` (not from this session — left untouched).
-- Optional hardening: set `MT5_SERVER_UTC_OFFSET_HOURS` in each worker `.env` as belt-and-suspenders for the deal.time tz (not needed now that `to_dt` is wide).
+- Account switch on VPS #2 (personal): Warren updating `.env`/MT5 between `448196` and `459166` this session — not confirmed which the worker finally bound to. Verify post-deploy.
+- Optional offer (declined this session): make the `/phase1` prompt example adapt to the live target instead of the fixed `9000:2000`. Warren preferred to just know the ÷2 scaling rule.
+- Lower-priority queued (pre-existing): folder reorganization (deletion table at git `accd561`); optional message-structure spec in TECHNICAL.md.
 
 ## Pick up here
-Deploy Layer 3 (`/update layer3` ×2, true worker restart), then close one trade to confirm the close alert lands ≤30s with real P&L and no `(est.)` — that live close is the one thing that couldn't be validated locally. Then `/checksymbols` for the session-15 symbol tables.
+Tell Warren the deploy batch (`/update layer2` + `/update layer3` ×2), and that prop `/equity` Trading Fee stays `$+50,000` until he runs `/changepropfirm` or `/phase2` once to set the fee anchor.
