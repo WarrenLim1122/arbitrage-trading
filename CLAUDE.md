@@ -21,7 +21,11 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 Surface this the first time Warren returns:
 
-**Read `docs/SESSION_HANDOFF.md`** — it carries the in-flight delta. Top pending item: **deploy sessions 15–17** — `/update layer2` (Telegram changes) AND `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`. After workers restart: run **`/checksymbols`**; **close one trade** to confirm close alert ≤30s with real P&L (no `(est.)`); and run **`/changepropfirm` or `/phase2` once** so the new per-cycle fee anchor is captured (until then prop `/equity` still shows the bogus `$+50,000` Trading Fee). To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`. See `## Current State` below.
+**Read `docs/SESSION_HANDOFF.md`** — it carries the in-flight delta.
+
+**TOP TASK for next session — build the knowledge base ("brain"):** Warren wants a heavyweight **learn → understand → write** pass. Read the project **file by file**, understand the whole architecture and especially the **calculations** (risk, lot sizing, Phase 1/2 stage + SL/TP geometry, kill conditions K1–K5) and the **Telegram message system**, then write authoritative reference docs under **`docs/reference/`** (env blocks new top-level dirs → keep it inside `docs/`). Goal: future sessions consult the KB first, then act — no more re-reading every code file per request. See memory [[knowledge-base-workflow]] and the handoff for the suggested doc structure. Keep the KB in sync on every future code change.
+
+**Still-pending deploy (carry-over):** **deploy sessions 15–17** — `/update layer2` (Telegram changes) AND `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`. After workers restart: run **`/checksymbols`**; **close one trade** to confirm close alert ≤30s with real P&L (no `(est.)`); and run **`/changepropfirm` or `/phase2` once** so the new per-cycle fee anchor is captured (until then prop `/equity` still shows the bogus `$+50,000` Trading Fee). To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`. See `## Current State` below.
 
 Lower-priority queued (not yet done):
 1. **Folder reorganization** — deletion table in the prior handoff at git `accd561`. (The `Suggest To Delete/` pen was emptied this session; an empty dir shell remains for Warren to `rmdir`.)
