@@ -17,19 +17,25 @@ Operational guide for Claude Code. For everything reference-shaped — risk math
 
 ---
 
+## 🧠 Knowledge base — CONSULT FIRST
+
+**The KB is built: `docs/reference/` (start at `index.md`).** It is the authoritative, code-verified
+reference layer — architecture, calculations (risk/lot/Phase 1+2 geometry/kills), Telegram messages,
+Layer 3 execution, deployment. **Before editing code for any request, read the relevant KB page to
+locate the exact file:line, then act.** **Keep the KB in sync in the same session as any code change.**
+Memory: [[knowledge-base-workflow]].
+
 ## 🔔 Next Session — RESUME FROM `docs/SESSION_HANDOFF.md`
 
 Surface this the first time Warren returns:
 
 **Read `docs/SESSION_HANDOFF.md`** — it carries the in-flight delta.
 
-**TOP TASK for next session — build the knowledge base ("brain"):** Warren wants a heavyweight **learn → understand → write** pass. Read the project **file by file**, understand the whole architecture and especially the **calculations** (risk, lot sizing, Phase 1/2 stage + SL/TP geometry, kill conditions K1–K5) and the **Telegram message system**, then write authoritative reference docs under **`docs/reference/`** (env blocks new top-level dirs → keep it inside `docs/`). Goal: future sessions consult the KB first, then act — no more re-reading every code file per request. See memory [[knowledge-base-workflow]] and the handoff for the suggested doc structure. Keep the KB in sync on every future code change.
-
 **Still-pending deploy (carry-over):** **deploy sessions 15–17** — `/update layer2` (Telegram changes) AND `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`. After workers restart: run **`/checksymbols`**; **close one trade** to confirm close alert ≤30s with real P&L (no `(est.)`); and run **`/changepropfirm` or `/phase2` once** so the new per-cycle fee anchor is captured (until then prop `/equity` still shows the bogus `$+50,000` Trading Fee). To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`. See `## Current State` below.
 
 Lower-priority queued (not yet done):
-1. **Folder reorganization** — deletion table in the prior handoff at git `accd561`. (The `Suggest To Delete/` pen was emptied this session; an empty dir shell remains for Warren to `rmdir`.)
-2. **Message-structure spec** (optional) — the ━ header + `Label: value` format is now the de-facto standard across ALL alerts AND command outputs; a one-paragraph written spec in TECHNICAL.md would formalize it but isn't blocking.
+1. **Folder reorganization** — DONE (session 18). The accd561 deletion table is fully cleared: superpowers/, AI_Workflow.md, backfill_journal.py, TEST-ONLY pine, skill-creator were already gone; scripts reorganized into `dev-tests/` + `vps-setup/`; empty `*.log` removed; `docs/README.md` de-linked from the dead AI_Workflow.md and pointed at the new KB. Only residue: a root `.DS_Store` (gitignored, env-locked).
+2. **Message-structure spec** (optional, Warren deferred) — the ━ header + `Label: value` format is now the de-facto standard across ALL alerts AND command outputs and is documented in `docs/reference/messages.md`; a one-paragraph written spec in TECHNICAL.md would formalize it but isn't blocking.
 
 **Already shipped (don't re-do):**
 - All Telegram message text lives in `layer2/telegram_handlers.py` as named `msg_*()` functions; `logic_core.py` is pure orchestration. `/messages` + `/messages2` print the catalog.
