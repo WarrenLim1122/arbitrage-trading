@@ -31,7 +31,7 @@ Surface this the first time Warren returns:
 
 **Read `docs/SESSION_HANDOFF.md`** — it carries the in-flight delta.
 
-**Still-pending deploy (carry-over):** **deploy sessions 15–17** — `/update layer2` (Telegram changes) AND `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`. After workers restart: run **`/checksymbols`**; **close one trade** to confirm close alert ≤30s with real P&L (no `(est.)`); and run **`/changepropfirm` or `/phase2` once** so the new per-cycle fee anchor is captured (until then prop `/equity` still shows the bogus `$+50,000` Trading Fee). To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`. See `## Current State` below.
+**Still-pending deploy (carry-over, sessions 15–18):** `/update layer2` (Telegram changes — incl. session-18 `/phase1` fee-anchor reset) AND `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`. **CRITICAL: the personal worker (VPS #2) is still on pre-session-17 code** — that's why personal `/equity` shows `Trading Fee: SGD −12.40` (full since-open residual, no anchor) while prop shows `$0`. Ctrl+C and re-run `worker_personal.py` after `git pull` (git pull alone does NOT reload). After workers restart: `/checksymbols`; close one trade (alert ≤30s, real P&L, no `(est.)`); run `/phase1`/`/phase2`/`/changepropfirm` once so the per-cycle fee anchor is captured on BOTH workers. To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`. See `## Current State` below.
 
 Lower-priority queued (not yet done):
 1. **Folder reorganization** — DONE (session 18). The accd561 deletion table is fully cleared: superpowers/, AI_Workflow.md, backfill_journal.py, TEST-ONLY pine, skill-creator were already gone; scripts reorganized into `dev-tests/` + `vps-setup/`; empty `*.log` removed; `docs/README.md` de-linked from the dead AI_Workflow.md and pointed at the new KB. Only residue: a root `.DS_Store` (gitignored, env-locked).
@@ -190,7 +190,17 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ---
 
-## Current State (as of 2026-06-03)
+## Current State (as of 2026-06-04)
+
+### Session 18 — Knowledge base built + full correctness audit + `/phase1` fee-anchor reset — SHIPPED to `main`, pending `/update layer2`
+
+Commits: `7773771` (KB + folder reorg), `b51af15` (audit cleanups), `f2f92e5` `d57c1da` (KB notes), `98e3709` (`/phase1` fee reset).
+
+- **Knowledge base built** at `docs/reference/` (`index`, `architecture`, `calculations`, `messages`, `execution`, `deployment`) from a code-verified file-by-file pass. **Consult it first** to locate file:line, then act; keep it in sync on every code change. CLAUDE.md now leads with a "🧠 Knowledge base — CONSULT FIRST" block.
+- **Folder reorg done** — the `accd561` deletion table is fully cleared (already mostly gone; removed empty `*.log`, de-linked `docs/README.md` from the deleted AI_Workflow.md). Only residue: a gitignored, env-locked root `.DS_Store`.
+- **Correctness audit (whole codebase)** — trading math (Phase 1/2 geometry, kills K1–K5, lot sizing), order execution, fee/deal handling, currency formatting all verified **correct**. Only fixes were 3 safe cleanups (`b51af15`): a dead no-op `warn=""` block in `_p1_input`, an unused `pos_str` double-VPS query in the Phase-1 kill branch, and the dead `_set_personal_baseline` fn. Tests 107 pass throughout.
+- **Phase 1 geometry confirmed correct by Warren** — as the prop loses, the growing reward gap is carried by **lot size** (TP anchored at signal-SL distance, prop SL tightens, capped by `max_prop_lots`); NOT fixed-lots/pulled-TP. Two-risk model confirmed: per-trade risk = the typed `fixed_risk`; daily K1 + overall K2 kills = baseline-derived. Phase 1 ≠ Phase 2 by design; Phase 2 untouched. Memories: [[phase1-reward-risk-scaling]], [[phase1-phase2-separate-logic]], [[baseline-always-configured]].
+- **`/phase1` now resets the per-cycle trading-fee anchor** on both workers (`98e3709`), same as `/changepropfirm` and `/phase2` (Warren's request). Needs `/update layer2`.
 
 ### Session 17 — Per-cycle trading-fee anchor + wizard re-entry / `/rearm` + final personal-`$`→SGD — SHIPPED to `main`, pending deploy
 
