@@ -752,6 +752,10 @@ async def _p1_confirm(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     _phase1_init(d["first_reward"], d["fixed_risk"], d["stages"])
     await asyncio.to_thread(_dispatch_parameters)
+
+    # Phase 1 (re)start = fresh cycle → restart the per-cycle trading-fee counter
+    # on BOTH workers (same as /changepropfirm and /phase2).
+    await asyncio.to_thread(_dispatch_fee_anchor_reset)
     _wizard_data.clear()
 
     stage_str = "  →  ".join(f"${s:,.0f}" for s in d["stages"])

@@ -97,8 +97,12 @@ trading_fee = residual − fee_anchor                # per-cycle
   start. Reporting `residual − anchor` makes the figure **per-cycle** (since the last
   `/changepropfirm` or `/phase2`) and cancels the offset from an **unbooked deposit** (a fresh demo
   with no balance-type deal would otherwise show `Trading Fee: $50,000`).
-- Layer 2 fires `reset_fee_anchor` on **both** workers after `/changepropfirm` and `/phase2`. Until
-  a reset fires after deploy, prop `/equity` shows the bogus `$+50,000` — run one once.
+- Layer 2 fires `reset_fee_anchor` on **both** workers (prop + personal, via
+  `zmq_helpers._dispatch_fee_anchor_reset`) after `/changepropfirm`, `/phase2`, **and `/phase1`** —
+  each is a fresh cycle. Until a reset fires after deploy, prop `/equity` shows the bogus `$+50,000`
+  — run one once. **Both workers must be on session-17+ code** for the reset to take; a worker on
+  older code ignores the `reset_fee_anchor` query and keeps showing the full since-open residual
+  (the `personal −SGD 12.40` vs `prop $0` split = personal worker not yet restarted with new code).
 - **Gated:** the full-history scan runs only when `want_fee=True` (the `/equity` command), never on
   the 30 s monitor poll.
 
