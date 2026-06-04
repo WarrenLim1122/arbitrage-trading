@@ -192,12 +192,21 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ## Current State (as of 2026-06-04)
 
+### Session 20 — Self-healing guard for degenerate $0 NO_MONEY order_check — SHIPPED to `main`, pending `/update layer3` (prop)
+
+Commit: self-heal guard + 5 tests in `_build_order_check_reply` (`layer3/_worker_core.py`, `tests/layer3/test_order_check_reply.py`). Tests **112 pass**.
+
+- **Session-19 "dual-session GUI" theory DOWNGRADED to unproven.** Warren pushed back: he has run two MT5 GUIs open before with trades filling fine (so a second GUI alone isn't sufficient), and the diagnostic log wasn't even deployed at the failure → **zero log evidence**. Root cause of the $0 NO_MONEY remains unconfirmed (could be launch-time race, feed-reconnect blip, or login contention). Pre-flight `order_check` runs **once, no re-query** (`logic_core.py:1560`) — a single `reject` blocks both legs.
+- **Self-healing guard shipped (root cause now moot):** on a NO_MONEY reject whose `order_check margin_free == 0.0` *exactly* (degenerate signature; a real shortfall returns NEGATIVE margin_free), the worker cross-checks LIVE `account_info().margin_free` vs an independent `mt5.order_calc_margin()`. Affordable → downgrade reject→transient so it proceeds/retries instead of killing the trade. Fail-safe: any error or genuinely-broke account keeps the reject. See [[mt5-python-integration-constraints]] pt 8.
+- **Account numbers corrected** (Warren changed accounts): personal now `448196`/`FusionMarkets-Live` **6,500 SGD** (was 459166); prop `20047930`/`FundingPips-SIM1` $50k (unchanged since s19). The MT5 terminal saved-default login (+ matching `.env MT5_LOGIN`) is the source of truth for which account trades — NOT these docs. New memory [[trading-account-source-of-truth]]. **Verify VPS #2 `.env MT5_LOGIN=448196`** or the worker fatal-exits on the guard.
+- **Action for Warren:** `/update layer3` (2=Prop) + Ctrl+C/re-run `worker_prop.py` (also picks up the s19 diagnostic). Confirm VPS #2 `.env` matches 448196. Then `/resume`+`/rearm`, watch next signal via Telegram.
+
 ### Session 19 — Prop XAUUSD "Signal Not Placed" diagnosed + order_check diagnostic log — SHIPPED to `main`, pending `/update layer3` (prop)
 
 Commit: diagnostic `logger.info` in `_build_order_check_reply` (`layer3/_worker_core.py`).
 
 - **New prop account in use:** `MT5_LOGIN=20047930` on server `FundingPips-SIM1` ($50k demo) — **replaces the old `12250900` / `FundingPips2-SIM`**. .env on VPS #3 confirmed. (Old `12250900` references elsewhere in this file are historical.)
-- **A prop XAUUSD LONG-hedge signal was rejected "Signal Not Placed":** prop `order_check` returned **NO_MONEY (10019)** with `Needs $0.00 margin / Free $0.00` on the $50k account. Diagnosed as a **bogus/degenerate read, NOT a real shortfall** — Phase-1 gold lot ≈ 0.27 lots needs ~$4-7k vs $50k free; not lot-too-big, not narrow-SL (→10016), not wrong account. Leading cause: **an interactive MT5 GUI left logged into the same account while the worker runs** → coexisting sessions make the worker read a zeroed `account_info().margin_free`. Both legs gate together, so the bogus prop reject also suppressed the (fine) personal leg. Memory wrinkle added to [[mt5-python-integration-constraints]] (point 8).
+- **A prop XAUUSD LONG-hedge signal was rejected "Signal Not Placed":** prop `order_check` returned **NO_MONEY (10019)** with `Needs $0.00 margin / Free $0.00` on the $50k account. Diagnosed as a **bogus/degenerate read, NOT a real shortfall** — Phase-1 gold lot ≈ 0.27 lots needs ~$4-7k vs $50k free; not lot-too-big, not narrow-SL (→10016), not wrong account. Original session-19 leading theory (interactive MT5 GUI left logged in → zeroed `account_info().margin_free`) is **unconfirmed — see Session 20 above, it was downgraded**. Both legs gate together, so the bogus prop reject also suppressed the (fine) personal leg. Memory: [[mt5-python-integration-constraints]] (point 8).
 - **Fix added:** `_build_order_check_reply` now logs `margin_req/free/bal/eq` + a live `account_info` `login/free` cross-check (defensive try/except, non-fatal). Next $0 reject will show whether `account_info free=50000` while `check free=0` (→ confirms dual-session theory). Tests **107 pass**.
 - **Action for Warren:** close the desktop MT5 on VPS #3, `/update layer3` (2=Prop) + Ctrl+C/re-run `worker_prop.py`, then `/resume`+`/rearm` and watch the next signal. Monitor via Telegram, not the desktop GUI.
 
