@@ -99,6 +99,14 @@ pers_tp = prop_sl            # personal TP = prop SL price (shared mirror, compu
 to measure the gap to the stage, not the risk). `fixed_risk` and `max_prop_lots` come from the
 nested `phase1` block in `phase_config.json`.
 
+**Behavior over a losing run (confirmed intended, 2026-06-04):** the active stage only ratchets
+*up*, so after a loss the equity drops and the gap to the stage **grows** (e.g. 4,500 → 5,500 →
+6,500 against a fixed 1,000 risk → RR climbs 4.5 → 5.5 → 6.5). That growing reward is absorbed
+entirely into **lot size** — the prop TP stays at the signal-SL distance and the prop SL gets
+**tighter** (`fixed_risk / (lots × k)`). Lots therefore balloon over a losing run; `max_prop_lots`
+is the guard that rejects the trade once they exceed the cap. It is **not** implemented as a
+"pull the TP further, keep lots fixed" scheme — that was considered and explicitly rejected.
+
 ### Phase 1 stages (`phase1_strategy.derive_stages`)
 
 Cumulative absolute prop-equity targets, set once at `/phase1` confirm:
