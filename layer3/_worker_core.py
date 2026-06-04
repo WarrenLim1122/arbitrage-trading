@@ -262,6 +262,24 @@ def _connect_mt5() -> None:
         _account_mode = _resolve_account_mode(acct)
         logger.info("MT5 connected — account=%d  server=%s  balance=%.2f  mode=%s",
                     acct.login, acct.server, acct.balance, _account_mode)
+
+        # Auto-anchor the per-cycle trading fee on first connect for an account
+        # that has no anchor yet (e.g. a freshly-switched login like 448196).
+        # Without this, /equity reports the FULL since-account-open residual
+        # (the "-12.40 won't update" symptom) until /phase1//phase2/
+        # /changepropfirm happens to fire a reset. Idempotent: an existing
+        # anchor file is left untouched, so this never silently re-zeros a
+        # cycle that's already running. Best-effort — a scan failure must not
+        # block trading.
+        try:
+            if not _fee_anchor_path().exists():
+                scan = _fee_scan()
+                if scan is not None:
+                    _save_fee_anchor(scan[0])
+                    logger.info("Fee anchor auto-set on first connect: residual=%.2f "
+                                "(login=%d)", scan[0], acct.login)
+        except Exception as exc:
+            logger.warning("Fee anchor auto-set skipped: %s", exc)
         if terminal is not None and not terminal.trade_allowed:
             logger.error(
                 "Automated trading DISABLED in MT5. "
