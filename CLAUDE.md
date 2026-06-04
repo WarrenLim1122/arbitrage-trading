@@ -86,7 +86,7 @@ VPS #1 layers run as systemd services (auto-restart). VPS #2/#3 workers run in P
 | 0 — Signal Engine | `layer0/1D-15m Breakout INDICATOR.pine` | ✅ LIVE — 7 alerts active (XAGUSD + NAS100 dropped 2026-05-29), `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `news_filter.py`, `ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
 | 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). **Critical phase1-persistence fix shipped session 13** (see Current State). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
-| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ **Live cutover UNBLOCKED (2026-05-26)** — both VPS desktops streaming live (459166 SGD + 12250900 USD). Connection rewrite shipped (`72b3921` + `75f55f5`): self-launch + hard account guard. Awaiting `git pull` + worker start on both VPSes. See Current State + VPS MT5 Setup. |
+| 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ **Live cutover UNBLOCKED (2026-05-26)** — both VPS desktops streaming live (personal 448196 SGD + prop 20047930 USD). Connection rewrite shipped (`72b3921` + `75f55f5`): self-launch + hard account guard. Awaiting `git pull` + worker start on both VPSes. See Current State + VPS MT5 Setup. |
 
 ## Covered Instruments — single source of truth: `config/symbols.json`
 
@@ -274,8 +274,8 @@ Both VPS desktops stream live broker data and the Layer 3 connection rewrite is 
 - `75f55f5` — terminal-path glob broadened to `C:\Program Files\*MetaTrader*\terminal64.exe` so broker-branded installs (e.g. `Fusion Markets MetaTrader 5\`) are found
 
 **Verified-streaming state on the VPSes (2026-05-26):**
-- VPS #2 (personal): Fusion-branded MT5 + generic MT5 both installed; `459166` is the saved default in the Fusion-branded build. **SGD-denominated** (486.88 SGD).
-- VPS #3 (prop): generic MetaQuotes MT5; saved default is now **`20047930` on `FundingPips-SIM1`** ($50k demo, USD) — the new prop account as of session 19 (was `12250900`/`FundingPips2-SIM` $5k earlier). When the worker is live, do NOT leave a desktop MT5 logged into this account (dual-session → degenerate `order_check`; see session 19 + [[mt5-python-integration-constraints]]).
+- VPS #2 (personal): Fusion-branded MT5 + generic MT5 both installed; saved default is now **`448196` ("Chee Heng Lai 006") on `FusionMarkets-Live`** — **SGD-denominated (6,500 SGD)**, account changed 2026-06-04 (was `459166`/486 SGD earlier). VPS `.env` `MT5_LOGIN` must equal this or the worker fatal-exits.
+- VPS #3 (prop): generic MetaQuotes MT5; saved default is **`20047930` on `FundingPips-SIM1`** ($50k demo, USD) — the prop account as of session 19 (was `12250900`/`FundingPips2-SIM` $5k earlier). The source of truth for which account trades is the MT5 terminal's saved-default login (+ matching `.env` `MT5_LOGIN`), NOT these docs — see [[trading-account-source-of-truth]]. The session-19 dual-session→degenerate-`order_check` link is an **unconfirmed theory** (Warren ran two GUIs open before with no issue); no diagnostic was live at the failure so it's unproven.
 
 **Layer 3 deploy steps (one-shot, both VPSes):**
 1. `cd C:\arbitrage && git pull` on both VPSes
