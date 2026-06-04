@@ -248,19 +248,11 @@ def _update_day_start(equity: float) -> None:
 
 def _update_pers_day_start(equity: float) -> None:
     """Reset personal day-start equity at the daily 11:00 SGT rollover.
-    Never touches pers_baseline_equity — that is set only via /setpersonalbaseline."""
+    Never touches the personal deposit — that is set only via /setdeposit personal."""
     with _pf_lock:
         _propfirm["pers_day_start_equity"] = equity
         _save_propfirm(_propfirm)
     logger.info("Personal day-start equity set to %.2f", equity)
-
-
-def _set_personal_baseline(amount: float) -> None:
-    """Persist a user-supplied personal account baseline. Never auto-written by the bot."""
-    with _pf_lock:
-        _propfirm["pers_baseline_equity"] = amount
-        _save_propfirm(_propfirm)
-    logger.info("Personal baseline set to %.2f", amount)
 
 
 def _lock_baseline_from_live() -> tuple[float, str]:

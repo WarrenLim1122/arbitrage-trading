@@ -712,8 +712,6 @@ async def _p1_input(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     }
     stage_str = "  →  ".join(f"${s:,.0f}" for s in stages)
     warn = ""
-    if fixed_risk >= overall_amt - (baseline - stages[0]):
-        warn = ""  # placeholder; no daily-DD figure available pre-session
     daily_room = baseline * pf.get("max_drawdown_daily_pct", 0.0) / 100.0
     if daily_room > 0 and fixed_risk >= daily_room:
         warn = (f"\n\n⚠️ Risk ${fixed_risk:,.0f} ≥ daily-DD room ${daily_room:,.0f} "

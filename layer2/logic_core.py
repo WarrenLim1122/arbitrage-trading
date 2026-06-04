@@ -853,7 +853,8 @@ def _run_equity_check() -> None:
         if not permanent and _soft_kill_overridden(now_sgt):
             logger.info("Phase1 kill suppressed by /resume override: reason=%s", reason)
             return
-        pos_str    = _snapshot_positions_str(pers_currency)
+        # Phase 1 kill messages don't render a positions block, so no
+        # _snapshot_positions_str() round-trip here (unlike the phase-2 branch).
         _dispatch_force_close(reason, halt=True, permanent=permanent)
         if not permanent:
             with _state_lock:
