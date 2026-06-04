@@ -1355,6 +1355,28 @@ def _build_order_check_reply(msg: dict) -> dict:
     else:
         verdict = "reject"
 
+    # Diagnostic: dump the raw MT5 numbers so a NO_MONEY/$0 rejection can be told
+    # apart from a real margin shortfall. A live account_info() read is included as
+    # a cross-check — if order_check reports margin_free=0 while account_info shows
+    # the real balance, the rejection is a degenerate read (e.g. terminal contention),
+    # not an actual lack of margin. See MT5 connection notes in CLAUDE.md.
+    try:
+        with _mt5_lock:
+            ai = mt5.account_info()
+        ai_login = getattr(ai, "login", None) if ai else None
+        ai_free  = float(getattr(ai, "margin_free", 0.0)) if ai else None
+        logger.info(
+            "order_check %s %s %.2f lots -> verdict=%s retcode=%s "
+            "[check: margin_req=%.2f free=%.2f bal=%.2f eq=%.2f] "
+            "[account_info: login=%s free=%s] comment=%r",
+            resolved, signal, lots, verdict, retcode,
+            margin, margin_free,
+            float(getattr(result, "balance", 0.0)), float(getattr(result, "equity", 0.0)),
+            ai_login, ("%.2f" % ai_free) if ai_free is not None else "n/a", comment,
+        )
+    except Exception:  # diagnostic only — never let logging break order_check
+        logger.exception("order_check diagnostic log failed (non-fatal)")
+
     return {
         "verdict":     verdict,
         "retcode":     retcode,
