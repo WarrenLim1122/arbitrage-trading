@@ -14,7 +14,10 @@ Risk constants live in `config/risk_params.json`; the risk anchor + DD/target se
 
 - **`baseline_equity`** is the single risk anchor. It drives **prop lot sizing** and **every kill
   level (K1–K5)**. It is immutable except via `/changepropfirm`, `/phase2`, `/setbaseline`.
-  Never auto-set from MT5 balance.
+  Never auto-set from MT5 balance. It is entered as a **mandatory step in `/changepropfirm`**, so
+  it is always configured before any trade — the `/phase1` live-balance fallback
+  (`_lock_baseline_from_live`, fires only when `baseline_equity ≤ 0`) is a dead safety net that
+  never triggers in practice. See memory [[baseline-always-configured]].
 - **`prop_initial_deposit` / `pers_initial_deposit`** are the actual capital — used **only** for
   equity-% reporting and the fee reconciliation in `/equity`. **Zero** effect on sizing or kills.
 - **The personal account has no kills and no risk baseline.** Its lots are purely
