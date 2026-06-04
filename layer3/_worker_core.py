@@ -1355,16 +1355,53 @@ def _build_order_check_reply(msg: dict) -> dict:
     else:
         verdict = "reject"
 
-    # Diagnostic: dump the raw MT5 numbers so a NO_MONEY/$0 rejection can be told
-    # apart from a real margin shortfall. A live account_info() read is included as
-    # a cross-check — if order_check reports margin_free=0 while account_info shows
-    # the real balance, the rejection is a degenerate read (e.g. terminal contention),
-    # not an actual lack of margin. See MT5 connection notes in CLAUDE.md.
+    # Live account_info cross-check — feeds both the self-healing guard below and
+    # the diagnostic log. Defensive: never let it break order_check.
+    ai_login = None
+    ai_free  = None
     try:
         with _mt5_lock:
             ai = mt5.account_info()
         ai_login = getattr(ai, "login", None) if ai else None
         ai_free  = float(getattr(ai, "margin_free", 0.0)) if ai else None
+    except Exception:
+        logger.exception("order_check account_info cross-check failed (non-fatal)")
+
+    # ── Self-healing guard for a degenerate NO_MONEY ($0) read ───────────────
+    # A NO_MONEY reject whose order_check margin_free is *exactly* 0.0 is the
+    # degenerate-read signature (terminal contention / half-initialised account
+    # → account_info came back zeroed), NOT a real shortfall — a genuine shortfall
+    # returns a NEGATIVE margin_free (real required margin computed, free went
+    # below it). So we only second-guess the $0.00 case. If the LIVE account_info
+    # free margin can actually cover the order's independently-computed required
+    # margin, downgrade reject -> transient so the worker proceeds/RETRIES instead
+    # of killing the trade (a bogus reject also suppresses the otherwise-fine
+    # opposite leg). We trust neither the $0 order_check margin nor margin_free:
+    # required margin is recomputed via order_calc_margin, free is read live. Any
+    # error leaves the verdict untouched (fail safe = keep the reject).
+    no_money = _rc("TRADE_RETCODE_NO_MONEY", 10019)
+    if (verdict == "reject" and retcode == no_money and margin_free == 0.0
+            and ai_free is not None and ai_free > 0.0):
+        try:
+            with _mt5_lock:
+                need = mt5.order_calc_margin(otype, resolved, lots, px)
+        except Exception:
+            need = None
+            logger.exception("NO_MONEY guard order_calc_margin failed (non-fatal)")
+        if need is not None and ai_free >= float(need):
+            logger.warning(
+                "order_check NO_MONEY OVERRIDE %s %s %.2f lots: check free=$%.2f "
+                "but account_info free=$%.2f >= required $%.2f -> transient (retry)",
+                resolved, signal, lots, margin_free, ai_free, float(need),
+            )
+            verdict = "transient"
+            comment = comment or "degenerate NO_MONEY ($0 read) — retry"
+
+    # Diagnostic: dump the raw MT5 numbers so a NO_MONEY/$0 rejection can be told
+    # apart from a real margin shortfall — the account_info cross-check above shows
+    # whether margin_free=0 was degenerate (real balance present) vs a true lack of
+    # funds. See MT5 connection notes in CLAUDE.md.
+    try:
         logger.info(
             "order_check %s %s %.2f lots -> verdict=%s retcode=%s "
             "[check: margin_req=%.2f free=%.2f bal=%.2f eq=%.2f] "

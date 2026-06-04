@@ -128,6 +128,66 @@ def test_bad_params_reject(wc):
     assert out["verdict"] == "reject"
 
 
+# ── Self-healing guard: degenerate NO_MONEY ($0) read ─────────────────────────
+
+def _set_account(mt5, *, login=1, free=50000.0):
+    mt5.account_info = lambda: types.SimpleNamespace(login=login, margin_free=free)
+
+
+def test_degenerate_no_money_overridden_to_transient(wc):
+    # order_check returns NO_MONEY with $0 margin/free, but the live account has
+    # $50k free and the order only needs ~$300 -> downgrade reject to transient.
+    module, mt5 = wc
+    mt5.order_check = lambda req: _check_result(
+        retcode=10019, margin=0.0, margin_free=0.0, balance=50000.0,
+        equity=50000.0, comment="Not enough money")
+    _set_account(mt5, free=50000.0)
+    mt5.order_calc_margin = lambda action, sym, vol, px: 300.0
+    out = module._build_order_check_reply(_order())
+    assert out["verdict"] == "transient"
+
+
+def test_real_no_money_stays_reject_when_account_also_broke(wc):
+    # account_info free is ~0 too -> genuine shortfall -> keep reject.
+    module, mt5 = wc
+    mt5.order_check = lambda req: _check_result(
+        retcode=10019, margin=0.0, margin_free=0.0, comment="Not enough money")
+    _set_account(mt5, free=0.0)
+    mt5.order_calc_margin = lambda action, sym, vol, px: 300.0
+    assert module._build_order_check_reply(_order())["verdict"] == "reject"
+
+
+def test_no_money_stays_reject_when_required_exceeds_free(wc):
+    # live free margin is real but smaller than the order's required margin.
+    module, mt5 = wc
+    mt5.order_check = lambda req: _check_result(
+        retcode=10019, margin=0.0, margin_free=0.0, comment="Not enough money")
+    _set_account(mt5, free=200.0)
+    mt5.order_calc_margin = lambda action, sym, vol, px: 5000.0
+    assert module._build_order_check_reply(_order())["verdict"] == "reject"
+
+
+def test_no_money_stays_reject_when_calc_margin_unavailable(wc):
+    # order_calc_margin returns None -> cannot prove affordability -> keep reject.
+    module, mt5 = wc
+    mt5.order_check = lambda req: _check_result(
+        retcode=10019, margin=0.0, margin_free=0.0, comment="Not enough money")
+    _set_account(mt5, free=50000.0)
+    mt5.order_calc_margin = lambda action, sym, vol, px: None
+    assert module._build_order_check_reply(_order())["verdict"] == "reject"
+
+
+def test_negative_free_no_money_not_overridden(wc):
+    # order_check margin_free<0 (a real after-trade shortfall signal, not the $0
+    # degenerate signature) -> guard does not apply even if account shows free.
+    module, mt5 = wc
+    mt5.order_check = lambda req: _check_result(
+        retcode=10019, margin=12000.0, margin_free=-2000.0, comment="Not enough money")
+    _set_account(mt5, free=50000.0)
+    mt5.order_calc_margin = lambda action, sym, vol, px: 300.0
+    assert module._build_order_check_reply(_order())["verdict"] == "reject"
+
+
 # ── Issue 7: USD→account-currency rate ────────────────────────────────────────
 
 def test_usd_rate_is_one_for_usd_account(wc):
