@@ -192,6 +192,15 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ## Current State (as of 2026-06-04)
 
+### Session 19 — Prop XAUUSD "Signal Not Placed" diagnosed + order_check diagnostic log — SHIPPED to `main`, pending `/update layer3` (prop)
+
+Commit: diagnostic `logger.info` in `_build_order_check_reply` (`layer3/_worker_core.py`).
+
+- **New prop account in use:** `MT5_LOGIN=20047930` on server `FundingPips-SIM1` ($50k demo) — **replaces the old `12250900` / `FundingPips2-SIM`**. .env on VPS #3 confirmed. (Old `12250900` references elsewhere in this file are historical.)
+- **A prop XAUUSD LONG-hedge signal was rejected "Signal Not Placed":** prop `order_check` returned **NO_MONEY (10019)** with `Needs $0.00 margin / Free $0.00` on the $50k account. Diagnosed as a **bogus/degenerate read, NOT a real shortfall** — Phase-1 gold lot ≈ 0.27 lots needs ~$4-7k vs $50k free; not lot-too-big, not narrow-SL (→10016), not wrong account. Leading cause: **an interactive MT5 GUI left logged into the same account while the worker runs** → coexisting sessions make the worker read a zeroed `account_info().margin_free`. Both legs gate together, so the bogus prop reject also suppressed the (fine) personal leg. Memory wrinkle added to [[mt5-python-integration-constraints]] (point 8).
+- **Fix added:** `_build_order_check_reply` now logs `margin_req/free/bal/eq` + a live `account_info` `login/free` cross-check (defensive try/except, non-fatal). Next $0 reject will show whether `account_info free=50000` while `check free=0` (→ confirms dual-session theory). Tests **107 pass**.
+- **Action for Warren:** close the desktop MT5 on VPS #3, `/update layer3` (2=Prop) + Ctrl+C/re-run `worker_prop.py`, then `/resume`+`/rearm` and watch the next signal. Monitor via Telegram, not the desktop GUI.
+
 ### Session 18 — Knowledge base built + full correctness audit + `/phase1` fee-anchor reset — SHIPPED to `main`, pending `/update layer2`
 
 Commits: `7773771` (KB + folder reorg), `b51af15` (audit cleanups), `f2f92e5` `d57c1da` (KB notes), `98e3709` (`/phase1` fee reset).
@@ -266,7 +275,7 @@ Both VPS desktops stream live broker data and the Layer 3 connection rewrite is 
 
 **Verified-streaming state on the VPSes (2026-05-26):**
 - VPS #2 (personal): Fusion-branded MT5 + generic MT5 both installed; `459166` is the saved default in the Fusion-branded build. **SGD-denominated** (486.88 SGD).
-- VPS #3 (prop): generic MetaQuotes MT5 only, with FundingPips Corp (2) added as a company via Option 2; `12250900` is the saved default. USD-denominated ($5,000 demo).
+- VPS #3 (prop): generic MetaQuotes MT5; saved default is now **`20047930` on `FundingPips-SIM1`** ($50k demo, USD) — the new prop account as of session 19 (was `12250900`/`FundingPips2-SIM` $5k earlier). When the worker is live, do NOT leave a desktop MT5 logged into this account (dual-session → degenerate `order_check`; see session 19 + [[mt5-python-integration-constraints]]).
 
 **Layer 3 deploy steps (one-shot, both VPSes):**
 1. `cd C:\arbitrage && git pull` on both VPSes
