@@ -59,6 +59,10 @@ JOURNAL_ACCOUNT_TYPE   = os.getenv("JOURNAL_ACCOUNT_TYPE",       "demo")   # dem
 JOURNAL_BROKER         = os.getenv("JOURNAL_BROKER",              "")
 FIREBASE_BOT_NAME      = os.getenv("FIREBASE_BOT_NAME",          "HedgeHog Bot")
 FIREBASE_STRATEGY_NAME = os.getenv("FIREBASE_STRATEGY_NAME",     "Arbitrage Trading")
+# Canonical strategy label shown in the journal's Strategy column / filters.
+# The hedging strategy is officially "Prop Hedge". Written to the `strategy`
+# field (the dashboard reads `strategy` first), independent of strategyName.
+FIREBASE_STRATEGY      = os.getenv("FIREBASE_STRATEGY",          "Prop Hedge")
 FIREBASE_JOURNAL_USER_ID = os.getenv("FIREBASE_JOURNAL_USER_ID", "")
 
 # MT5 DEAL_ENTRY_* and DEAL_REASON_* constants (mirror MT5 spec for offline test)
@@ -501,6 +505,7 @@ def handle_closed_position(
             "userId":       FIREBASE_JOURNAL_USER_ID,
             "source":       "bot",
             "botName":      FIREBASE_BOT_NAME,
+            "strategy":     FIREBASE_STRATEGY,        # canonical label: "Prop Hedge"
             "strategyName": FIREBASE_STRATEGY_NAME,
             "accountType":  JOURNAL_ACCOUNT_TYPE,
             "broker":       JOURNAL_BROKER,
