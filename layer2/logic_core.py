@@ -1486,15 +1486,16 @@ async def receive_signal(request: Request):
             msg = "Phase 1: final stage already reached — awaiting K4 / /phase2"
             logger.info(msg)
             return JSONResponse({"status": "halted", "reason": msg})
+        # Sizing is fixed-risk (decoupled from the stage ratchet); the ratcheted
+        # `idx` above stays for the day-halt / K4 kill checkpoints (evaluate_kills).
         g = phase1_strategy.compute_geometry(
             ticker=payload.ticker, signal=payload.signal,
-            entry=payload.entry, signal_sl=payload.sl,
+            entry=payload.entry, signal_sl=payload.sl, signal_tp=payload.tp,
             price_digits=price_digits,
             prop_contract_size=prop_contract_size,
             prop_tick_size=prop_tick_size, prop_tick_value=prop_tick_val,
             pers_contract_size=pers_contract_size,
             pers_tick_size=pers_tick_size, pers_tick_value=pers_tick_val,
-            active_stage=stages[idx], live_prop_equity=live_prop_equity,
             fixed_risk=float(p1.get("fixed_risk", 0.0)),
             pers_ratio=PHASE_MULT.get(1, 0.20),
             max_prop_lots=float(p1.get("max_prop_lots", 0.0)),

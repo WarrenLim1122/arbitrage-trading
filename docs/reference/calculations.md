@@ -72,43 +72,41 @@ prop_signal = invert(signal) ; pers_signal = signal
 Intuition: prop risks exactly `baseline × 0.67%` sized against the **tight** (signal-TP) distance;
 when the signal's SL is hit, the prop wins big (wide leg). Personal is the smaller mirror at 70%.
 
-## Phase 1 geometry (`phase1_strategy.compute_geometry`) — dynamic reward-targeting
+## Phase 1 geometry (`phase1_strategy.compute_geometry`) — fixed-risk box (UNIFIED with Phase 2, 2026-06-07)
 
-**Anchor = signal SL price = personal SL = prop TP.** The signal TP is **ignored**; the personal
-TP is **computed** (= prop SL price). Prop lots are sized so the prop win exactly closes the gap
-to the active stage; the prop SL distance is then sized so a prop loss = the fixed per-trade risk.
+**Identical model to Phase 2; only the risk source differs** (Phase 1 = typed `fixed_risk`;
+Phase 2 = `baseline × 0.67%`). Sizing starts from the **prop** and a fixed per-trade dollar risk,
+then **derives** personal. The signal's own SL **and** TP are both used directly as the box barriers.
 
 ```
-reward_prop = active_stage − live_prop_equity        # reject if ≤ 0 (await ratchet)
-d           = |entry − signal_sl|                    # reject if ≤ 0
+d_sl = |entry − signal_sl|        # far barrier  — prop TP / personal SL distance ; reject if ≤ 0
+d_tp = |signal_tp − entry|        # near barrier — prop SL / personal TP distance ; reject if ≤ 0
 
 k_prop, k_pers = dollar_per_unit(...)                # reject if either ≤ 0
 
-lots_prop = round(reward_prop / (d × k_prop), 2)     # prop TP at distance d wins the stage gap
+lots_prop = round(fixed_risk / (d_tp × k_prop), 2)   # prop stop = signal TP; loss = fixed_risk
                                                      # reject if 0, or > max_prop_lots (if set)
-prop_sl_dist = fixed_risk / (lots_prop × k_prop)     # prop loss at this SL = exactly fixed_risk
+lots_pers = round(lots_prop × pers_ratio, 2)         # DERIVED from prop; pers_ratio = 0.20
 
-lots_pers = round(lots_prop × pers_ratio, 2)         # pers_ratio = 0.20
-
-# prop is inverse of signal:
-if signal LONG  → prop SHORT: prop_tp = entry − d ; prop_sl = entry + prop_sl_dist
-if signal SHORT → prop LONG : prop_tp = entry + d ; prop_sl = entry − prop_sl_dist
-
-pers_sl = signal_sl          # personal SL = signal SL (fixed)
-pers_tp = prop_sl            # personal TP = prop SL price (shared mirror, computed)
+prop_signal = inverse(signal)
+# Shared barriers — assigned by PRICE, so LONG and SHORT are handled identically:
+prop_tp = signal_sl    # prop target == signal SL price (far)
+prop_sl = signal_tp    # prop stop   == signal TP price (near)
+pers_sl = signal_sl    # personal SL == signal SL (follows signal)
+pers_tp = signal_tp    # personal TP == signal TP (follows signal)
 ```
 
-`live_prop_equity` is the **live** prop equity (the only place live equity enters sizing — and only
-to measure the gap to the stage, not the risk). `fixed_risk` and `max_prop_lots` come from the
-nested `phase1` block in `phase_config.json`.
+`fixed_risk`, `pers_ratio`, `max_prop_lots` come from the nested `phase1` block in
+`phase_config.json`. **Equity/stage no longer affect sizing** — lots are pure fixed-risk. The
+prop gets the favourable asymmetry (stop at the near barrier, target at the far one → RR =
+`d_sl / d_tp`); personal follows the signal as-is on the inverse RR.
 
-**Behavior over a losing run (confirmed intended, 2026-06-04):** the active stage only ratchets
-*up*, so after a loss the equity drops and the gap to the stage **grows** (e.g. 4,500 → 5,500 →
-6,500 against a fixed 1,000 risk → RR climbs 4.5 → 5.5 → 6.5). That growing reward is absorbed
-entirely into **lot size** — the prop TP stays at the signal-SL distance and the prop SL gets
-**tighter** (`fixed_risk / (lots × k)`). Lots therefore balloon over a losing run; `max_prop_lots`
-is the guard that rejects the trade once they exceed the cap. It is **not** implemented as a
-"pull the TP further, keep lots fixed" scheme — that was considered and explicitly rejected.
+**History:** before 2026-06-07 Phase 1 was a *dynamic reward-targeting* model — lots were sized
+to close the gap to the active stage and ballooned over a losing run (martingale-like). Warren
+replaced it with this fixed-risk box so Phase 1 and Phase 2 share one geometry. The stages
+(`derive_stages`) and kills (`evaluate_kills`) are **retained** but now only drive day-halt / K4
+profit checkpoints — they no longer size trades. Memories: [[phase1-phase2-separate-logic]]
+(now unified), [[phase1-reward-risk-scaling]] (retired).
 
 ### Phase 1 stages (`phase1_strategy.derive_stages`)
 
@@ -197,6 +195,5 @@ log (Phase 2), and resets `day_start_equity` (prop and personal). SGT helpers + 
 ## Where the dollar/RR display numbers come from
 
 Geometry returns `prop_dollar_risk`, `pers_dollar_risk`, and (Phase 1 only) `prop_reward`,
-`pers_reward`, `prop_rr`, `pers_rr`, `reward_gap`, `active_stage`. These are **display-only**
-(computed from unrounded distances) and are passed to `msg_trade_opened`. They never feed back into
-sizing.
+`pers_reward`, `prop_rr`, `pers_rr`. These are **display-only** (computed from unrounded distances)
+and are passed to `msg_trade_opened`. They never feed back into sizing.
