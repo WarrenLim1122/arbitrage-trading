@@ -192,6 +192,16 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ## Current State (as of 2026-06-07)
 
+### Session 22 — Phase 1 rewritten to FIXED-LOT / moving-TP + project-wide consistency + 2 bug fixes — SHIPPED to `main`, pending `/update layer2`
+
+Commits: `5f719fe` (model + consistency pass), `b0a98c5` (bug fixes). Also `993ed31`→`3132fb9` (a wrong "unify P1 into P2's box" attempt + its revert — net zero, ignore).
+
+- **Phase 1 geometry is now FIXED-LOT, moving-TP** (`layer2/phase1_strategy.compute_geometry`). Warren's exact spec: the signal is for PERSONAL, prop inverts. **Only the signal TP (near level) is used — the signal SL is DISCARDED.** prop SL = signal TP; prop sized over that stop → `lots_prop = fixed_risk / (|signal_tp−entry| × k)` so **lots are FIXED** (gold $1000 risk → 1.00 lot; $2000 @ $100k → 2.00). prop TP = **calculated** to win the stage gap (`reward_gap / (lots × k)`) and **becomes the personal SL** (clean mirror box). RR = reward_gap/fixed_risk → **4.5 → 5.5 → 6.5** over a losing run (gap +$1000/loss), resets to ~**0.25** right after a stage win. Nothing hardcoded (k live from MT5, risk+ratio from config). Memories: [[phase1-reward-risk-scaling]], [[phase1-phase2-separate-logic]].
+- **Phase 2 unchanged + confirmed correct**: uses ALL signal levels (SL/entry/TP), prop = exact inverse (prop SL=signal TP, prop TP=signal SL), risk = `baseline × 0.67%`, **lots VARY** with the signal TP distance, RR = signal's SL:TP ratio (3.7 for gold). Kills K1–K5 (adds K3 daily-cap + K5 consistency).
+- **2 bug fixes** (found via simulation, `b0a98c5`): (1) degenerate prop TP — a sub-precision stage gap rounded prop TP onto entry → reject guard added; (2) zero-tick 500 crash — `pers_*` contract fields now coalesce 0/None to the prop's validated value (`or`, not `.get`-default). Both phases.
+- **Consistency pass** so nothing contradicts the model: `TECHNICAL.md §Immutable Risk Math` (was "never change between phases" — now split P1/P2), `docs/reference/calculations.md`, this file, module docstring, the stale "size dynamic reward" guard text.
+- Tests **114 pass**. **Action for Warren:** `/update layer2`. To start: `/phase1` → `4500:1000` → `CONFIRM`. Open design Qs (NOT bugs): personal SL risk balloons on a losing streak (personal has no kill); Phase 2 personal ratio still 0.70 (only P1 is ÷5).
+
 ### Session 21 — Per-pair dedup gate (multi-indicator) — COMMITTED `b6f34b4`, push PENDING (GitHub unreachable), then `/update layer2`
 
 - **Multiple TradingView indicators now fire the same pairs** (e.g. `layer0/Flipped RSI Divergence Indicator.pine` + `layer0/Nadaraya-Watson Webhook INDICATOR.pine`). Both pine files were **verified to emit all 14 webhook fields** the Layer 2 `SignalPayload` requires — no pine changes needed.
