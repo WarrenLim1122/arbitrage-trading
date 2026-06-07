@@ -163,6 +163,13 @@ def test_geometry_rejects_lots_round_to_zero():
     assert "reject" in g
 
 
+def test_geometry_rejects_degenerate_prop_tp():
+    # A positive but sub-precision stage gap ($0.05) makes prop_tp_dist round to 0
+    # at 5 digits -> prop_tp would == entry. Must reject, not emit an invalid order.
+    g = compute_geometry(active_stage=100000.05, live_prop_equity=100000.0, **_BASE)
+    assert "reject" in g and ("collapses" in g["reject"] or "precision" in g["reject"])
+
+
 def test_geometry_rejects_over_max_lots():
     g = compute_geometry(active_stage=109000.0, live_prop_equity=100000.0,
                           max_prop_lots=10.0, **_BASE)

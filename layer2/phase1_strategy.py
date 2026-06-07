@@ -161,6 +161,13 @@ def compute_geometry(
 
     prop_tp = round(prop_tp_price, price_digits)
     prop_sl = round(signal_tp, price_digits)   # prop stop == signal TP price (near barrier)
+
+    # Guard: a sub-precision stage gap can round the calculated prop TP onto the
+    # entry (or the prop SL), which would be an invalid / degenerate order. Reject
+    # so the trade is skipped cleanly rather than sent with TP == entry.
+    if prop_tp == round(entry, price_digits) or prop_tp == prop_sl:
+        return {"reject": "prop TP collapses onto entry/SL — stage gap too small at this price precision"}
+
     pers_sl = prop_tp                          # personal SL == prop TP price (far barrier)
     pers_tp = prop_sl                          # personal TP == prop SL == signal TP (near)
 

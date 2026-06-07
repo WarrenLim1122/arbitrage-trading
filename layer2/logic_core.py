@@ -1452,9 +1452,12 @@ async def receive_signal(request: Request):
 
     price_digits = prop_info["digits"]
     prop_contract_size = prop_info.get("contract_size", 0.0)
-    pers_contract_size = pers_info.get("contract_size", prop_contract_size)
-    pers_tick_size     = pers_info.get("trade_tick_size", prop_tick_size)
-    pers_tick_val      = pers_info.get("trade_tick_value", prop_tick_val)
+    # `or` (not just .get-default) so a broker that REPORTS 0/None for a personal
+    # contract field falls back to the prop's already-validated value — otherwise a
+    # non-USD pair would hit tick_value/0 in dollar_per_unit and 500 the request.
+    pers_contract_size = pers_info.get("contract_size") or prop_contract_size
+    pers_tick_size     = pers_info.get("trade_tick_size") or prop_tick_size
+    pers_tick_val      = pers_info.get("trade_tick_value") or prop_tick_val
 
     if phase == 1:
         p1 = _phase1_load()
