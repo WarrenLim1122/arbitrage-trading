@@ -84,7 +84,6 @@ def compute_geometry(
     signal: str,
     entry: float,
     signal_sl: float,
-    signal_tp: float,
     price_digits: int,
     prop_contract_size: float,
     prop_tick_size: float,
@@ -92,32 +91,26 @@ def compute_geometry(
     pers_contract_size: float,
     pers_tick_size: float,
     pers_tick_value: float,
+    active_stage: float,
+    live_prop_equity: float,
     fixed_risk: float,
     pers_ratio: float,
     max_prop_lots: float = 0.0,
 ) -> dict:
-    """Phase 1 geometry — fixed-risk "box" (identical model to Phase 2).
+    """Phase 1 geometry.
 
-    Sizing starts from the PROP and a fixed per-trade dollar risk:
-      - prop stop sits at the signal TP price (the near barrier);
-        lots_prop = fixed_risk / (tp_distance * k)  → a stop-out loses fixed_risk.
-      - prop target sits at the signal SL price (the far barrier).
-      - personal takes the signal direction at the signal's own SL/TP;
-        lots_personal = pers_ratio * lots_prop  (derived from prop).
+    Anchor = signal SL price = personal SL = prop TP.
+    Prop SL & personal TP are computed (shared mirror price).
+    lots_personal = pers_ratio * lots_prop.
 
-    Shared box (direction-agnostic by price):
-      prop TP / personal SL = signal SL price (far)
-      prop SL / personal TP = signal TP price (near, = the prop's stop)
-
-    The only difference from Phase 2 is the risk source: Phase 1 uses the typed
-    fixed_risk; Phase 2 uses baseline * 0.67%. Returns ticket fields or
-    {"reject": "<reason>"}.
+    Returns a dict of ticket fields, or {"reject": "<reason>"}.
     """
-    d_sl = abs(entry - signal_sl)   # far barrier — prop TP / personal SL distance
-    d_tp = abs(signal_tp - entry)   # near barrier — prop SL / personal TP distance
-    if d_tp <= 0:
-        return {"reject": f"signal TP distance is zero (entry={entry} tp={signal_tp})"}
-    if d_sl <= 0:
+    reward_prop = round(active_stage - live_prop_equity, 2)
+    if reward_prop <= 0:
+        return {"reject": "equity at/above active stage — awaiting ratchet"}
+
+    d = abs(entry - signal_sl)
+    if d <= 0:
         return {"reject": f"signal SL distance is zero (entry={entry} sl={signal_sl})"}
 
     prop_k = dollar_per_unit(ticker, prop_contract_size, prop_tick_size, prop_tick_value)
@@ -125,30 +118,41 @@ def compute_geometry(
     if prop_k <= 0 or pers_k <= 0:
         return {"reject": "invalid contract data (dollar-per-unit <= 0)"}
 
-    # PROP sized FIRST: its stop is the signal-TP distance, sized so a stop-out
-    # loses exactly fixed_risk.  Personal lots are then DERIVED from prop.
-    lots_prop = round(fixed_risk / (d_tp * prop_k), 2)
+    # Prop TP anchored at the signal-SL distance D → this lot size makes the
+    # prop win exactly the stage gap.
+    lots_prop = round(reward_prop / (d * prop_k), 2)
     if lots_prop <= 0:
-        return {"reject": "computed prop lots rounds to 0 (risk too small for TP distance)"}
+        return {"reject": "computed prop lots rounds to 0 (reward gap too small for SL distance)"}
     if max_prop_lots > 0 and lots_prop > max_prop_lots:
         return {"reject": f"computed prop lots {lots_prop:.2f} exceed max {max_prop_lots:.2f}"}
+
+    # Prop SL distance sized so a prop loss = exactly fixed_risk.
+    prop_sl_dist = fixed_risk / (lots_prop * prop_k)
 
     lots_pers = round(lots_prop * pers_ratio, 2)
     if lots_pers <= 0:
         return {"reject": "computed personal lots rounds to 0"}
 
     prop_signal = invert_signal(signal)
-    # Shared barriers — assigned by price, so this works for LONG and SHORT alike.
-    prop_tp = round(signal_sl, price_digits)   # prop target  == signal SL (far)
-    prop_sl = round(signal_tp, price_digits)   # prop stop    == signal TP (near)
-    pers_sl = round(signal_sl, price_digits)   # personal SL  == signal SL (far)
-    pers_tp = round(signal_tp, price_digits)   # personal TP  == signal TP (near)
+    if signal == "LONG":
+        # prop SHORT: TP below entry (= signal SL), SL above entry
+        prop_tp_price = entry - d
+        prop_sl_price = entry + prop_sl_dist
+    else:
+        # signal SHORT -> prop LONG: TP above entry (= signal SL), SL below entry
+        prop_tp_price = entry + d
+        prop_sl_price = entry - prop_sl_dist
+
+    prop_tp = round(prop_tp_price, price_digits)
+    prop_sl = round(prop_sl_price, price_digits)
+    pers_sl = round(signal_sl, price_digits)   # personal SL == signal SL price
+    pers_tp = prop_sl                          # personal TP == prop SL price (shared)
 
     # Dollar figures from UNROUNDED distances (display/alert only).
-    prop_dollar_risk = round(lots_prop * prop_k * d_tp, 2)   # == fixed_risk
-    prop_reward      = round(lots_prop * prop_k * d_sl, 2)
-    pers_dollar_risk = round(lots_pers * pers_k * d_sl, 2)   # personal stop at far barrier
-    pers_reward      = round(lots_pers * pers_k * d_tp, 2)
+    prop_dollar_risk = round(lots_prop * prop_k * prop_sl_dist, 2)
+    prop_reward = round(lots_prop * prop_k * d, 2)
+    pers_dollar_risk = round(lots_pers * pers_k * d, 2)
+    pers_reward = round(lots_pers * pers_k * prop_sl_dist, 2)
     prop_rr = prop_reward / prop_dollar_risk if prop_dollar_risk > 0 else 0.0
     pers_rr = pers_reward / pers_dollar_risk if pers_dollar_risk > 0 else 0.0
 
@@ -167,8 +171,10 @@ def compute_geometry(
         "pers_dollar_risk": pers_dollar_risk,
         "pers_reward": pers_reward,
         "pers_rr": round(pers_rr, 4),
-        "sl_distance": round(d_sl, price_digits),
-        "tp_distance": round(d_tp, price_digits),
+        "sl_distance": round(d, price_digits),
+        "tp_distance": round(prop_sl_dist, price_digits),
+        "active_stage": active_stage,
+        "reward_gap": reward_prop,
     }
 
 
