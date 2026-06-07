@@ -1474,11 +1474,11 @@ async def receive_signal(request: Request):
         except Exception:
             live_prop_equity = 0.0
         if live_prop_equity <= 0:
-            msg = "Phase 1: live prop equity unavailable — cannot size dynamic reward"
+            msg = "Phase 1: live prop equity unavailable — cannot compute the stage-gap reward target"
             logger.error(msg)
             await _telegram_alert(telegram_handlers.msg_signal_blocked_generic(
                 payload.ticker,
-                main="Phase 1: live prop equity unavailable.\n\nCannot size dynamic reward.",
+                main="Phase 1: live prop equity unavailable.\n\nCannot compute the stage-gap reward target.",
             ))
             raise HTTPException(status_code=503, detail=msg)
         idx = _phase1_active_stage(stages, live_prop_equity)
@@ -1488,7 +1488,7 @@ async def receive_signal(request: Request):
             return JSONResponse({"status": "halted", "reason": msg})
         g = phase1_strategy.compute_geometry(
             ticker=payload.ticker, signal=payload.signal,
-            entry=payload.entry, signal_sl=payload.sl,
+            entry=payload.entry, signal_sl=payload.sl, signal_tp=payload.tp,
             price_digits=price_digits,
             prop_contract_size=prop_contract_size,
             prop_tick_size=prop_tick_size, prop_tick_value=prop_tick_val,

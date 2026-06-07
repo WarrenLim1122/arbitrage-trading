@@ -6,56 +6,58 @@ Full technical reference for the Automated Trade Execution Engine. Read this fil
 
 ## Immutable Risk Math
 
-These rules never change between phases.
+**Only the directional logic is shared between phases — the sizing + TP/SL geometry DIFFER
+by phase.** Canonical, code-verified detail: `docs/reference/calculations.md`. The pure engines
+are `layer2/phase1_strategy.py` and `layer2/phase2_strategy.py`.
 
-**Directional logic:**
+**Directional logic (both phases):**
 
 | Signal | Personal Account | Prop Firm |
 |---|---|---|
 | LONG | LONG (follows signal) | SHORT (inverse) |
 | SHORT | SHORT (follows signal) | LONG (inverse) |
 
-**RR per account:** Personal follows signal exactly (SL/TP from webhook). Funded is exact inverse: SL = signal TP, TP = signal SL. RR of 0.27 is baked into Layer 0 — Layer 2 does not recompute it.
+The signal is for the PERSONAL leg; prop is always the inverse. Lot sizing always starts from
+the PROP, then `pers_lots = prop_lots × phase_ratio` (0.20 Phase 1 / 0.70 Phase 2). Nothing is
+hardcoded: `k` (dollar-per-unit) is live MT5 contract data; risk + ratio come from config.
 
-**Lot sizing sequence:**
+### Phase 2 — uses ALL signal levels (SL, entry, TP); prop is the exact inverse
 
 ```
-tp_distance = abs(payload.tp − entry)    # funded SL distance
-sl_distance = abs(entry − payload.sl)    # personal SL distance
+prop_dollar_risk = baseline_equity × 0.0067            # 0.67% of static baseline
+tp_distance      = abs(payload.tp − entry)             # funded SL distance
+prop_lots        = prop_dollar_risk / (tp_distance × k_prop)   # k from dollar_per_unit
+pers_lots        = prop_lots × 0.70
 
-Step A — Prop dollar risk (BASELINE equity, not live)
-  prop_dollar_risk = baseline_equity × 0.0067
-
-Step B — Funded lots
-  prop_lots = prop_dollar_risk / ((tp_distance / trade_tick_size) × trade_tick_value)
-
-  CRITICAL: use trade_tick_size NOT point.
-  XAGUSD on MetaQuotes: point=0.001, trade_tick_size=0.0001. Using point = 10× bug.
-
-  Equivalent shortcut (USD-denominated pairs only):
-    prop_lots = prop_dollar_risk / (tp_distance × contract_size)
-    XAGUSD: $670 / (0.277 × 5000) = 0.48 lots ✓
-    XAUUSD: $670 / (SL_dist × 100)
-    Forex:  $670 / (SL_dist × 100000)
-    Does NOT work for USDJPY/USDCHF/USDCAD (SL in foreign currency).
-
-  Example EURUSD: tp=0.00054, tick_size=0.00001, tick_value=$1 → $54/lot → 12.41 lots
-  Example XAGUSD: tp=0.277,   tick_size=0.0001,  tick_value=$0.5 → $1,385/lot → 0.48 lots
-
-Step C — Personal lots
-  phase_ratio = 0.20 (Phase 1) | 0.70 (Phase 2)
-  pers_lots   = prop_lots × phase_ratio
+TP/SL:  personal sl = payload.sl, tp = payload.tp
+        funded   sl = payload.tp, tp = payload.sl       (exact swap)
+RR ≈ 0.27 is baked into Layer 0 (signal SL:TP ratio) — Layer 2 does not recompute it.
 ```
+`k = trade_tick_value / trade_tick_size` (use trade_tick_size NOT point — XAGUSD point=0.001 vs
+tick_size=0.0001 is a 10× bug); for USD-quoted pairs the shortcut `k = contract_size` is exact.
 
-**TP/SL assignment:**
-```
-personal: sl = payload.sl,  tp = payload.tp
-funded:   sl = payload.tp,  tp = payload.sl   (exact swap)
+### Phase 1 — FIXED-LOT, moving-TP (uses signal TP + entry only; signal SL discarded)
 
-Example BUY (entry=1.08500, sl=1.08300, tp=1.08554):
-  personal BUY:  sl=1.08300  tp=1.08554
-  funded   SELL: sl=1.08554  tp=1.08300
+Phase 1 **discards the signal SL** and uses only the signal **TP** (the near level). The prop is
+sized over its own stop (= signal TP distance) → **lots are FIXED**; the prop TP is **calculated**
+to win the stage gap and **becomes the personal SL**.
+
 ```
+reward_gap   = active_stage − live_prop_equity         # the prop's target this trade
+d_propSL     = abs(signal_tp − entry)                  # prop stop = signal TP distance
+prop_lots    = fixed_risk / (d_propSL × k_prop)        # FIXED (gold $1k/$10/lot→1.0; $2k→2.0)
+pers_lots    = prop_lots × 0.20
+prop_tp_dist = reward_gap / (prop_lots × k_prop)       # the ONLY thing that moves per-trade
+
+TP/SL:  prop_sl = signal_tp            (NEAR barrier)
+        prop_tp = entry ∓ prop_tp_dist (FAR barrier, calculated; − if prop SHORT, + if prop LONG)
+        pers_sl = prop_tp              (= FAR barrier; tracks the prop TP)
+        pers_tp = prop_sl = signal_tp  (NEAR barrier)
+RR (prop) = reward_gap / fixed_risk → 4.5 → 5.5 → 6.5 over a losing run; ~0.25 on small-gap stages.
+```
+`fixed_risk` = the `risk` half of the `/phase1` `reward:risk` pair (scales with account: $1k @ $50k,
+$2k @ $100k). `active_stage`/`reward_gap` use the stage ladder (see Phase 1 stages). Lots do NOT
+scale with the gap — the TP does.
 
 **Phase definitions:**
 

@@ -85,7 +85,7 @@ VPS #1 layers run as systemd services (auto-restart). VPS #2/#3 workers run in P
 |---|---|---|
 | 0 — Signal Engine | `layer0/1D-15m Breakout INDICATOR.pine` | ✅ LIVE — 7 alerts active (XAGUSD + NAS100 dropped 2026-05-29), `in_trade` gate deployed 2026-04-27. **Frozen — do not edit without asking Warren first.** |
 | 1 — Gatekeeper | `layer1/main.py`, `news_filter.py`, `ff_calendar.py` | ✅ LIVE — systemd on VPS #1 |
-| 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 strategy split shipped (Phase 1 = dynamic reward-targeting; phase-aware Trade Opened context). **Critical phase1-persistence fix shipped session 13** (see Current State). Pending `/update layer2` (also covers Trade Opened reformat, session 12) |
+| 2 — Logic Core | `layer2/logic_core.py`, `telegram_handlers.py`, `state.py` | ✅ LIVE — Phase 1/Phase 2 are DIFFERENT geometries (Phase 1 = fixed-lot/moving-TP, rewritten session 22; Phase 2 = full-signal box). See `docs/reference/calculations.md`. Pending `/update layer2`. |
 | 3 — Workers | `layer3/_worker_core.py`, `worker_prop.py`, `worker_personal.py` | ✅ **Live cutover UNBLOCKED (2026-05-26)** — both VPS desktops streaming live (personal 448196 SGD + prop 20047930 USD). Connection rewrite shipped (`72b3921` + `75f55f5`): self-launch + hard account guard. Awaiting `git pull` + worker start on both VPSes. See Current State + VPS MT5 Setup. |
 
 ## Covered Instruments — single source of truth: `config/symbols.json`
@@ -190,7 +190,15 @@ Install (will go into a folder like `C:\Program Files\Fusion Markets MetaTrader 
 
 ---
 
-## Current State (as of 2026-06-04)
+## Current State (as of 2026-06-07)
+
+### Session 21 — Per-pair dedup gate (multi-indicator) — COMMITTED `b6f34b4`, push PENDING (GitHub unreachable), then `/update layer2`
+
+- **Multiple TradingView indicators now fire the same pairs** (e.g. `layer0/Flipped RSI Divergence Indicator.pine` + `layer0/Nadaraya-Watson Webhook INDICATOR.pine`). Both pine files were **verified to emit all 14 webhook fields** the Layer 2 `SignalPayload` requires — no pine changes needed.
+- **New per-pair dedup gate in Layer 2** (`logic_core.py`, in `receive_signal` just above the max-positions gate): if the prop account already holds a position on the signal's ticker, the signal is **dropped** (`rejected / position_already_open`) and `msg_signal_skipped_already_open` fires (dedup'd 30 min/pair). Reuses the existing `_query_positions(ZMQ_REQ_PROP)` call. Only the FIRST signal for a pair opens a trade; later dupes wait until it closes. The pine `in_trade` memory is per-indicator only, so this cross-indicator dedup HAD to live in Layer 2. Memory: [[multi-indicator-dedup]].
+- **Direction model clarified** (Warren corrected me): the signal's direction IS the personal leg (personal follows signal); prop is the inverse hedge. Prop drives the MATH (lots/kills), not the direction. Memory: [[signal-direction-is-personal]].
+- Tests **112 pass**. Files: `layer2/logic_core.py`, `layer2/telegram_handlers.py` (added `msg_signal_skipped_already_open`).
+- **Action for Warren:** push `b6f34b4` when GitHub is reachable (`git push origin main`), then `/update layer2`. No `pyproject.toml` change.
 
 ### Session 20 — Self-healing guard for degenerate $0 NO_MONEY order_check — SHIPPED to `main`, pending `/update layer3` (prop)
 
@@ -217,7 +225,7 @@ Commits: `7773771` (KB + folder reorg), `b51af15` (audit cleanups), `f2f92e5` `d
 - **Knowledge base built** at `docs/reference/` (`index`, `architecture`, `calculations`, `messages`, `execution`, `deployment`) from a code-verified file-by-file pass. **Consult it first** to locate file:line, then act; keep it in sync on every code change. CLAUDE.md now leads with a "🧠 Knowledge base — CONSULT FIRST" block.
 - **Folder reorg done** — the `accd561` deletion table is fully cleared (already mostly gone; removed empty `*.log`, de-linked `docs/README.md` from the deleted AI_Workflow.md). Only residue: a gitignored, env-locked root `.DS_Store`.
 - **Correctness audit (whole codebase)** — trading math (Phase 1/2 geometry, kills K1–K5, lot sizing), order execution, fee/deal handling, currency formatting all verified **correct**. Only fixes were 3 safe cleanups (`b51af15`): a dead no-op `warn=""` block in `_p1_input`, an unused `pos_str` double-VPS query in the Phase-1 kill branch, and the dead `_set_personal_baseline` fn. Tests 107 pass throughout.
-- **Phase 1 geometry confirmed correct by Warren** — as the prop loses, the growing reward gap is carried by **lot size** (TP anchored at signal-SL distance, prop SL tightens, capped by `max_prop_lots`); NOT fixed-lots/pulled-TP. Two-risk model confirmed: per-trade risk = the typed `fixed_risk`; daily K1 + overall K2 kills = baseline-derived. Phase 1 ≠ Phase 2 by design; Phase 2 untouched. Memories: [[phase1-reward-risk-scaling]], [[phase1-phase2-separate-logic]], [[baseline-always-configured]].
+- **Phase 1 geometry** — ⚠️ this session-18 description is **SUPERSEDED by session 22** (2026-06-07). The "growing gap carried by lot size, TP anchored at signal SL" model was **replaced**: Phase 1 is now **FIXED-LOT, moving-TP** — only the signal TP is used (signal SL discarded), the prop is sized over its own stop (lots fixed: gold $1k→1.0 lot, $2k→2.0), and the calculated prop TP carries the gap and becomes the personal SL. RR still 4.5/5.5/6.5 (stage-based) but via the moving TP, not lots. See session 22 + `docs/reference/calculations.md`. Two-risk model unchanged (per-trade risk = `fixed_risk`; K1/K2 = baseline-derived). Phase 2 untouched. Memories: [[phase1-reward-risk-scaling]], [[phase1-phase2-separate-logic]], [[baseline-always-configured]].
 - **`/phase1` now resets the per-cycle trading-fee anchor** on both workers (`98e3709`), same as `/changepropfirm` and `/phase2` (Warren's request). Needs `/update layer2`.
 
 ### Session 17 — Per-cycle trading-fee anchor + wizard re-entry / `/rearm` + final personal-`$`→SGD — SHIPPED to `main`, pending deploy

@@ -72,43 +72,44 @@ prop_signal = invert(signal) ; pers_signal = signal
 Intuition: prop risks exactly `baseline × 0.67%` sized against the **tight** (signal-TP) distance;
 when the signal's SL is hit, the prop wins big (wide leg). Personal is the smaller mirror at 70%.
 
-## Phase 1 geometry (`phase1_strategy.compute_geometry`) — dynamic reward-targeting
+## Phase 1 geometry (`phase1_strategy.compute_geometry`) — FIXED-LOT, moving-TP (rewritten 2026-06-07)
 
-**Anchor = signal SL price = personal SL = prop TP.** The signal TP is **ignored**; the personal
-TP is **computed** (= prop SL price). Prop lots are sized so the prop win exactly closes the gap
-to the active stage; the prop SL distance is then sized so a prop loss = the fixed per-trade risk.
+**Phase 1 ≠ Phase 2** (Warren, 2026-06-07). The signal is for PERSONAL; prop is the inverse.
+**Only the signal TP (the near 1000-tick level) is used; the signal SL (3700t) is DISCARDED.**
+The prop is sized over its own stop (= signal TP distance) so a stop-out loses exactly the fixed
+per-trade risk → **lots are FIXED**. The growing stage gap is carried entirely by the **prop TP**,
+which is calculated and **becomes the personal SL** (clean mirror box).
 
 ```
-reward_prop = active_stage − live_prop_equity        # reject if ≤ 0 (await ratchet)
-d           = |entry − signal_sl|                    # reject if ≤ 0
-
+reward_gap = active_stage − live_prop_equity         # reject if ≤ 0 (await ratchet)
+d_propSL   = |signal_tp − entry|                      # prop stop = signal TP dist ; reject if ≤ 0
+                                                       # (signal_sl is accepted but UNUSED)
 k_prop, k_pers = dollar_per_unit(...)                # reject if either ≤ 0
 
-lots_prop = round(reward_prop / (d × k_prop), 2)     # prop TP at distance d wins the stage gap
-                                                     # reject if 0, or > max_prop_lots (if set)
-prop_sl_dist = fixed_risk / (lots_prop × k_prop)     # prop loss at this SL = exactly fixed_risk
+lots_prop = round(fixed_risk / (d_propSL × k_prop), 2)   # FIXED by risk; reject 0 / > max_prop_lots
+lots_pers = round(lots_prop × pers_ratio, 2)             # pers_ratio = 0.20
 
-lots_pers = round(lots_prop × pers_ratio, 2)         # pers_ratio = 0.20
+prop_tp_dist = reward_gap / (lots_prop × k_prop)         # the ONLY thing that moves per-trade
 
 # prop is inverse of signal:
-if signal LONG  → prop SHORT: prop_tp = entry − d ; prop_sl = entry + prop_sl_dist
-if signal SHORT → prop LONG : prop_tp = entry + d ; prop_sl = entry − prop_sl_dist
-
-pers_sl = signal_sl          # personal SL = signal SL (fixed)
-pers_tp = prop_sl            # personal TP = prop SL price (shared mirror, computed)
+if signal LONG  → prop SHORT: prop_tp = entry − prop_tp_dist
+if signal SHORT → prop LONG : prop_tp = entry + prop_tp_dist
+prop_sl = signal_tp          # prop stop = signal TP price        (NEAR barrier)
+pers_sl = prop_tp            # personal SL = prop TP price         (FAR barrier — moves with gap)
+pers_tp = prop_sl            # personal TP = prop SL = signal TP   (NEAR barrier)
 ```
 
-`live_prop_equity` is the **live** prop equity (the only place live equity enters sizing — and only
-to measure the gap to the stage, not the risk). `fixed_risk` and `max_prop_lots` come from the
-nested `phase1` block in `phase_config.json`.
+All inputs are **formula/config-driven, nothing hardcoded**: `fixed_risk` + `max_prop_lots` from the
+`phase1` block of `phase_config.json`; `k` live from MT5 contract data via `dollar_per_unit`;
+`pers_ratio` from `risk_params.json`; `reward_gap` from the stage ladder − live equity.
 
-**Behavior over a losing run (confirmed intended, 2026-06-04):** the active stage only ratchets
-*up*, so after a loss the equity drops and the gap to the stage **grows** (e.g. 4,500 → 5,500 →
-6,500 against a fixed 1,000 risk → RR climbs 4.5 → 5.5 → 6.5). That growing reward is absorbed
-entirely into **lot size** — the prop TP stays at the signal-SL distance and the prop SL gets
-**tighter** (`fixed_risk / (lots × k)`). Lots therefore balloon over a losing run; `max_prop_lots`
-is the guard that rejects the trade once they exceed the cap. It is **not** implemented as a
-"pull the TP further, keep lots fixed" scheme — that was considered and explicitly rejected.
+**Behavior over a losing run:** lots stay **fixed** (e.g. gold $1,000 risk over the 1000-tick
+signal-TP distance → 1.00 lot; $2,000 on a $100k baseline → 2.00 lot). The active stage ratchets
+*up* only, so after a loss the gap grows (4,500 → 5,500 → 6,500) and is carried by **moving the
+prop TP further out** → RR = `reward_gap / fixed_risk` climbs 4.5 → 5.5 → 6.5 (shrinks to ~0.25 on
+later small-gap stages). The personal SL tracks the prop TP. This is the **"lots fixed, TP moves"**
+scheme — the opposite of the pre-2026-06-07 "lots scale, TP fixed" model. Memory:
+[[phase1-reward-risk-scaling]].
 
 ### Phase 1 stages (`phase1_strategy.derive_stages`)
 

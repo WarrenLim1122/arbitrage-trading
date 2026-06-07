@@ -1,7 +1,12 @@
-"""Phase 1 — dynamic reward-targeting strategy (pure).
+"""Phase 1 — fixed-lot, moving-TP strategy (pure).
+
+Phase 1 is DIFFERENT from Phase 2 (see docs/reference/calculations.md): only the
+signal TP is used (signal SL discarded); the prop is sized over its own stop so
+lots are FIXED per trade, and the prop TP is calculated to win the stage gap and
+becomes the personal SL. See `compute_geometry` for the full workflow.
 
 No imports from layer2.state / layer2.logic_core. All inputs are primitives;
-outputs are plain dicts. See docs/superpowers/specs/2026-05-16-phase1-strategy-design.md
+outputs are plain dicts.
 """
 from __future__ import annotations
 
@@ -84,6 +89,7 @@ def compute_geometry(
     signal: str,
     entry: float,
     signal_sl: float,
+    signal_tp: float,
     price_digits: int,
     prop_contract_size: float,
     prop_tick_size: float,
@@ -97,62 +103,72 @@ def compute_geometry(
     pers_ratio: float,
     max_prop_lots: float = 0.0,
 ) -> dict:
-    """Phase 1 geometry.
+    """Phase 1 geometry — FIXED-LOT, moving-TP (lots fixed by risk; TP carries the stage gap).
 
-    Anchor = signal SL price = personal SL = prop TP.
-    Prop SL & personal TP are computed (shared mirror price).
-    lots_personal = pers_ratio * lots_prop.
+    Workflow (the signal is for PERSONAL; prop is the inverse):
+      1. Only the signal **TP** (the near 1000-tick level) is used; the signal **SL**
+         (3700t) is DISCARDED.
+      2. prop SL  = signal TP price (the prop's stop = NEAR barrier).
+      3. lots_prop = fixed_risk / (|signal_tp − entry| × k_prop)  → sized over the
+         prop's stop, so a stop-out loses exactly `fixed_risk`. **Lots are FIXED**
+         per trade (independent of equity / stage gap).
+      4. prop TP = CALCULATED to win the stage gap → distance
+         `reward_gap / (lots_prop × k_prop)` (the FAR barrier; the only thing that
+         moves trade-to-trade). RR = reward_gap / fixed_risk → 4.5 → 5.5 → 6.5 over a
+         losing run, shrinking on later small-gap stages.
+      5. personal SL = prop TP price (FAR barrier); personal TP = prop SL = signal TP
+         (NEAR barrier). The two legs share both barriers (clean mirror box).
+      6. lots_pers = pers_ratio × lots_prop.
 
+    `signal_sl` is accepted for call-signature symmetry but intentionally UNUSED.
     Returns a dict of ticket fields, or {"reject": "<reason>"}.
     """
-    reward_prop = round(active_stage - live_prop_equity, 2)
-    if reward_prop <= 0:
+    reward_gap = round(active_stage - live_prop_equity, 2)
+    if reward_gap <= 0:
         return {"reject": "equity at/above active stage — awaiting ratchet"}
 
-    d = abs(entry - signal_sl)
-    if d <= 0:
-        return {"reject": f"signal SL distance is zero (entry={entry} sl={signal_sl})"}
+    d_prop_sl = abs(signal_tp - entry)   # prop SL distance = signal TP distance (near, sizing)
+    if d_prop_sl <= 0:
+        return {"reject": f"signal TP distance is zero (entry={entry} tp={signal_tp})"}
 
     prop_k = dollar_per_unit(ticker, prop_contract_size, prop_tick_size, prop_tick_value)
     pers_k = dollar_per_unit(ticker, pers_contract_size, pers_tick_size, pers_tick_value)
     if prop_k <= 0 or pers_k <= 0:
         return {"reject": "invalid contract data (dollar-per-unit <= 0)"}
 
-    # Prop TP anchored at the signal-SL distance D → this lot size makes the
-    # prop win exactly the stage gap.
-    lots_prop = round(reward_prop / (d * prop_k), 2)
+    # PROP sized over its own stop (signal-TP distance) → a stop-out loses fixed_risk.
+    # Lots are FIXED per trade (do not scale with the stage gap).
+    lots_prop = round(fixed_risk / (d_prop_sl * prop_k), 2)
     if lots_prop <= 0:
-        return {"reject": "computed prop lots rounds to 0 (reward gap too small for SL distance)"}
+        return {"reject": "computed prop lots rounds to 0 (risk too small for TP distance)"}
     if max_prop_lots > 0 and lots_prop > max_prop_lots:
         return {"reject": f"computed prop lots {lots_prop:.2f} exceed max {max_prop_lots:.2f}"}
-
-    # Prop SL distance sized so a prop loss = exactly fixed_risk.
-    prop_sl_dist = fixed_risk / (lots_prop * prop_k)
 
     lots_pers = round(lots_prop * pers_ratio, 2)
     if lots_pers <= 0:
         return {"reject": "computed personal lots rounds to 0"}
 
+    # Prop TP distance carries the stage gap (the only part that moves trade-to-trade).
+    prop_tp_dist = reward_gap / (lots_prop * prop_k)
+
     prop_signal = invert_signal(signal)
     if signal == "LONG":
-        # prop SHORT: TP below entry (= signal SL), SL above entry
-        prop_tp_price = entry - d
-        prop_sl_price = entry + prop_sl_dist
+        # prop SHORT: profits DOWN. TP below entry; SL above entry (= signal TP, near).
+        prop_tp_price = entry - prop_tp_dist
     else:
-        # signal SHORT -> prop LONG: TP above entry (= signal SL), SL below entry
-        prop_tp_price = entry + d
-        prop_sl_price = entry - prop_sl_dist
+        # signal SHORT -> prop LONG: profits UP. TP above entry; SL below (= signal TP).
+        prop_tp_price = entry + prop_tp_dist
 
     prop_tp = round(prop_tp_price, price_digits)
-    prop_sl = round(prop_sl_price, price_digits)
-    pers_sl = round(signal_sl, price_digits)   # personal SL == signal SL price
-    pers_tp = prop_sl                          # personal TP == prop SL price (shared)
+    prop_sl = round(signal_tp, price_digits)   # prop stop == signal TP price (near barrier)
+    pers_sl = prop_tp                          # personal SL == prop TP price (far barrier)
+    pers_tp = prop_sl                          # personal TP == prop SL == signal TP (near)
 
     # Dollar figures from UNROUNDED distances (display/alert only).
-    prop_dollar_risk = round(lots_prop * prop_k * prop_sl_dist, 2)
-    prop_reward = round(lots_prop * prop_k * d, 2)
-    pers_dollar_risk = round(lots_pers * pers_k * d, 2)
-    pers_reward = round(lots_pers * pers_k * prop_sl_dist, 2)
+    prop_dollar_risk = round(lots_prop * prop_k * d_prop_sl, 2)     # == fixed_risk
+    prop_reward = round(lots_prop * prop_k * prop_tp_dist, 2)       # == reward_gap
+    pers_dollar_risk = round(lots_pers * pers_k * prop_tp_dist, 2)  # personal stop at far barrier
+    pers_reward = round(lots_pers * pers_k * d_prop_sl, 2)          # personal TP at near barrier
     prop_rr = prop_reward / prop_dollar_risk if prop_dollar_risk > 0 else 0.0
     pers_rr = pers_reward / pers_dollar_risk if pers_dollar_risk > 0 else 0.0
 
@@ -171,10 +187,10 @@ def compute_geometry(
         "pers_dollar_risk": pers_dollar_risk,
         "pers_reward": pers_reward,
         "pers_rr": round(pers_rr, 4),
-        "sl_distance": round(d, price_digits),
-        "tp_distance": round(prop_sl_dist, price_digits),
+        "sl_distance": round(prop_tp_dist, price_digits),   # personal SL dist (= far barrier)
+        "tp_distance": round(d_prop_sl, price_digits),      # personal TP dist (= near barrier)
         "active_stage": active_stage,
-        "reward_gap": reward_prop,
+        "reward_gap": reward_gap,
     }
 
 
