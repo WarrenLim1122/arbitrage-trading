@@ -3606,6 +3606,26 @@ def msg_signal_skipped_max_pos(ticker: str, signal: str,
     )
 
 
+def msg_signal_skipped_already_open(ticker: str, signal: str) -> str:
+    """Signal skipped — this pair already has a bot-opened position.
+
+    Triggered when: a TradingView signal arrives for a pair the prop account
+    already holds an open position on. With multiple indicators able to fire
+    the same pair, this prevents a second (duplicate) position being stacked
+    on top of the first. Dedup'd to 30 min per ticker.
+    """
+    return (
+        f"{_MSG_SEP}\n"
+        f"🚫 <b>Signal Skipped — {ticker}</b>\n"
+        f"{_MSG_SEP}\n\n"
+        f"Position already open on this pair.\n"
+        f"<i>(duplicate signal dropped)</i>\n\n"
+        f"<b>Signal</b>\n{signal}\n\n"
+        f"Waits until the current\n"
+        f"{ticker} trade closes."
+    )
+
+
 def msg_signal_blocked_algo_disabled(ticker: str, side: str) -> str:
     """Signal blocked — algo trading disabled on one of the workers.
 

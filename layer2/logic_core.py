@@ -1345,7 +1345,23 @@ async def receive_signal(request: Request):
         open_count = len(open_positions)
     except Exception as exc:
         logger.warning("Max-pos check: prop positions query failed: %s — failing open", exc)
+        open_positions = []
         open_count = 0  # fail open — don't block if count unknown
+
+    # Per-pair dedup gate — drop any signal for a pair the bot is already in.
+    # Multiple indicators can fire the same pair; only the first opens a trade,
+    # later duplicates are dropped until the current position closes.
+    if any(p["symbol"] == payload.ticker for p in open_positions):
+        logger.info("ALREADY_OPEN  %s %s — dropping duplicate signal", payload.signal, payload.ticker)
+        if _maybe_block_alert(payload.ticker, "already_open"):
+            await _telegram_alert(telegram_handlers.msg_signal_skipped_already_open(
+                payload.ticker, payload.signal,
+            ))
+        return JSONResponse({
+            "status": "rejected",
+            "reason": "position_already_open",
+            "ticker": payload.ticker,
+        })
 
     if open_count >= max_pos:
         logger.info("MAX_POS  %s %s — %d/%d open", payload.signal, payload.ticker, open_count, max_pos)
