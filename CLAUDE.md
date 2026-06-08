@@ -81,6 +81,16 @@ Single source of truth: **`config/symbols.json`** (canonical = TradingView names
 
 ---
 
+## Parked idea — AI-signal stress test (DEFERRED, do not auto-start)
+
+Warren wants to eventually test whether LLM-agent strategies have any real edge, using THIS harness as the validation rig (it already owns execution + risk + demo accounts + Telegram control).
+
+- Two research repos are cloned at `~/.agents/external/`: **`ai-hedge-fund`** (virattt — LLM agents impersonating famous investors) and **`TradingAgents`** (TauricResearch — multi-agent analyst/trader/risk debate). Both are **signal generators**, educational-only, with **no verified live edge**; any README return/win-rate figure is an overfit backtest. Hedging reduces variance, not the absence of edge — so combining them is not automatic alpha.
+- **Plan when capital allows:** feed one repo's signals into the existing Layer 0→2 webhook in **demo/paper only**, run for weeks, and measure *its own* expectancy-after-costs / Sharpe / win-rate on Warren's instruments — i.e. generate the statistics that don't exist, instead of trusting a README. Only graduate to small real capital if it clears a pre-set out-of-sample bar.
+- **Reminder duty:** this is a queued idea, NOT a trigger. Surface it once if relevant ("Warren — the AI-signal stress test is still parked; want to start it?"), then wait for him to explicitly ask. Don't begin wiring it unprompted.
+
+---
+
 ## Where to look in TECHNICAL.md
 
 | Working on… | Section |

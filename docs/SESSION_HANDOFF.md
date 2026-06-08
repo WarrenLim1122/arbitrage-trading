@@ -1,4 +1,4 @@
-# Session handoff — Phase 1 rewritten to fixed-lot / moving-TP (+ consistency pass + 2 bug fixes)
+# Session handoff — CLAUDE.md slimmed to a router + AI-signal research parked
 
 > Persistent resume file. Paste into a fresh session (or auto-load via a SessionStart hook).
 > Delta only — project overview, roles, and decisions live in CLAUDE.md & docs (auto-loaded).
@@ -6,20 +6,16 @@
 
 **Role:** Single-agent (Claude). Warren operates the live bot via Telegram; Claude edits code + docs.
 
-## Status — updated 2026-06-07
-- **Phase 1 geometry replaced** (`layer2/phase1_strategy.compute_geometry`) with the FIXED-LOT / moving-TP model Warren specified over a long back-and-forth this session. Final, verified, committed `5f719fe` + `b0a98c5`. The exact rule (memorise it — it took many iterations to land):
-  - Signal is for PERSONAL; prop inverts. **Only signal TP + entry are used; signal SL is DISCARDED.**
-  - `prop_sl = signal_tp` (near). `lots_prop = fixed_risk / (|signal_tp−entry| × k)` → **lots FIXED** (gold $1k→1.0, $2k@$100k→2.0). `lots_pers = lots_prop × 0.20`.
-  - `prop_tp` = **calculated**: `reward_gap / (lots_prop × k)`; it carries the stage gap and **becomes `pers_sl`**. `pers_tp = prop_sl = signal_tp`.
-  - RR = `reward_gap / fixed_risk` → 4.5/5.5/6.5 (each loss +$1000 gap), ~0.25 after a stage win. Lots never move; the TP does.
-- **Phase 2 untouched** (already correct): all signal levels, prop exact inverse, `baseline×0.67%`, lots vary with signal TP distance, RR = signal ratio.
-- **2 bug fixes** (`b0a98c5`, found by running multi-trade sims): degenerate prop-TP reject guard; zero-tick 500-crash hardened (`pers_*` fields coalesce 0/None via `or`).
-- **Consistency pass** done — no file still describes the old "lots scale, TP fixed" model. Swept docs/TECHNICAL.md/CLAUDE.md/memories; `TECHNICAL.md §Immutable Risk Math` split per phase.
-- Tests **114 pass**. A wrong mid-session "unify P1 into P2 box" commit (`993ed31`) was reverted (`3132fb9`) — net zero; don't resurrect it.
+## Status — updated 2026-06-08
+- **CLAUDE.md slimmed 333 → 96 lines** (commit `0cea4f7`) into a lean router per the harness doctrine. Nothing deleted — relocated: sessions 14–22 changelog → `docs/SESSION_LOG.md`; VPS MT5 connect how-to → `docs/VPS_MT5_Setup.md`; still-pending carry-over deploys → this file (below). Only Warren's four files were committed; his pre-existing unstaged edits (Project_Overview.md, System_Architecture.md, .obsidian/, the pine, uv.lock) were left untouched.
+- **AI-signal research done (no code).** Identified the repos Warren found: `virattt/ai-hedge-fund` (already cloned) + `TauricResearch/TradingAgents` (cloned this session). Both now at `~/.agents/external/`. Honest assessment given: both are educational signal-generators with **no verified live edge**; README stats are overfit backtests; hedging doesn't manufacture edge. Memory: [[ai-signal-stress-test-repos]].
+- **`CLAUDE.md` §Parked idea added** — the future "stress-test LLM signals through this harness in demo before capital" plan, flagged DEFERRED / do-not-auto-start. (Not committed yet — see Next actions.)
+- **Phase 1 model (session 22) is still the live in-flight code change** and still pending deploy — unchanged this session. Fixed-lot / moving-TP, committed `5f719fe` + `b0a98c5`, 114 tests pass. Details: `docs/SESSION_LOG.md` → Session 22 + `docs/reference/calculations.md`.
 
 ## Next actions
-1. **Deploy:** `/update layer2` (Telegram). No `pyproject.toml` change → no `uv sync`.
-2. To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`.
+1. **Commit the §Parked idea + memory edits** (this session left CLAUDE.md §Parked idea, the new memory, and this handoff uncommitted): `git add CLAUDE.md docs/SESSION_HANDOFF.md && git commit && git push` per the auto-push rule.
+2. **Deploy (carried from session 22):** `/update layer2` (Telegram). No `pyproject.toml` change → no `uv sync`.
+3. To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`.
 
 ### Carry-over deploys still pending (sessions 15–18)
 - `/update layer2` (Telegram changes — incl. session-18 `/phase1` fee-anchor reset) **AND** `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`.
@@ -30,13 +26,12 @@
 ## Running state
 - Background processes: none
 - Dev servers / ports: none
-- Worktrees / branches: none (on `main`, pushed through `b0a98c5`)
-- Throwaway sims (safe to ignore/delete): `/tmp/sim_full.py`, `/tmp/sim_p2.py`, `/tmp/fixed_signal.py`, `/tmp/dryrun_*.py`
+- Worktrees / branches: none (on `main`; pushed through `0cea4f7`; §Parked-idea + memory edits not yet committed)
 
 ## Open items
-- **Design decision, not a bug — personal-side risk:** because `pers_sl = prop_tp` (moves out as the gap grows), the personal stop distance + $ risk balloon on a losing streak (~$900→$1700 in the sim) and **personal has no kill switch**. Warren has NOT asked to cap it; offered, awaiting his call.
-- **Phase 2 personal ratio is still 0.70** (only Phase 1 is ÷5 / 0.20). Warren only specified ÷5 for Phase 1; left 0.70 unless he says otherwise.
-- No AGENTS.md adapter exists; `claude-codex-setup` would create one if Codex parity is wanted (not requested).
+- **AI-signal stress test — PARKED.** Awaiting spare capital + Warren's explicit go. Do NOT start wiring unprompted; surface once if relevant, then wait. Plan in CLAUDE.md §Parked idea + [[ai-signal-stress-test-repos]].
+- **Design decision (carried, not a bug) — personal-side risk:** Phase 1 `pers_sl = prop_tp` moves out as the gap grows, so personal stop distance + $ risk balloon on a losing streak and personal has no kill switch. Warren hasn't asked to cap it; offered, awaiting his call.
+- **Phase 2 personal ratio still 0.70** (only Phase 1 is ÷5 / 0.20). Left unless Warren says otherwise.
 
 ## Pick up here
-If Warren confirms the model is live, the next action is almost certainly the personal-risk-cap question (Open items #1) or just deploying via `/update layer2`. The Phase 1 math is final — do not re-derive it; read `docs/reference/calculations.md` §Phase 1 + [[phase1-reward-risk-scaling]].
+Most likely first action: commit the uncommitted §Parked-idea/memory/handoff edits, then `/update layer2` to ship the Phase 1 model. The AI-signal idea is parked — do not begin it unless Warren explicitly asks.
