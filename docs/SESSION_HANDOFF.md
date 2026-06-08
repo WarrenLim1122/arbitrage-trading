@@ -2,7 +2,7 @@
 
 > Persistent resume file. Paste into a fresh session (or auto-load via a SessionStart hook).
 > Delta only — project overview, roles, and decisions live in CLAUDE.md & docs (auto-loaded).
-> Full shipped detail: CLAUDE.md §Current State → Session 22.
+> Full shipped detail / per-session changelog: `docs/SESSION_LOG.md` (Session 22 at top).
 
 **Role:** Single-agent (Claude). Warren operates the live bot via Telegram; Claude edits code + docs.
 
@@ -18,8 +18,14 @@
 - Tests **114 pass**. A wrong mid-session "unify P1 into P2 box" commit (`993ed31`) was reverted (`3132fb9`) — net zero; don't resurrect it.
 
 ## Next actions
-1. **Deploy:** `/update layer2` (Telegram). No `pyproject.toml` change → no `uv sync`. (Carry-over Layer 3 deploys from sessions 15–18 still pending separately — see CLAUDE.md top "Still-pending deploy".)
+1. **Deploy:** `/update layer2` (Telegram). No `pyproject.toml` change → no `uv sync`.
 2. To start Phase 1 on the live $50k account: `/phase1` → `4500:1000` → `CONFIRM`.
+
+### Carry-over deploys still pending (sessions 15–18)
+- `/update layer2` (Telegram changes — incl. session-18 `/phase1` fee-anchor reset) **AND** `/update layer3` ×2 (`_worker_core.py` + `journaling_worker.py` changed across sessions 16–17). No `pyproject.toml` change → no `uv sync`.
+- **CRITICAL:** the personal worker (VPS #2) is still on pre-session-17 code — that's why personal `/equity` shows `Trading Fee: SGD −12.40` (full since-open residual, no anchor) while prop shows `$0`. Ctrl+C and re-run `worker_personal.py` after `git pull` (git pull alone does NOT reload).
+- After workers restart: `/checksymbols`; close one trade (alert ≤30s, real P&L, no `(est.)`); run `/phase1`/`/phase2`/`/changepropfirm` once so the per-cycle fee anchor is captured on BOTH workers.
+- Full per-session detail + the one-shot Layer 3 VPS deploy steps: `docs/SESSION_LOG.md`. MT5 connect workflow: `docs/VPS_MT5_Setup.md`.
 
 ## Running state
 - Background processes: none
