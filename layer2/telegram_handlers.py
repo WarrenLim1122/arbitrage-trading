@@ -2606,6 +2606,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/propfirm — Show prop account rules\n"
         "/changepropfirm — Update account setup\n"
         "/checkaccount — Show connected MT5 account\n"
+        "/checksymbols — Per-broker symbol availability (FOUND/MISSING)\n"
         "/setwindow HH:MM HH:MM — Update trading window\n"
         "/cancel — Cancel active wizard\n\n"
 
