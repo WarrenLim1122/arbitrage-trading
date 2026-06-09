@@ -204,7 +204,7 @@ Buffers applied automatically:
 
 ### Equity Monitoring Thread (30s interval)
 
-Evaluates all kill conditions against prop firm account only. Daily P&L measured from `day_start_equity`, which resets at **11:00 SGT** (prop firm's daily reset).
+Evaluates all kill conditions against prop firm account only. Daily P&L measured from `day_start_equity`, which resets at the configurable **`propfirm_day_roll`** SGT time (prop firm's daily reset; default `11:00`, set live via `/setdayroll`).
 
 **CRITICAL: K1 daily drawdown is DYNAMIC** — calculated from `day_start_equity` (the account balance at session open), NOT from `baseline_equity`. The daily dollar loss limit changes each session as the account grows or shrinks. Example: account at $103k, daily DD = 2% → max daily loss = $103k × 2% = $2,060 → floor = $100,940 today.
 
@@ -240,7 +240,7 @@ Evaluates all kill conditions against prop firm account only. Daily P&L measured
 
 ### SGT Curfew Gate / Trading Window
 
-- Stored in `config/trading_window.json` — `current_window` (start/end HH:MM SGT) and `next_window` (optional, applied at 11:00 SGT session rollover).
+- Stored in `config/trading_window.json` — `current_window` (start/end HH:MM SGT) and `next_window` (optional, applied at the `propfirm_day_roll` SGT session rollover; default 11:00).
 - **Default: 12:00–00:00 SGT, weekdays only.** `00:00` end = midnight (treated as 1440 minutes internally).
 - Change via `/setwindow HH:MM HH:MM` Telegram command — choose "today" (immediate) or "tomorrow" (next rollover).
 - `_is_sgt_curfew()` reads from `_trading_window` dict dynamically — no restart needed after `/setwindow`.
@@ -442,7 +442,7 @@ VPS #2 only. The journal pipeline records every closed trade to Firebase Firesto
 ```
 `baseline_equity` = prop firm initial account balance entered in wizard Step 9/10. **Never fetched from live MT5.** Immutable for the life of the evaluation — only `/changepropfirm` wizard or `/phase1` (when 0) can change it. `/setbaseline` command does not exist.
 `pers_baseline_equity` = personal account balance entered in wizard Step 10/10. Set only by `/changepropfirm` or `/phase2` wizard — never auto-set.
-`day_start_equity` = live prop MT5 balance at wizard completion; resets daily at 11:00 SGT rollover via `_update_day_start()`. `_update_day_start()` never touches `baseline_equity`.
+`day_start_equity` = live prop MT5 balance at wizard completion; resets daily at the `propfirm_day_roll` SGT rollover (default 11:00, set via `/setdayroll`) via `_update_day_start()`. `_update_day_start()` never touches `baseline_equity`.
 
 ---
 
@@ -500,7 +500,7 @@ uv run python layer3/worker_personal.py  # VPS #3
 | SGT | UTC | Event |
 |---|---|---|
 | 00:00 SGT | 16:00 UTC (prev day) | Curfew — force-close all positions |
-| 11:00 SGT | 03:00 UTC | Prop firm daily reset — day_start_equity resets |
+| `propfirm_day_roll` SGT (default 11:00) | — | Prop firm daily reset — day_start_equity resets; set per account via `/setdayroll` |
 | 12:00 SGT | 04:00 UTC | Trading resumes (weekdays only) |
 | Saturday 00:00 SGT | Friday 16:00 UTC | Weekend dormant begins |
 | Monday 12:00 SGT | Monday 04:00 UTC | Weekend dormant ends |
@@ -511,7 +511,7 @@ uv run python layer3/worker_personal.py  # VPS #3
 
 ```
 Gate 0:
-  [x] Prop firm daily reset time confirmed at 11:00 SGT (FundingPips demo). Verify on live account.
+  [x] Prop firm daily reset time is configurable (`propfirm_day_roll`, default 11:00 SGT). Set it per live account with `/setdayroll HH:MM` to match the dashboard's "Resets In" — FundingPips live account #20047930 resets ~05:00 SGT (confirm exact minute).
 
 Gate A — Layer 1 live:
   [x] FINNHUB_API_KEY in .env

@@ -1425,6 +1425,75 @@ async def _cmd_setbaseline(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> N
     logger.warning("Telegram: prop baseline_equity set to %.2f via /setbaseline", amount)
 
 
+async def _cmd_setdayroll(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set the prop firm's daily-loss reset time (propfirm_day_roll, SGT).
+
+    The firm resets the Maximum Daily Loss at a FIXED wall-clock time that varies
+    by account (FundingPips shows it as "Resets In" on the dashboard). This is the
+    boundary at which the bot re-snapshots day_start_equity and auto-resumes after
+    a daily-loss kill (K1) — it is NOT a rolling 24h from the last trade. Set it to
+    match your account exactly.
+
+    Safety: erring LATE is safe (bot stays halted longer than needed); erring EARLY
+    re-opens the daily allowance before the firm does and risks a daily-DD breach —
+    if unsure, pad a few minutes AFTER the firm's displayed reset. Set at setup, not
+    mid-drawdown (changing it re-anchors the current day's starting equity).
+
+    Usage:
+        /setdayroll            → show current reset time
+        /setdayroll 05:00      → set daily reset to 05:00 SGT
+    """
+    if not _auth(update):
+        return
+    args = (update.message.text or "").split()[1:]
+
+    with _pf_lock:
+        current = _propfirm.get("propfirm_day_roll", "11:00")
+
+    if len(args) != 1:
+        await update.message.reply_text(
+            f"{_cmd_header('🕔 <b>Daily Reset Time</b>')}"
+            f"Current prop daily-loss reset: <b>{current} SGT</b>\n\n"
+            "The fixed time the firm resets Maximum Daily Loss (FundingPips: the "
+            "\"Resets In\" countdown). The bot re-snapshots day-start equity and "
+            "auto-resumes K1 at this boundary.\n\n"
+            "<b>Usage</b>\n"
+            "<code>/setdayroll 05:00</code>\n\n"
+            "<i>Match your account exactly. If unsure, set a few minutes AFTER the "
+            "firm's displayed reset — erring early risks a daily-DD breach.</i>",
+            parse_mode="HTML",
+        )
+        return
+
+    raw = args[0]
+    try:
+        h, m = map(int, raw.split(":"))
+        assert 0 <= h <= 23 and 0 <= m <= 59
+        new_val = f"{h:02d}:{m:02d}"
+    except Exception:
+        await update.message.reply_text(
+            f"{_cmd_header('⚠️ <b>Invalid Time</b>')}"
+            "Enter a 24-hour SGT time as HH:MM.\n"
+            "Example: <code>/setdayroll 05:00</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    with _pf_lock:
+        _propfirm["propfirm_day_roll"] = new_val
+        _save_propfirm(_propfirm)
+
+    await update.message.reply_text(
+        f"{_cmd_header('✅ <b>Daily Reset Time Updated</b>')}"
+        f"Before: {current} SGT\n"
+        f"After: <b>{new_val} SGT</b>\n\n"
+        "<i>Day-start equity re-snapshot and K1 auto-resume now anchor to this "
+        "time. Verify it matches your prop dashboard's reset exactly.</i>",
+        parse_mode="HTML",
+    )
+    logger.warning("Telegram: propfirm_day_roll set to %s via /setdayroll", new_val)
+
+
 async def _cmd_setdeposit(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Set the initial deposit (actual capital) for an account.
 
@@ -2518,6 +2587,7 @@ async def _cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/positions — Show open positions\n"
         "/equity — Account equity snapshot\n"
         "/setbaseline — Set prop risk baseline (kills + sizing)\n"
+        "/setdayroll — Set prop daily-loss reset time (SGT)\n"
         "/setdeposit — Set initial deposit (equity % + fees)\n"
         "/pnl — Show P&amp;L risk dashboard\n"
         "/maxpos — Show position limit\n"
@@ -4208,6 +4278,7 @@ def _run_bot() -> None:
     tg_app.add_handler(CommandHandler("propfirm",      _cmd_propfirm))
     tg_app.add_handler(CommandHandler("equity",         _cmd_equity))
     tg_app.add_handler(CommandHandler("setbaseline",    _cmd_setbaseline))
+    tg_app.add_handler(CommandHandler("setdayroll",     _cmd_setdayroll))
     tg_app.add_handler(CommandHandler("setdeposit",     _cmd_setdeposit))
     tg_app.add_handler(CommandHandler("changepropfirm", _cmd_changepropfirm))
     tg_app.add_handler(CommandHandler("positions",     _cmd_positions))

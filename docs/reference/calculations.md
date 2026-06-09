@@ -189,8 +189,12 @@ consistency_threshold_pct -= 1.0      # fire 1pp before the firm's limit
 
 ## Day boundary (`state._propfirm_day`)
 
-The prop firm resets at **11:00 SGT**. Any SGT time before 11:00 belongs to the trading day that
-opened at 11:00 the **previous** calendar day. At rollover (`day_start_date_utc` changes), the
+The prop firm resets at a **configurable SGT time** — `propfirm_config.json` `propfirm_day_roll`
+(`"HH:MM"`, default `11:00`), read live by `state._propfirm_roll_min()` and set on the running bot
+with `/setdayroll HH:MM`. This is the firm's FIXED daily-loss reset (FundingPips "Resets In"), per
+account — NOT a rolling 24h from the last trade. Any SGT time before the roll belongs to the trading
+day that opened at the roll on the **previous** calendar day. Safety: erring late is safe; erring
+early re-opens the daily allowance before the firm does (daily-DD breach risk). At rollover (`day_start_date_utc` changes), the
 monitor: applies any scheduled `next_window`, locks the completed day's profit into the consistency
 log (Phase 2), and resets `day_start_equity` (prop and personal). SGT helpers + curfew:
 `TECHNICAL.md §Trading Window`.

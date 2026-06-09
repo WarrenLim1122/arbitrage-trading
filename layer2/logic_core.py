@@ -50,7 +50,7 @@ from layer2.state import (
     PROP_RISK_PCT, PHASE_MULT,
     ZMQ_PUSH_PROP, ZMQ_PUSH_PERS, ZMQ_REQ_PROP, ZMQ_REQ_PERS,
     _WORKER_DOWN_THRESHOLD,
-    _is_sgt_curfew, _sgt_now, _propfirm_day,
+    _is_sgt_curfew, _sgt_now, _propfirm_day, _propfirm_roll_min,
     _record_day_profit, _build_consistency_table,
     _invert, _load_consistency_log,
     _trading_window, _window_lock, _apply_next_window,
@@ -123,14 +123,14 @@ def _maybe_block_alert(ticker: str, reason_tag: str) -> bool:
 
 # ── Dynamic session-time helpers (no static "12:00 SGT" anywhere) ─────────
 # Two distinct resume semantics — do NOT collapse them into one helper:
-#   • Kill auto-resume  → max(prop-firm day roll @ 11:00 SGT, window start).
-#       Gated by the monitor on _propfirm_day() rolling AND not-curfew, so the
-#       11:00 floor is real here.  Use _next_session_resume_text().
-#   • Curfew resume     → trading-window start only (+ weekend), NO 11:00 floor.
+#   • Kill auto-resume  → max(prop-firm day roll, window start). The day roll is
+#       the firm's configured daily-loss reset (propfirm_day_roll, /setdayroll),
+#       NOT a fixed 11:00. Gated by the monitor on _propfirm_day() rolling AND
+#       not-curfew, so the roll floor is real here.  Use _next_session_resume_text().
+#   • Curfew resume     → trading-window start only (+ weekend), NO day-roll floor.
 #       Gated purely by _is_sgt_curfew(). Use _next_window_open_text().
-# Both reflect the live trading_window so /setwindow takes effect immediately.
-
-_PROPFIRM_DAY_ROLL_MIN = 11 * 60  # 11:00 SGT = FundingPips daily reset
+# Both reflect the live trading_window so /setwindow takes effect immediately;
+# the day-roll floor reflects propfirm_day_roll so /setdayroll takes effect too.
 
 
 def _effective_window_text() -> tuple[str, str]:
@@ -143,7 +143,8 @@ def _effective_window_text() -> tuple[str, str]:
 def _next_session_resume_text() -> str:
     """Format the next kill auto-resume time as 'HH:MM SGT'.
 
-    Auto-resume = max(prop-firm day roll @ 11:00 SGT, trading-window start).
+    Auto-resume = max(prop-firm day roll, trading-window start). The day roll is
+    the firm's configured daily-loss reset (propfirm_day_roll), not a fixed 11:00.
     Uses next_window if scheduled (it swaps to current at the day roll).
     """
     with _window_lock:
@@ -151,7 +152,7 @@ def _next_session_resume_text() -> str:
         start = nxt.get("start", "12:00")
     h, m = map(int, start.split(":"))
     win_min = h * 60 + m
-    resume_min = max(win_min, _PROPFIRM_DAY_ROLL_MIN)
+    resume_min = max(win_min, _propfirm_roll_min())
     return f"{resume_min // 60:02d}:{resume_min % 60:02d} SGT"
 
 
@@ -159,7 +160,7 @@ def _next_window_open_text() -> str:
     """Format the next trading-window open as 'HH:MM SGT' (curfew resume).
 
     Curfew lifts purely on the trading window + weekend (see _is_sgt_curfew),
-    with NO prop-firm 11:00 floor — unlike _next_session_resume_text(). So this
+    with NO prop-firm day-roll floor — unlike _next_session_resume_text(). So this
     reflects the live window start verbatim: a 00:00–00:00 window resumes at
     00:00 SGT, not 11:00. Uses next_window if scheduled.
     """
@@ -793,7 +794,7 @@ def _run_equity_check() -> None:
     with _pf_lock:
         pf = dict(_propfirm)
 
-    # Reset day-start equity when the prop firm's 11:00 SGT window rolls over
+    # Reset day-start equity when the prop firm's daily reset (propfirm_day_roll) rolls over
     stored_date = pf.get("day_start_date_utc", "")
     if stored_date != _propfirm_day(now_sgt):
         # Apply scheduled next_window at session rollover

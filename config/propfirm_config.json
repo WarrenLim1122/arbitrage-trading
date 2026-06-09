@@ -9,6 +9,7 @@
   "min_profit_days":           0,
   "daily_profit_cap_pct":      0.0,
   "consistency_threshold_pct": 0.0,
+  "propfirm_day_roll":         "11:00",
   "baseline_equity":           0.0,
   "day_start_equity":          0.0,
   "day_start_date_utc":        ""

@@ -390,13 +390,33 @@ def _sgt_now() -> datetime:
     return datetime.now(SGT)
 
 
+def _propfirm_roll_min() -> int:
+    """Minutes-since-midnight (SGT) of the prop firm's daily-loss reset.
+
+    Configurable per prop firm via propfirm_config.json `propfirm_day_roll`
+    ("HH:MM" SGT) — set on the live bot with /setdayroll. The firm resets the
+    daily-loss limit at a FIXED wall-clock time that varies by account (NOT a
+    rolling 24h from the last trade); this anchors the bot's day_start_equity
+    re-snapshot + K1 auto-resume to that exact boundary. Defaults to 11:00 if
+    unset/malformed. Erring LATE is safe (bot stays halted longer); erring EARLY
+    re-opens the daily allowance before the firm does — keep it ≥ the firm's time.
+    """
+    raw = _propfirm.get("propfirm_day_roll", "11:00")
+    try:
+        h, m = map(int, str(raw).split(":"))
+        return h * 60 + m
+    except Exception:
+        return 11 * 60
+
+
 def _propfirm_day(now_sgt: datetime) -> str:
     """Return the prop firm trading-day label for a given SGT moment.
 
-    The prop firm resets at 11:00 SGT daily. Any time before 11:00 SGT belongs
-    to the trading day that opened the previous calendar day at 11:00 SGT.
+    The prop firm resets at the configured roll time (see _propfirm_roll_min).
+    Any SGT moment before that roll belongs to the trading day that opened at the
+    roll on the previous calendar day.
     """
-    if now_sgt.hour < 11:
+    if now_sgt.hour * 60 + now_sgt.minute < _propfirm_roll_min():
         return (now_sgt.date() - timedelta(days=1)).isoformat()
     return now_sgt.date().isoformat()
 
