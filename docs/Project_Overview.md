@@ -32,8 +32,8 @@ The system trades five instrument classes simultaneously: XAUUSD (Gold), USDJPY,
 ┌─────────────────────────────────────────────────────────────────────┐
 │  LAYER 0 — Signal Intelligence Agent (TradingView / Pine Script v6) │
 │  • M15 chart + 1D sticky-trend higher-timeframe filter              │
-│  • 5-instrument portfolio: XAUUSD · USDJPY · BTCUSD · ETHUSD ·     │
-│    FTSE100                                                           │
+│  • 5-instrument portfolio: XAUUSD · USDJPY · BTCUSD · ETHUSD ·      │
+│    FTSE100                                                          │
 │  • Emits: {symbol, direction, entry, sl, tp, rr} via HTTPS webhook  │
 └──────────────────────┬──────────────────────────────────────────────┘
                        │ HTTPS webhook
@@ -49,17 +49,17 @@ The system trades five instrument classes simultaneously: XAUUSD (Gold), USDJPY,
 ┌──────────────────────▼──────────────────────────────────────────────┐
 │  LAYER 2 — Orchestrator / Risk Agent (Python on VPS #1)             │
 │  • Phase-aware lot sizing using static baseline equity              │
-│    Phase 1: 0.67% risk/trade · Phase 2: ratio adjusts              │
+│    Phase 1: 0.67% risk/trade · Phase 2: ratio adjusts               │
 │  • Dual-account routing: prop order + inverse hedge computed        │
 │    independently with per-instrument pip/tick math                  │
 │  • 4-kill condition monitor (30s polling interval):                 │
-│    Kill 1: Daily loss ≥ 2% → FORCE_CLOSE all + halt                │
-│    Kill 2: Overall DD ≥ threshold (static floor) → halt            │
-│    Kill 3: Daily profit ≥ 2.5% (Phase 2) → harvest + halt          │
-│    Kill 4: Overall profit ≥ 10% (Phase 1) → permanent halt         │
-│  • Telegram command bot: /phase1, /phase2, /resume, /forcestop,    │
-│    /changepropfirm, /help — human-in-loop override interface       │
-│  • SGT curfew scheduler: midnight force-close for all instruments  │
+│    Kill 1: Daily loss ≥ 2% → FORCE_CLOSE all + halt                 │
+│    Kill 2: Overall DD ≥ threshold (static floor) → halt             │
+│    Kill 3: Daily profit ≥ 2.5% (Phase 2) → harvest + halt           │
+│    Kill 4: Overall profit ≥ 10% (Phase 1) → permanent halt          │
+│  • Telegram command bot: /phase1, /phase2, /resume, /forcestop,     │
+│    /changepropfirm, /help — human-in-loop override interface        │
+│  • SGT curfew scheduler: midnight force-close for all instruments   │
 └──────────┬──────────────────────────────────────┬───────────────────┘
            │ ZMQ (TCP port 5555)                  │ ZMQ (TCP port 5556)
 ┌──────────▼──────────────────┐   ┌───────────────▼─────────────────┐

@@ -8,14 +8,14 @@
 
 ```
 ╔══════════════════════════════════════════════════════════════════════╗
-║            TRADE EXECUTION ENGINE (TEE) — SYSTEM OVERVIEW           ║
+║            TRADE EXECUTION ENGINE (TEE) — SYSTEM OVERVIEW            ║
 ║                    Production Deployment — May 2026                  ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
   ┌─────────────────────────────────────────────────────────────────┐
   │  SIGNAL SOURCE — TradingView (Cloud)                            │
   │  Pine Script v6 · M15 chart · 1D HTF sticky-trend filter        │
-  │  Instruments: XAUUSD · USDJPY · BTCUSD · ETHUSD · FTSE100      │
+  │  Instruments: XAUUSD · USDJPY · BTCUSD · ETHUSD · FTSE100       │
   │  Output: JSON webhook → {symbol, direction, entry, sl, tp, rr}  │
   └────────────────────────┬────────────────────────────────────────┘
                            │ HTTPS POST
@@ -24,7 +24,7 @@
   ┌─────────────────────────────────────────────────────────────────┐
   │  VPS #1 — DigitalOcean SGP1 · Ubuntu 24.04                      │
   │  IP: 152.42.213.98 · Domain: api.warrenlimzf.com (TLS/nginx)    │
-  │                                                                  │
+  │                                                                 │
   │  ┌────────────────────────────────────────────────────────────┐ │
   │  │  LAYER 1 — Gatekeeper Agent (layer1.service)               │ │
   │  │  FastAPI · Port 8000 (behind nginx 443)                    │ │
@@ -36,7 +36,7 @@
   │  │  4. IF event within ±30min → DROP signal (suppress)        │ │
   │  │  5. ELSE → forward to Layer 2                              │ │
   │  └────────────────────────┬───────────────────────────────────┘ │
-  │                           │ Internal REST                        │
+  │                           │ Internal REST                       │
   │  ┌────────────────────────▼───────────────────────────────────┐ │
   │  │  LAYER 2 — Orchestrator / Risk Agent (layer2.service)      │ │
   │  │  Python asyncio · Telegram Bot · ZMQ dealer                │ │
@@ -48,34 +48,34 @@
   │  │  • Routes: LONG → prop account, SHORT → hedge account      │ │
   │  │                                                            │ │
   │  │  Kill Monitor (30s thread):                                │ │
-  │  │  ┌─────────────────────────────────────────────────────┐  │ │
-  │  │  │  Kill 1: Equity < day_start - 2%  → FORCE_CLOSE     │  │ │
-  │  │  │  Kill 2: Equity < baseline - DD%  → FORCE_CLOSE     │  │ │
-  │  │  │  Kill 3: Equity > day_start + 2.5% (P2) → CLOSE    │  │ │
-  │  │  │  Kill 4: Equity > baseline + 10% (P1) → HALT        │  │ │
-  │  │  └─────────────────────────────────────────────────────┘  │ │
+  │  │  ┌─────────────────────────────────────────────────────┐   │ │
+  │  │  │  Kill 1: Equity < day_start - 2%  → FORCE_CLOSE     │   │ │
+  │  │  │  Kill 2: Equity < baseline - DD%  → FORCE_CLOSE     │   │ │
+  │  │  │  Kill 3: Equity > day_start + 2.5% (P2) → CLOSE     │   │ │
+  │  │  │  Kill 4: Equity > baseline + 10% (P1) → HALT        │   │ │
+  │  │  └─────────────────────────────────────────────────────┘   │ │
   │  │                                                            │ │
   │  │  Command Interface (Telegram):                             │ │
-  │  │  /phase1 · /phase2 · /resume · /forcestop                 │ │
+  │  │  /phase1 · /phase2 · /resume · /forcestop                  │ │
   │  │  /changepropfirm · /help                                   │ │
-  │  └──────────┬─────────────────────────────┬──────────────────┘ │
-  └─────────────┼─────────────────────────────┼────────────────────┘
+  │  └──────────┬─────────────────────────────┬───────────────────┘ │
+  └─────────────┼─────────────────────────────┼─────────────────────┘
                 │ ZMQ TCP :5555                │ ZMQ TCP :5556
                 ▼                             ▼
   ┌──────────────────────────┐   ┌──────────────────────────────────┐
   │  VPS #2 — Windows 2022   │   │  VPS #3 — Windows 2022           │
   │  LAYER 3A — Prop Worker  │   │  LAYER 3B — Hedge Worker         │
-  │                          │   │                                   │
+  │                          │   │                                  │
   │  MT5 Python API          │   │  MT5 Python API                  │
   │  Broker: FundingPips     │   │  Broker: Fusion Markets          │
   │  Account: Prop firm      │   │  Account: Personal               │
-  │                          │   │                                   │
-  │  Features:               │   │  Features:                        │
-  │  • Symbol map resolution │   │  • Inverse position sizing        │
-  │  • Auto filling-mode     │   │  • Auto filling-mode              │
-  │  • Independent DD guard  │   │  • Symbol map resolution          │
-  │    thread (30s, static   │   │  • REP telemetry: balance,        │
-  │    floor from JSON)      │   │    equity, point, tick_value      │
+  │                          │   │                                  │
+  │  Features:               │   │  Features:                       │
+  │  • Symbol map resolution │   │  • Inverse position sizing       │
+  │  • Auto filling-mode     │   │  • Auto filling-mode             │
+  │  • Independent DD guard  │   │  • Symbol map resolution         │
+  │    thread (30s, static   │   │  • REP telemetry: balance,       │
+  │    floor from JSON)      │   │    equity, point, tick_value     │
   │  • Persists dd_floor.json│   └──────────────────────────────────┘
   └──────────────────────────┘
 ```
@@ -86,8 +86,8 @@
 
 ```
                     ┌─────────────────────┐
-                    │   SYSTEM RUNNING     │
-                    │   (normal state)     │
+                    │   SYSTEM RUNNING    │
+                    │   (normal state)    │
                     └──────────┬──────────┘
                                │ Every 30 seconds
                     ┌──────────▼──────────┐
@@ -99,10 +99,10 @@
               ┌────────────────┴────────────────┐
               │                                 │
     ┌─────────▼──────────┐           ┌──────────▼───────────┐
-    │  Kill 1 or 2?      │           │  Kill 3 or 4?         │
-    │  Loss threshold    │           │  Profit threshold     │
-    │  breached?         │           │  breached?            │
-    └─────────┬──────────┘           └──────────┬────────────┘
+    │  Kill 1 or 2?      │           │  Kill 3 or 4?        │
+    │  Loss threshold    │           │  Profit threshold    │
+    │  breached?         │           │  breached?           │
+    └─────────┬──────────┘           └──────────┬───────────┘
               │ YES                             │ YES
     ┌─────────▼──────────┐           ┌──────────▼────────────┐
     │  FORCE_CLOSE both  │           │  FORCE_CLOSE both     │
@@ -112,10 +112,10 @@
     └────────────────────┘           └───────────────────────┘
               │
     ┌─────────▼──────────┐
-    │  Layer 3A redundant │
-    │  DD guard fires     │
-    │  independently      │
-    │  (no L2 needed)     │
+    │  Layer 3A redundant│
+    │  DD guard fires    │
+    │  independently     │
+    │  (no L2 needed)    │
     └────────────────────┘
 ```
 
