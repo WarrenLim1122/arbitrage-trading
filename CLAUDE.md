@@ -19,6 +19,7 @@ Lean router for Claude Code. Reference-shaped detail lives elsewhere — load on
   - `uv sync --extra layer3` only if `pyproject.toml` changed (mention explicitly if so).
 - When Warren asks how to deploy: if `/update` covers it, name the subcommand; if not, debug first, then ask whether to add it to `/update`.
 - **Layer 3 workers do NOT reload on `git pull` alone** — the Python process must be Ctrl+C'd and re-run. Closing/reopening noVNC does not restart it. See [[mt5-python-integration-constraints]].
+- **`/update layer2` can abort on `git pull` if a commit touches a runtime-mutated `config/*.json`** (`propfirm_config.json`, `phase_config.json`, `consistency_log.json`, `risk_params.json` are tracked but rewritten live on the VPS). Error: *"local changes would be overwritten by merge."* This is NOT uncommitted-local-edits — it's the dirty VPS tree. Unblock = backup→`git stash`→`git pull`→restore live config→`git stash drop`→restart. Proper fix (untrack + `.example` seeding) is PENDING Warren's go. [[deploy-runtime-config-conflict]]
 
 ---
 
