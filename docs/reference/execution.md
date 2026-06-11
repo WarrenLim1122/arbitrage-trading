@@ -130,4 +130,18 @@ just-closed deal for hours. This was the real cause of journal lag / `(est.)` al
    missing → `_enqueue_pending_deal` to a persistent queue (`pending_deals_queue.py`) for later
    retry; the queue carries the screenshot forward so it's never lost.
 
+**Chart timezone contract (2026-06-11):** `copy_rates_range` bar stamps, `pos.time` (snapshot
+`open_time`) and `deal.time` are all SERVER-tz; only `close_time_detected` is true UTC. The
+immediate-screenshot path shifts it onto the server clock (`+_mt5_server_utc_offset_hours`) so the
+close marker lands on the close bar; `render_rr_chart(server_utc_offset_hours=…)` shifts displayed
+times back to true UTC. R:R box spans exactly entry bar → close bar; badge renders the account
+currency (prop `$`, personal e.g. `SGD`). Visual demo: `scripts/dev-tests/demo_chart_aesthetics.py`
+(writes `logs/demo_chart_*.png`).
+
+**Silent-death guard:** worker startup logs a WARNING if `FIREBASE_JOURNAL_ENABLED` ≠ `true`
+(journaling fully off — the close watcher never starts) or `FIREBASE_JOURNAL_DRY_RUN` = `true`
+(payload logged, Firestore write skipped). Both default OFF in `.env.example` — after any `.env`
+rebuild (e.g. an account change) these must be re-set or journaling dies silently
+(`_worker_core.py:1739`, `firebase_journal.py:88-111`).
+
 Firebase creds: `secrets/firebase-service-account.json`. Architecture: `TECHNICAL.md §Trade Journal`.

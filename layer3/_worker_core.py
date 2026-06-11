@@ -1748,4 +1748,14 @@ def main() -> None:
             "Journal modules started (dry_run=%s)",
             os.getenv("FIREBASE_JOURNAL_DRY_RUN", "true"),
         )
+        if os.getenv("FIREBASE_JOURNAL_DRY_RUN", "true").lower() == "true":
+            logger.warning(
+                "⚠️ FIREBASE_JOURNAL_DRY_RUN=true — journal payloads are logged but "
+                "NOT written to Firestore. Set FIREBASE_JOURNAL_DRY_RUN=false in .env to journal for real."
+            )
+    else:
+        logger.warning(
+            "⚠️ Trade journaling DISABLED — FIREBASE_JOURNAL_ENABLED is not 'true' in .env. "
+            "Closed trades will NOT be journaled or screenshotted."
+        )
     _pull_loop(ctx)  # blocks in main thread

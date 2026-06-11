@@ -246,7 +246,11 @@ def _take_screenshot_immediate(
     volume       = pos_snapshot.get("volume",     0.0)
     close_reason = pos_snapshot.get("close_reason_override", "MARKET")
 
-    # close_time: stamped by position watcher — accurate to within ~5 s
+    # close_time: stamped by position watcher — accurate to within ~5 s.
+    # The watcher stamps TRUE UTC, but the chart pipeline compares times against
+    # MT5 bar/deal stamps which are in the SERVER timezone — shift it onto the
+    # server clock so the close marker lands on the actual close bar.
+    server_offset = _mt5_server_utc_offset_hours(mt5_lock)
     raw_ct = pos_snapshot.get("close_time_detected")
     if isinstance(raw_ct, str):
         try:
@@ -257,6 +261,7 @@ def _take_screenshot_immediate(
         close_time = raw_ct
     else:
         close_time = datetime.now(timezone.utc)
+    close_time = close_time + timedelta(hours=server_offset)
 
     # close_price: tick price stamped by position watcher (position just closed)
     close_price = pos_snapshot.get("close_price_est")
@@ -314,6 +319,8 @@ def _take_screenshot_immediate(
             ticket=position_ticket, account_type=JOURNAL_ACCOUNT_TYPE,
             mt5_account_id=mt5_account_id, close_reason=close_reason,
             mt5_lock=mt5_lock, rr_ratio=rr_ratio,
+            server_utc_offset_hours=server_offset,
+            account_currency=_account_currency(mt5_lock),
         )
         logger.info(
             "Journal: immediate screenshot %s for ticket=%d",
@@ -461,6 +468,8 @@ def handle_closed_position(
                     ticket=position_ticket, account_type=JOURNAL_ACCOUNT_TYPE,
                     mt5_account_id=mt5_account_id, close_reason=close_reason,
                     mt5_lock=mt5_lock, rr_ratio=rr_ratio,
+                    server_utc_offset_hours=_mt5_server_utc_offset_hours(mt5_lock),
+                    account_currency=_account_currency(mt5_lock),
                 )
                 logger.info(
                     "Journal: screenshot retry %s for ticket=%d (cached was %s)",

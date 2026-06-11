@@ -7,7 +7,7 @@ All rendering is headless (no display required — safe for Windows Server VPS).
 
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -87,12 +87,20 @@ def render_rr_chart(
     close_reason: str,
     rr_ratio: Optional[float] = None,
     output_path: Optional[Path] = None,
+    server_utc_offset_hours: float = 0.0,
+    account_currency: str = "USD",
 ) -> Path:
     """
     Render chart and save to PNG.  Returns the output path.
 
     The visible window is cropped to 20 bars before entry → 2 bars after close
     so the trade fills the chart and the y-axis is tight around the trade range.
+
+    Timezone contract: `rates` timestamps, `open_time` and `close_time` must all
+    be in the SAME clock — MT5 hands every one of them out in the trade server's
+    timezone, so passing them straight through is correct and the entry/close
+    markers land on the right bars. `server_utc_offset_hours` is used only to
+    shift DISPLAYED times (x-axis + footer) back to true UTC.
     """
     if output_path is None:
         tmp = Path(__file__).parent.parent.parent / "generated_screenshots"
@@ -146,9 +154,9 @@ def render_rr_chart(
     _draw_candles(ax, df.iloc[: view_end + 1])
 
     # ── Risk / Reward boxes ────────────────────────────────────────────────────
-    # Box starts AFTER the entry bar so the entry candle stands alone with the
-    # triangle clearly centred in it, not buried in the box boundary.
-    bx0 = open_idx  + 0.3   # right edge of entry bar (box begins after entry candle)
+    # Box spans EXACTLY the trade: left edge of the entry bar → right edge of
+    # the close bar, so the shaded zone reads as "this is where the trade lived".
+    bx0 = open_idx  - 0.3   # left edge of entry bar
     bx1 = close_idx + 0.3   # right edge of close bar
     bw  = max(bx1 - bx0, 1.0)  # minimum 1 bar for very short trades
 
@@ -171,11 +179,11 @@ def render_rr_chart(
     # ── Horizontal price lines — stop at view_end so label area stays clean ──
     # Using hlines (data coords) instead of axhline (full axes width) means
     # the lines do not bleed into the right-margin label zone.
-    ax.hlines(entry_price, open_idx, view_end,
+    ax.hlines(entry_price, bx0, view_end,
               colors=_ENTRY, linewidth=1.5, linestyles="--", alpha=0.9,  zorder=4)
-    ax.hlines(sl_price,    open_idx, view_end,
+    ax.hlines(sl_price,    bx0, view_end,
               colors=_DOWN,  linewidth=1.2, linestyles="--", alpha=0.75, zorder=4)
-    ax.hlines(tp_price,    open_idx, view_end,
+    ax.hlines(tp_price,    bx0, view_end,
               colors=_UP,    linewidth=1.2, linestyles="--", alpha=0.75, zorder=4)
 
     # Close price: dot at close bar + short horizontal bridge to the label column
@@ -224,8 +232,10 @@ def render_rr_chart(
         adj_ys.append(min(raw[i][0], gap_needed))
 
     for (nom_y, color, text), adj_y in zip(raw, adj_ys):
-        ax.text(label_x + 0.3, adj_y, text, color=color, fontsize=8,
-                va="center", ha="left", fontfamily="monospace", clip_on=False)
+        ax.text(label_x + 0.3, adj_y, text, color=color, fontsize=9,
+                va="center", ha="left", fontfamily="monospace", clip_on=False,
+                bbox=dict(facecolor=_PANEL, edgecolor=color, linewidth=0.8,
+                          boxstyle="round,pad=0.35", alpha=0.95), zorder=9)
         if abs(adj_y - nom_y) > price_range * 0.002:
             # Small connector from actual price level to displaced label
             ax.plot([label_x, label_x + 0.25], [nom_y, adj_y],
@@ -235,8 +245,11 @@ def render_rr_chart(
     o_color  = _WIN if outcome == "WIN" else _LOSS
     rr_text  = f"   RR {rr_ratio:.2f}R" if rr_ratio else ""
     if net_pnl is not None:
-        pnl_sign   = "+" if net_pnl >= 0 else ""
-        badge_text = f"{outcome}  ${pnl_sign}{net_pnl:.2f}{rr_text}"
+        pnl_sign = "+" if net_pnl >= 0 else "−"
+        money    = f"{pnl_sign}{abs(net_pnl):,.2f}"
+        # Prop renders $, personal renders its MT5 account currency (e.g. SGD)
+        money    = f"${money}" if account_currency.upper() == "USD" else f"{account_currency.upper()} {money}"
+        badge_text = f"{outcome}  {money}{rr_text}"
     else:
         badge_text = f"{outcome}{rr_text}"
     ax.text(
@@ -260,10 +273,12 @@ def render_rr_chart(
     )
 
     # ── Meta label (bottom-left) ──────────────────────────────────────────────
+    # close_time arrives in server tz — shift back so the footer shows true UTC.
+    display_close = close_time_utc - timedelta(hours=server_utc_offset_hours)
     ax.text(
         0.02, 0.03,
         f"{account_type.upper()} • {close_reason} • M15 • "
-        f"{close_time_utc.strftime('%Y-%m-%d %H:%M UTC')}",
+        f"{display_close.strftime('%Y-%m-%d %H:%M UTC')}",
         transform=ax.transAxes, color=_TEXT,
         fontsize=8, va="bottom", ha="left", alpha=0.65,
     )
@@ -276,8 +291,9 @@ def render_rr_chart(
     tick_step = max(1, visible_bars // 6)
     tick_idx  = list(range(view_start, view_end + 1, tick_step))
     ax.set_xticks(tick_idx)
+    tz_shift = pd.Timedelta(hours=server_utc_offset_hours)
     ax.set_xticklabels(
-        [df.iloc[i]["time"].strftime("%m-%d %H:%M") for i in tick_idx],
+        [(df.iloc[i]["time"] - tz_shift).strftime("%m-%d %H:%M") for i in tick_idx],
         rotation=30, ha="right", fontsize=8, color=_TEXT,
     )
     ax.tick_params(axis="y", colors=_TEXT, labelsize=8)

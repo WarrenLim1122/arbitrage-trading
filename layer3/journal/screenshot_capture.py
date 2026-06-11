@@ -78,6 +78,8 @@ def capture_outcome_screenshot(
     close_reason: str,
     mt5_lock,
     rr_ratio: Optional[float] = None,
+    server_utc_offset_hours: float = 0.0,
+    account_currency: str = "USD",
 ) -> dict:
     """
     Full screenshot pipeline: fetch → render → upload.
@@ -122,6 +124,8 @@ def capture_outcome_screenshot(
             outcome=outcome, net_pnl=net_pnl, volume=volume,
             ticket=ticket, account_type=account_type, close_reason=close_reason,
             rr_ratio=rr_ratio,
+            server_utc_offset_hours=server_utc_offset_hours,
+            account_currency=account_currency,
         )
 
         if SCREENSHOT_DRY_RUN:
