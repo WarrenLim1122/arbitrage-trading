@@ -1,0 +1,29 @@
+# ============================================================
+# PERSONAL worker (VPS #2, Fusion Markets 448196) — journal block
+# In C:\arbitrage\.env: DELETE everything from FIREBASE_JOURNAL_ENABLED
+# down to SCREENSHOT_STORAGE, and paste the lines below in its place.
+# Keep your WORKER_NAME / MT5_* / ZMQ_* / TELEGRAM_* lines as they are.
+# Then SAVE and Ctrl+C + re-run the worker.
+# ============================================================
+
+FIREBASE_JOURNAL_ENABLED=true
+FIREBASE_JOURNAL_DRY_RUN=false
+FIREBASE_JOURNAL_USER_ID=WCzOHPl8C4Q1aa3EDHkOGhdH9To1
+FIREBASE_PROJECT_ID=gen-lang-client-0206326169
+FIREBASE_DATABASE_ID=ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607
+FIREBASE_SERVICE_ACCOUNT_PATH=C:\arbitrage\secrets\firebase-service-account.json
+FIREBASE_STORAGE_BUCKET=gen-lang-client-0206326169.firebasestorage.app
+FIREBASE_JOURNAL_COLLECTION=trades
+FIREBASE_BOT_NAME=HedgeHog Bot
+FIREBASE_STRATEGY_NAME=Arbitrage Trading
+JOURNAL_ACCOUNT_TYPE=live
+JOURNAL_BROKER=FusionMarkets
+
+SCREENSHOT_ENABLED=true
+SCREENSHOT_ONLY_FOR_TP_SL=true
+SCREENSHOT_DRY_RUN=false
+SCREENSHOT_TIMEFRAME=M15
+SCREENSHOT_LOOKBACK_BARS=120
+SCREENSHOT_WIDTH=1600
+SCREENSHOT_HEIGHT=900
+SCREENSHOT_STORAGE=firebase
