@@ -1,121 +1,65 @@
-# Calculation Parity — "run both legs together, then reverse it onto personal"
+# 02 — Hedge Reconstruction (personal = inverse mirror of the prop trade)
 
-This is the proof behind Warren's instruction: *"how the prop is calculated, use that logic to
-calculate, just in a reverse manner … run yourself as if when two run together, then apply it at the
-personal leg."* Everything here is taken **verbatim from the live code** so the standalone leg
-reproduces the kernel exactly — only the prop dependency is removed.
+Personal does **not** compute geometry from a raw signal. It **reconstructs its leg from the prop trade**
+it reads off the Telegram group, using the original system's personal-leg relationship — verified verbatim
+against `layer2/phase1_strategy.py` and `layer2/phase2_strategy.py`.
 
-Sources: `layer2/phase2_strategy.py` (`compute_geometry`), `layer2/strategy_common.py`
-(`dollar_per_unit`), `layer2/phase1_strategy.py:140-178`.
-
----
-
-## Step 0 — the shared kernel (UNCHANGED, copy as-is)
-
-`layer2/strategy_common.py:13` — dollars per lot at price-distance `X` is `X × k`:
-```python
-def dollar_per_unit(ticker, contract_size, tick_size, tick_value):
-    if ticker.endswith("USD") and contract_size > 0:
-        return contract_size            # xxxUSD: P&L already USD/unit
-    return tick_value / tick_size       # else: broker tick math
+## §0 The relationship (true in BOTH phases — proven from the reference)
+In the reference, for every trade the personal leg satisfies:
 ```
-Both legs use this. The standalone personal leg keeps it byte-for-byte.
-
----
-
-## Step 1 — run the CURRENT 2-leg system (Phase 2), code-accurate
-
-From `phase2_strategy.compute_geometry`. A **LONG** signal (signal direction = the personal side):
-
+pers_signal = invert_signal(prop_signal)      # strategy_common.invert_signal: LONG<->SHORT
+pers_lots   = round(prop_lots × phase_ratio, 2)   # phase_ratio = phase_multipliers[phase]
+pers_sl     = prop_tp                          # personal SL price = prop TP price
+pers_tp     = prop_sl                          # personal TP price = prop SL price
 ```
-INPUTS
-  signal=LONG, entry=1.08500, signal_sl=1.08300, signal_tp=1.08554, price_digits=5
-  contract_size=100000, tick_size=0.00001, tick_value=1.0   (EURUSD → k = 100000)
-  baseline_equity=100000, prop_risk_pct=0.01, phase_ratio=0.70   (Phase 2)
+- **Phase 2** (`phase2_strategy.compute_geometry`): `prop_sl = signal_tp`, `prop_tp = signal_sl`;
+  `pers_sl = signal_sl`, `pers_tp = signal_tp`. ⇒ `pers_sl = prop_tp`, `pers_tp = prop_sl`. ✓
+- **Phase 1** (`phase1_strategy.compute_geometry:171-172`): `pers_sl = prop_tp` (the calculated far
+  barrier), `pers_tp = prop_sl` (= signal TP near). ⇒ same identity. ✓
+- **Lots** (both): `pers_lots = round(prop_lots × phase_ratio, 2)`. `phase_multipliers = {1: 0.20, 2: 0.70}`.
 
-DISTANCES
-  sl_distance = |entry - signal_sl| = |1.08500 - 1.08300| = 0.00200   (FAR / wide)
-  tp_distance = |signal_tp - entry| = |1.08554 - 1.08500| = 0.00054   (NEAR / tight)
+So personal needs **only** these five facts from the prop's published trade: `pair`, `prop_signal`,
+`prop_sl`, `prop_tp`, `prop_lots`, and `phase`. Everything else follows.
 
-PROP LEG  (the authoritative math; prop = inverse = SHORT)
-  prop_dollar_risk   = baseline * prop_risk_pct      = 100000 * 0.01     = 1000.0
-  prop_dollar_per_lot= tp_distance * k               = 0.00054 * 100000  = 54.0   # sized over PROP stop = NEAR
-  prop_lots          = round(1000.0 / 54.0, 2)                            = 18.52
-  prop_sl            = signal_tp = 1.08554           # prop stop (near)
-  prop_tp            = signal_sl = 1.08300           # prop target (far) → prop wins big
-
-PERSONAL LEG  (DERIVED from prop today — this is the parasitic part)
-  pers_lots          = round(prop_lots * phase_ratio, 2) = round(18.52 * 0.70, 2) = 12.96
-  pers_sl            = signal_sl = 1.08300           # FAR
-  pers_tp            = signal_tp = 1.08554           # NEAR
-  pers_dollar_per_lot= sl_distance * k = 0.00200 * 100000 = 200.0
-  pers_dollar_risk   = round(12.96 * 200.0, 2)                            = 2592.0
+## §1 The reconstruction function
 ```
-
-**Reading it:** the prop is the leg with the self-contained method — fixed `risk_$ = baseline × pct`
-sized over **its** stop (the near distance). The personal leg only exists as `prop_lots × 0.70`, then
-stopped at the far level → it actually risks **$2,592** (≈ 2.59% of baseline), a number that **floats**
-with each signal's near/far ratio. Personal has no anchor of its own.
-
-> Phase 1 is worse (`phase1_strategy.py:171`): `pers_sl = prop_tp`, a level computed from the prop
-> stage-ladder gap and live prop equity. Remove the prop and the Phase-1 personal leg has **no SL at
-> all**. That's why Phase 1's reward-targeting scheme **cannot** be reused — it is intrinsically
-> prop-coupled. The standalone uses the Phase-2-style box for everything.
-
----
-
-## Step 2 — reverse it onto the personal leg (the standalone)
-
-The prop's method = *"risk a fixed `baseline × pct` over this leg's own stop; box from the signal."*
-Apply the **same method** to personal, in the **reverse direction**:
-
-| Prop (inverse leg) | Personal (signal leg) — the reverse |
-|---|---|
-| direction = invert(signal) | direction = **signal** |
-| stop = `signal_tp` → sizes over **near** `tp_distance` | stop = `signal_sl` → sizes over **far** `sl_distance` |
-| `risk_$ = baseline × prop_risk_pct` | `risk_$ = personal_baseline × risk_pct` |
-| `lots = risk_$ / (tp_distance × k)` | `lots = risk_$ / (sl_distance × k)` |
-
-Same formula, opposite end of the same SL/TP box. Native function:
-
+reconstruct_personal(*, pair, prop_signal, prop_sl, prop_tp, prop_lots, phase,
+                     price_digits, phase_multipliers) -> dict:
+    mult           = phase_multipliers[str(phase)]          # 1->0.20, 2->0.70
+    pers_signal    = invert_signal(prop_signal)             # LONG<->SHORT
+    pers_lots      = round(prop_lots × mult, 2)
+    pers_sl        = round(prop_tp, price_digits)
+    pers_tp        = round(prop_sl, price_digits)
+    if pers_lots <= 0: return {"reject": "personal lots round to 0"}
+    return {"ticker": pair, "signal": pers_signal, "lots": pers_lots,
+            "sl": pers_sl, "tp": pers_tp}
 ```
-risk_$         = personal_baseline * risk_pct          # NATIVE anchor (active mode's pct)
-sl_distance    = abs(entry - signal_sl)                # personal's OWN stop (far)
-dollar_per_lot = sl_distance * k                       # k from dollar_per_unit (unchanged)
-lots           = round(risk_$ / dollar_per_lot, 2)
-direction      = signal
-sl             = round(signal_sl, price_digits)
-tp             = round(signal_tp, price_digits)
+Entry: personal sends a **market** order on the pair (it acts when the prop alert arrives, slightly after
+the prop fill — a small, accepted hedge lag). The `sl`/`tp` are the prop's TP/SL prices (the mirror box).
+
+## §2 Worked example (mirror of the prop's breakout-fade SHORT)
+Prop publishes (its own Trade Opened alert, Phase 2): `pair=EURUSD, prop_signal=SHORT,
+prop_entry=1.08500, prop_sl=1.08554, prop_tp=1.08300, prop_lots=18.52, phase=2`.
 ```
-
-### Worked numbers — same signal, personal_baseline=100000 SGD, risk_pct=1%
+mult        = 0.70
+pers_signal = invert(SHORT) = LONG
+pers_lots   = round(18.52 × 0.70, 2) = 12.96
+pers_sl     = prop_tp = 1.08300
+pers_tp     = prop_sl = 1.08554
 ```
-risk_$         = 100000 * 0.01 = 1000.0
-dollar_per_lot = 0.00200 * 100000 = 200.0
-lots           = round(1000.0 / 200.0, 2) = 5.00
-direction      = LONG ; sl = 1.08300 ; tp = 1.08554
-risk taken     = 5.00 * 0.00200 * 100000 = 1000.0    # EXACTLY baseline × pct, every trade
-target gain    = 5.00 * 0.00054 * 100000 = 270.0     # realized RR = 270/1000 = 0.27 (== signal RR)
-```
+Result: personal **LONG** EURUSD, 12.96 lots, SL 1.08300 (far/below), TP 1.08554 (near/above) — i.e. the
+original Layer-0 personal profile (RR ≈ 0.27), the exact inverse of the prop. Net exposure across both
+accounts = the original coupled hedge. ✓
 
-**Parity result:** identical kernel, identical direction, identical geometry, identical RR. The only
-deltas are intentional and desired:
-- **Anchor:** prop's `baseline` → personal's own `personal_baseline` (no prop needed).
-- **Risk is now constant** (`$1,000` = 1% every trade) instead of floating (`$2,592` ≈ 2.59%).
+Phase 1 example: prop publishes `prop_lots=1.00, phase=1` → `pers_lots = round(1.00 × 0.20, 2) = 0.20`;
+`pers_sl=prop_tp`, `pers_tp=prop_sl`, `pers_signal=invert(prop_signal)`.
 
-> To make the standalone risk-match today's *effective* personal exposure instead of running a clean 1%,
-> set `risk_pct ≈ 2.6%` (≈ `prop_risk_pct × phase_ratio × sl_distance/tp_distance` at the current signal
-> shape). Recommended instead: pick `risk_pct` deliberately — the whole point of the rebuild is a true,
-> constant per-trade risk. **Confirm with Warren.**
+## §3 First regression test (write before implementing — `tests/test_reconstruction.py`)
+The §2 Phase-2 case must return `signal="LONG"`, `lots==12.96`, `sl==1.08300`, `tp==1.08554`,
+`ticker=="EURUSD"`. A Phase-1 case with `prop_lots=1.00,phase=1` → `lots==0.20`. A `prop_lots` so small
+that `×mult` rounds to 0 → `{"reject"}`. A prop LONG → personal SHORT (symmetry).
 
----
-
-## Step 3 — first regression test (the builder writes this first)
-
-Mirror `tests/layer2/test_phase2_strategy.py`. The standalone `compute_personal_geometry` for the inputs
-above must return: `lots == 5.00`, `sl == 1.08300`, `tp == 1.08554`, `direction == "LONG"`,
-`dollar_risk == 1000.0`. A zero `sl_distance` must return `{"reject": ...}`.
-
-For a **SHORT** signal the geometry is symmetric: `direction=SHORT`, `sl=signal_sl` (above entry),
-`tp=signal_tp` (below entry), `sl_distance=|entry-signal_sl|` — no special-casing needed; the kernel and
-`abs()` distances handle both.
+## §4 Why no native sizing
+The personal account has no independent sizing anchor in this model — by design it **inherits** the
+prop's sizing (`prop_lots × phase_mult`), exactly as the original coupled system did. Personal live equity
+is used only for reporting and (optionally) a secondary protective DD halt — never for sizing.

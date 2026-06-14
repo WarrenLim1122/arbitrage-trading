@@ -1,47 +1,55 @@
-# personal-leg/ — Standalone Personal-Account Rebuild (full build kit)
+# personal-leg/ — Personal System = Inverse Follower of the Prop System (full build kit)
 
-> **What this is:** a complete, self-contained kit for an autonomous agent to **rebuild the personal
-> account leg as a standalone single-leg trading system** (personal trades alone, no prop hedge) in a
-> **new repo**, using the `arbitrage-trading` repo as reference. Plan + exact contracts + a rigid
-> ordered task runbook + tests + deploy. Nothing is built yet.
->
-> **Why here, not repo root:** this repo's filesystem blocks new top-level dirs (EPERM). The *new build*
-> happens in a separate repo (greenfield, no such limit).
+> **What this is:** a complete kit for an autonomous agent to build the **personal trading system** in a
+> **new repo**, using `arbitrage-trading` as read-only reference. The personal system has **no signal of
+> its own** — it **follows a separate prop system** by reading the prop bot's Telegram alerts and mirroring
+> every trade as the **inverse hedge**. This reproduces the original coupled hedge while the prop system
+> stays completely unaware of personal. Nothing is built yet.
 
-## How to use this kit
-Hand an agent the kickoff in **`03-build-prompt.md`**. It tells the agent to open **`00-AGENT-START-HERE.md`**
-and run the task list in **`06-build-tasks.md`** from T0 to T14, stopping only at the labelled checkpoints.
+## ⚠️ The one feasibility constraint (read first)
+Telegram **Bot API bots cannot read other bots' messages.** So the prop-alert reader **must** be a
+Telegram **user client (MTProto / Telethon)** with a user session (`api_id`+`api_hash`+phone login), not a
+bot. This is the blocking item Warren confirms at **CP-0**. Personal's own *control* bot can be a normal bot.
 
-## Files (read in this order)
-
-| # | File | Role |
-|---|---|---|
-| 00 | [`00-AGENT-START-HERE.md`](00-AGENT-START-HERE.md) | **Entry point.** Operating rules, the read-order, reference-file map, the checkpoint protocol. |
-| 01 | [`01-master-plan.md`](01-master-plan.md) | The "why": 6 locked decisions, native math, two-mode toggle, halts, architecture, open numbers. |
-| 02 | [`02-calculation-parity.md`](02-calculation-parity.md) | The math proof — current 2-leg trace → "prop logic, reversed" native formula, worked numbers. |
-| 03 | [`03-build-prompt.md`](03-build-prompt.md) | The one-paste kickoff prompt for a fresh Claude session. |
-| 04 | [`04-system-architecture.md`](04-system-architecture.md) | Exact target repo layout, process model, every file to create, old→new mapping. |
-| 05 | [`05-data-contracts.md`](05-data-contracts.md) | Exact schemas: 14-field webhook, ZMQ ticket, REP queries, `personal_config.json`, env. |
-| 06 | [`06-build-tasks.md`](06-build-tasks.md) | **The runbook** — numbered tasks T0→T14, each with reference/spec/tests/acceptance/commit + checkpoints. |
-| 07 | [`07-telegram-spec.md`](07-telegram-spec.md) | Every command + message format + currency rules. |
-| 08 | [`08-test-plan.md`](08-test-plan.md) | Every test case with exact expected values (TDD). |
-| 09 | [`09-deploy-runbook.md`](09-deploy-runbook.md) | Demo deploy, MT5 connect, hosting, go-live gates. |
-| 10 | [`10-prop-halt-listener.md`](10-prop-halt-listener.md) | NEW feature — personal listens to the prop bot's K1–K5 Telegram alerts and closes/halts the matching position (one-way, prop untouched). Build task T8.5. |
+## How to use
+Open a session **inside `arbitrage-trading`** and tell the agent: **"Read `docs/personal-leg/03-build-prompt.md`
+and follow it."** It reads the kit, creates `~/Coding Projects/personal-leg-system/`, and builds T0→T13,
+stopping only at the checkpoints.
 
 ## The design in one breath
-Keep the risk kernel **identical** (`lots = risk_$ / (stop × k)`, `dollar_per_unit` unchanged, follow the
-signal, raw signal SL/TP). Replace the prop dependency with a native anchor: `risk_$ = personal_baseline
-× risk_pct`, sized over the personal leg's **own** stop (`|entry − signal_sl|`) — the prop's own method
-applied in the reverse (personal) direction. Result: a **constant** per-trade risk, no prop needed.
+Personal reads the prop bot's **Trade Opened / Position Closed / Kill** alerts (via MTProto) and, for each,
+acts on the personal MT5 account as the exact inverse: `pers_dir = inverse(prop_dir)`,
+`pers_lots = round(prop_lots × phase_multiplier, 2)`, `pers_sl = prop_tp`, `pers_tp = prop_sl`. Closes and
+kills are mirrored too. Net exposure across both accounts = the original coupled system.
+
+## Files (read in order)
+| # | File | Role |
+|---|---|---|
+| 00 | [`00-AGENT-START-HERE.md`](00-AGENT-START-HERE.md) | **Entry point** — rules, the MTProto feasibility gate, reference map, checkpoints. |
+| 01 | [`01-master-plan.md`](01-master-plan.md) | The model (inverse follower), 6 locked decisions, architecture. |
+| 02 | [`02-calculation-parity.md`](02-calculation-parity.md) | The reconstruction math (mirror of the prop trade) + first test. |
+| 03 | [`03-build-prompt.md`](03-build-prompt.md) | The one-paste kickoff prompt. |
+| 04 | [`04-system-architecture.md`](04-system-architecture.md) | Target repo layout, process model, reference→new map. |
+| 05 | [`05-data-contracts.md`](05-data-contracts.md) | Prop-alert parse contract, ZMQ ticket, REP queries, `personal_config.json`, env. |
+| 06 | [`06-build-tasks.md`](06-build-tasks.md) | **The runbook** — tasks T0→T13 + checkpoints. |
+| 07 | [`07-telegram-spec.md`](07-telegram-spec.md) | Control bot commands + the MTProto reader + currency rules. |
+| 08 | [`08-test-plan.md`](08-test-plan.md) | Every test case with exact expected values. |
+| 09 | [`09-deploy-runbook.md`](09-deploy-runbook.md) | MTProto session setup, MT5 connect, hosting, go-live gates. |
+| 10 | [`10-prop-follower.md`](10-prop-follower.md) | **The core** — read + route the prop bot's open/close/kill alerts. |
+
+(`10-prop-halt-listener.md` is a superseded redirect — see `10-prop-follower.md` instead.)
 
 ## Decisions locked with Warren (2026-06-14)
-1. Sizing = % of a **fixed personal baseline** (Telegram-set, immutable).
-2. Phases dropped → **two-mode toggle** differing by **risk % only**, identical geometry.
-3. Geometry = **raw signal SL/TP** = the prop's calc logic in the reverse (personal) direction.
-4. **Daily + overall DD halt** on personal equity (mirror K1/K2).
-5. Clean **greenfield 2-service** (Linux Receiver + Windows Worker); reuse Pine, symbol mapper, journaling, MT5 self-launch, transport.
-6. Build is run by a **separate** Claude session from `03-build-prompt.md`; plan-only here.
+1. **Personal follows prop** (Approach B) — no own signal; inverse hedge of every prop trade.
+2. **Link = Telegram group**, read via an **MTProto user session** (bot-to-bot is impossible).
+3. **Sizing/geometry = the original personal-leg reconstruction** (`prop_lots × phase_mult`, swapped box).
+4. **Currency auto-detected** from the personal MT5 (SGD now); never hardcode `$`.
+5. The prop system stays pristine — personal reads it; it never references personal.
+6. Built by a separate agent from `03-build-prompt.md`.
 
-## Open numbers Warren still confirms (at CP-1; non-blocking for the code build)
-Mode `risk_pct` values (default 1% / 2%) · `daily_dd_pct` / `overall_dd_pct` (suggested 4% / 8%) ·
-`personal_baseline` (SGD) · Receiver host · Telegram token + Firebase creds + MT5 access.
+## Open items Warren confirms
+- **CP-0 (blocking):** OK to run an MTProto user session? → `api_id`, `api_hash`, the user account,
+  shared `group_chat_id`, `prop_bot_username`.
+- **CP-1:** `phase_multipliers` (default 0.20/0.70); the prop alert parse contract (prefer the prop kit's
+  `OPEN|CLOSE|KILL` structured line); secondary-DD on/off; control-bot token; personal MT5 login; Firebase
+  creds; Receiver host.

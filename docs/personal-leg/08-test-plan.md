@@ -1,92 +1,67 @@
-# 08 — Test Plan (write these FIRST, per task)
+# 08 — Test Plan (write FIRST, per task)
 
-TDD: each test file below is written and watched fail **before** the matching module is implemented.
-Exact expected values are given so there is zero ambiguity. Mirror the style of the reference test
-`tests/layer2/test_phase2_strategy.py`.
+TDD: each file written and watched fail before its module. Exact expected values given. Mirror the
+reference test style (`tests/layer2/`).
 
-## §1 `test_geometry.py` (T2) — the pinned kernel
-Inputs reused from `02-calculation-parity.md §3`. EURUSD ends "USD" → `k = contract_size = 100000`.
-
+## §1 `test_reconstruction.py` (T2) — the pinned core
 ```python
-# LONG — the parity case
-g = compute_personal_geometry(
-    ticker="EURUSD", signal="LONG",
-    entry=1.08500, signal_sl=1.08300, signal_tp=1.08554, price_digits=5,
-    contract_size=100000.0, tick_size=0.00001, tick_value=1.0,
-    personal_baseline=100000.0, risk_pct=0.01)
-assert g["lots"]        == 5.00          # 1000 / (0.00200*100000)=1000/200
-assert g["sl"]          == 1.08300
-assert g["tp"]          == 1.08554
-assert g["direction"]   == "LONG"
-assert g["dollar_risk"] == 1000.0        # EXACTLY baseline*pct, constant
-assert round(g["realized_rr"], 2) == 0.27
-
-# SHORT — symmetric. entry 1.08500, signal_sl 1.08700 (above), signal_tp 1.08446 (below)
-#   sl_distance=0.00200 → lots=5.00, direction="SHORT", sl=1.08700, tp=1.08446
-
-# Reject — zero SL distance
-g = compute_personal_geometry(..., entry=1.08500, signal_sl=1.08500, ...)
-assert "reject" in g
-
-# Reject — lots round to 0 (tiny baseline vs huge stop) and max_lots cap (lots>max_lots) both reject
-```
-Also test a non-USD pair (e.g. EURJPY: `ticker` not ending "USD" → `k = tick_value/tick_size`) to prove
-the `dollar_per_unit` branch is threaded correctly.
-
-## §2 `test_halts.py` (T4)
-```python
-# daily breach: day_start=100000, daily_pct=4 → floor 96000
-assert evaluate_halts(equity=95999, day_start_equity=100000, baseline=100000,
-                      daily_pct=4, overall_pct=8, override_active=False)["halt"] == "daily"
-assert evaluate_halts(equity=96001, ...)["halt"] is None
-# overall breach: baseline=100000, overall_pct=8 → floor 92000 (permanent)
-assert evaluate_halts(equity=91999, day_start_equity=100000, baseline=100000,
-                      daily_pct=4, overall_pct=8, override_active=False)["halt"] == "overall"
-# override suppresses daily, NOT overall
-assert evaluate_halts(equity=95999, ..., override_active=True)["halt"] is None
-assert evaluate_halts(equity=91999, ..., override_active=True)["halt"] == "overall"
+# Phase 2: prop SHORT EURUSD, prop_sl 1.08554, prop_tp 1.08300, prop_lots 18.52, phase 2
+g = reconstruct_personal(pair="EURUSD", prop_signal="SHORT",
+        prop_sl=1.08554, prop_tp=1.08300, prop_lots=18.52, phase=2,
+        price_digits=5, phase_multipliers={"1":0.20,"2":0.70})
+assert g["signal"] == "LONG"
+assert g["lots"]   == 12.96          # round(18.52*0.70,2)
+assert g["sl"]     == 1.08300        # = prop_tp
+assert g["tp"]     == 1.08554        # = prop_sl
+assert g["ticker"] == "EURUSD"
+# Phase 1: prop_lots 1.00, phase 1 → lots round(1.00*0.20,2)=0.20
+# prop LONG → personal SHORT (symmetry)
+# prop_lots so small that *mult rounds to 0 → {"reject"}
 ```
 
-## §3 `test_dayroll.py` (T3)
+## §2 `test_parser.py` (T3)
 ```python
-# day_roll="11:00" SGT. A signal at 10:30 SGT belongs to YESTERDAY's trading day; 11:30 to TODAY's.
-assert current_day(sgt("2026-06-14 10:30")) == date(2026,6,13)
-assert current_day(sgt("2026-06-14 11:30")) == date(2026,6,14)
-# currency rendering
-assert money(-12.5, "SGD") == "SGD 12.50"     # no '$'
-assert money(12.5, "USD")  == "$12.50"
-assert "$" not in money(12.5, "SGD")
-# price formatting
-assert fmt_price("USDJPY", 156.123) == "156.123"   # 3dp ; EURUSD 5dp ; XAUUSD 2dp ; XAGUSD 4dp
+# structured line
+assert parse_prop_message("OPEN|pair=EURUSD|dir=SHORT|entry=1.085|sl=1.08554|tp=1.083|lots=18.52|phase=2",
+        sender="propbot", cfg=CFG) == {"type":"open","pair":"EURUSD","dir":"SHORT","entry":1.085,
+        "sl":1.08554,"tp":1.083,"lots":18.52,"phase":2}
+assert parse_prop_message("CLOSE|pair=EURUSD|reason=TP", "propbot", CFG)["type"] == "close"
+assert parse_prop_message("KILL|k=K2|scope=account", "propbot", CFG) == {"type":"kill","k":"K2","scope":"account"}
+# sender filter: a message from a non-prop sender → None
+assert parse_prop_message("OPEN|pair=EURUSD|...", sender="someone_else", cfg=CFG) is None
+# keyword fallback on human text when no structured line; malformed line → None (logged)
 ```
 
-## §4 `test_webhook_validation.py` (T8)
-- A full 14-field payload (all fields present, valid) → 200/accepted.
-- Missing any one of the 14 fields → 422.
-- `signal="BUY"` → 422; `ticker="FOOBAR"` (not in registry) → 422; `entry=0` / `sl=-1` → 422.
-- `signal="long"` (lowercase) accepted and upper-cased to `LONG`.
+## §3 `test_follower.py` (T7) — mocked zmq + equity
+```python
+# open event → exactly ONE ticket pushed, shape per 05 §2, lots/sl/tp from reconstruction
+# close event → push_close called for that pair only
+# kill K2 (account, permanent) → close-all + halt set
+# kill scope=EURUSD → close that pair only
+# non-prop sender / follow_enabled=False / not active / permanently_halted → no action
+# dedup: pair already open → no second open
+# max_open_positions reached → skip
+```
 
-## §5 `test_gate_chain.py` (T8) — mocked ZMQ + clock
-Each gate, in order, produces the right outcome (assert the message builder called / HTTP status):
-curfew → reject; `permanently_halted` → blocked; not `active` → skipped; news/manual suppress →
-suppressed; **dedup** (pair already open) → dropped; `max_open_positions` reached → skipped;
-`trade_allowed=False` → blocked; `personal_baseline<=0` → blocked; geometry reject → reject;
-order_check reject → "not placed"; happy path → exactly ONE ticket pushed matching `05 §2`.
+## §4 `test_messages.py` (T9)
+`msg_hedge_opened(currency="SGD")` contains `SGD ` and no `$`; `msg_position_closed(found=False)` →
+`(est.)`, `found=True` → `+SGD ..`/`-SGD ..` (sign before symbol, never `$+`/`$-`); prices carry no
+symbol; `msg_reader_disconnected` renders. Audit: a rendered SGD alert contains no `$`.
 
-## §6 `test_messages.py` (T10) — format + currency invariants
-- `msg_trade_opened(...currency="SGD"...)` contains `SGD ` on the risk row and **no** `$`.
-- `msg_position_closed(found=False)` renders `(est.)`; `found=True` renders `+SGD ...` / `-SGD ...`
-  (sign before symbol), never `$+`/`$-`.
-- Entry/SL/TP rows contain a price with no currency symbol.
-- Audit invariant test: scan a rendered personal alert for `$` → none present (account currency SGD).
+## §5 `test_dayroll.py` (T8)
+`current_day("2026-06-14 10:30" SGT)` == 2026-06-13; `11:30` == 2026-06-14 (day_roll 11:00).
+`money(-12.5,"SGD")=="SGD 12.50"`; `"$" not in money(12.5,"SGD")`. `fmt_price`: USDJPY 3dp, EURUSD 5dp,
+XAUUSD 2dp, XAGUSD 4dp.
 
-## §7 Worker units (T6/T7) — where MT5 is mockable
-- filling-mode selection order IOC→FOK→RETURN.
-- ticket → MT5 request mapping (sl/tp/deviation/magic/volume) from a sample `05 §2` ticket.
-- fee formula: `(balance − Σ deal.profit) − anchor`; deal-history upper bound == `now + 1 day`.
-- `deal_pnl` returns `found=False` when no `DEAL_ENTRY_OUT` for the `position_id` is present.
-- force-close reason mapping (daily→DAILY_DD, overall→OVERALL_DD).
-Live MT5 integration (real connect/execute/journal) runs on the VPS at **CP-2**, not in CI.
+## §6 `test_zmq_client.py` (T4)
+Round-trip vs an in-process fake REP; assert the ticket JSON matches `05 §2` exactly; a `push_close(pair)`
+emits the expected close instruction; a REQ timeout returns a clean error, not a hang.
 
-## Green bar = T0–T11 done
-`pytest` all green + the `scripts/dry_run_signal.py` trace correct ⇒ ready for CP-1.
+## §7 Worker units (T5/T6)
+filling-mode order IOC→FOK→RETURN; ticket→MT5 request mapping; deal-window upper bound = now+1day;
+`deal_pnl` found=False without DEAL_ENTRY_OUT; force-close by pair; journaling record currency badge.
+Live MT5 → CP-2.
+
+## Green bar
+`pytest` all green + the `scripts/dry_run_prop_event.py` trace correct (prop OPEN → hedge ticket;
+CLOSE → close; K2 → close-all+halt) ⇒ ready for CP-1.

@@ -1,6 +1,6 @@
 # 07 — Telegram Command & Message Spec
 
-Mirror the reference look. All text lives in `receiver/messages.py` (pure builders); `telegram_bot.py` +
+Match the reference's visual format. All text lives in `receiver/messages.py` (pure builders); `telegram_bot.py` +
 `wizards.py` decide when to call them. **Naming rule (`00`) applies — never reference another
 account/system; describe everything in this system's own terms.**
 
@@ -50,3 +50,16 @@ else `(est.)`), `msg_signal_not_placed_preflight`, `msg_order_not_filled`.
 
 > The kill alerts are this system's own halt notifications. Keep their wording self-contained and
 > consistent (they are the system's audit trail of why a trade or the account stopped).
+
+## Structured audit line (machine-readable footer on lifecycle alerts)
+Every **Trade Opened / Position Closed / Kill** alert ends with one stable, parseable line so the alert
+doubles as a machine-readable audit/integration record (useful for logging, dashboards, and any external
+consumer of this system's public alerts). Keep the format fixed:
+```
+OPEN|pair=<TICKER>|dir=<LONG|SHORT>|entry=<px>|sl=<px>|tp=<px>|lots=<n>|phase=<1|2>
+CLOSE|pair=<TICKER>|reason=<TP|SL|MANUAL|K1..K5|...>
+KILL|k=<K1..K5|FORCE>|scope=<account|TICKER>
+```
+This is just complete self-reporting of the system's own actions — keep it generic and stable; do not tie
+it to any external consumer. (Stability matters: downstream tooling parses it. A wording change to the
+human-readable rows is fine; changing this line's field names/order is a breaking change.)

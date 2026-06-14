@@ -1,164 +1,98 @@
-# 05 — Data Contracts (exact schemas — do not deviate)
+# 05 — Data Contracts (exact)
 
-All schemas below are extracted verbatim from the live reference code. Match them exactly so the same
-TradingView alerts and the same transport work unchanged.
+Personal's **input** is the prop bot's Telegram alerts (read via MTProto); its **output** is a ZMQ ticket
+to the personal Worker. No webhook.
 
----
+## 1. Prop-event parse contract (the prop bot's alerts → event dict)
+Personal parses three prop alert types. **Recommended:** have the prop kit emit a stable **structured
+line** in each alert (see `prop-leg/07` — framed there generically as an audit/integration line, with no
+mention of personal), and parse that line. Fall back to keyword parsing of the human text if absent.
 
-## 1. Webhook payload — TradingView → Receiver `/signal` (14 fields)
-
-The Receiver's Pydantic model must accept the **14-field superset** (reference `layer2/logic_core.py:1006`).
-TradingView posts this JSON on a breakout.
-
-```python
-class SignalPayload(BaseModel):
-    signal:         str    # "LONG" | "SHORT"   — enum-validated (.upper())
-    ticker:         str    # must be in the canonical registry (config/symbols.json) — enum-validated
-    timestamp_ms:   int
-    timeframe:      str
-    entry:          float  # > 0
-    sl:             float  # > 0
-    tp:             float  # > 0
-    sl_pips:        float  # rides into the worker ticket (journal); not used for sizing
-    rr_ratio:       float  # inert
-    order_type:     str    # inert ("LIMIT")
-    daily_trend:    str    # inert
-    m15_swing_high: float  # inert (sent as literal 0 to avoid na→"NaN")
-    m15_swing_low:  float  # inert
-    pip_type:       str    # inert
+**Structured line format (what personal expects to find in the prop alert):**
 ```
-
-**Validation rules (exact):**
-- `signal` upper-cased, must be `LONG` or `SHORT` else 422.
-- `ticker` upper-cased, must be in `ALLOWED_PAIRS` (from `config/symbols.json`) else 422.
-- `entry`, `sl`, `tp` must each be `> 0` else 422.
-- All other fields: correct JSON type only (functionally inert but **required** — a missing field 422s).
-- **The na→"NaN" trap:** Pine `str.tostring(na)` emits `"NaN"` → invalid JSON → 422. The frozen
-  indicator already defaults numerics to 0. Don't change the indicator.
-
-**Sizing consumes ONLY `entry`, `sl`, `tp`** (+ live broker tick data). Everything else is journal/inert.
-
----
+OPEN|pair=EURUSD|dir=SHORT|entry=1.08500|sl=1.08554|tp=1.08300|lots=18.52|phase=2
+CLOSE|pair=EURUSD|reason=TP
+KILL|k=K1|scope=account            # or scope=EURUSD for a pair-specific force-close
+```
+Parsed event dicts:
+```python
+{"type":"open","pair":str,"dir":"LONG|SHORT","entry":float,"sl":float,"tp":float,"lots":float,"phase":int}
+{"type":"close","pair":str,"reason":str}
+{"type":"kill","k":"K1..K5|FORCE","scope":"account"|"<pair>"}
+```
+**Sender filter:** only parse messages whose sender is the configured prop bot (`prop_bot_username`/id).
+Ignore everything else (including personal's own control-bot messages).
 
 ## 2. ZMQ execution ticket — Receiver PUSH :5555 → Worker PULL
-
-Exact shape (reference `layer2/logic_core.py:1548`). Single leg → send **one** ticket per signal
-(the reference sent two; you send only the personal one, direction = signal).
-
 ```python
 ticket = {
-    "signal_id":    f"{base_id}_pers",   # unique id; base_id from timestamp+ticker
-    "ticker":       payload.ticker,       # canonical name; Worker maps to broker symbol
-    "timestamp_ms": payload.timestamp_ms,
-    "entry":        payload.entry,
-    "sl":           geometry["sl"],       # = signal_sl
-    "tp":           geometry["tp"],       # = signal_tp
-    "sl_pips":      payload.sl_pips,
-    "signal":       geometry["direction"],# = the signal direction (LONG/SHORT), NOT inverted
-    "lots":         geometry["lots"],
+    "signal_id":    f"{base_id}",        # unique id (timestamp+pair)
+    "ticker":       event["pair"],
+    "timestamp_ms": <now_ms>,
+    "entry":        <0 or prop entry; market order ignores it>,
+    "sl":           recon["sl"],          # = prop_tp
+    "tp":           recon["tp"],          # = prop_sl
+    "sl_pips":      0,                    # not needed; journal-only in the original
+    "signal":       recon["signal"],      # = invert(prop dir)
+    "lots":         recon["lots"],        # = round(prop_lots × phase_mult, 2)
     "order_type":   "market",
 }
 ```
+For a **close** event personal sends a close instruction for the matching pair (a `FORCE_CLOSE` ticket or
+a REP `close` query — mirror the reference worker's force-close path), keyed by pair.
 
-Serialize as JSON, PUSH on :5555. Fire-and-forget; confirm fill via the `order_status` query.
+## 3. ZMQ REP queries — Receiver REQ :5556 → Worker (timeout 3s)
+Same protocol as the reference (`_worker_core.py:1480`): `equity` (contract info, `account_currency`,
+`usd_to_acct_rate`, `trade_allowed`, +fee iff `want_fee`), `positions`, `order_status`, `order_check`,
+`deal_pnl` (strict `position_id`+`DEAL_ENTRY_OUT`, window `now+1day` — MT5 deal.time is server-tz),
+`account_mode`, `checksymbols`, `reset_fee_anchor`. Personal needs at least `equity`, `positions`,
+`order_check`, `order_status`, `deal_pnl`.
 
----
-
-## 3. ZMQ REP query protocol — Receiver REQ :5556 → Worker (timeout 3s)
-
-Reference `_worker_core.py:1480`. Implement these query types in `worker/queries.py`. Request is a JSON
-object with a `query` field (default `equity`) + params; reply is JSON.
-
-| `query` | Params | Reply contains |
-|---|---|---|
-| `equity` | `ticker`, `want_fee` (bool) | `balance`, `equity`, `profit`, contract info (`contract_size`, `trade_tick_size`, `trade_tick_value`, `digits`), `account_currency`, `usd_to_acct_rate`, `trade_allowed`; + fee fields iff `want_fee` |
-| `positions` | — | list of open positions |
-| `order_status` | `signal_id` | stored execution result (`filled`/`rejected`/`pending` + fill price) |
-| `order_check` | `ticker`, `signal`, `lots`, `sl`, `tp` | pre-flight: `verdict` ∈ {ok, reject, transient}, margin info |
-| `deal_pnl` | `symbol`, `ticket` | realized `gross`/`commission`/`swap`/`net` for a closed position; `found` bool |
-| `account_mode` | — | `demo`/`real`/`contest`/`unknown` |
-| `checksymbols` | — | per-broker SUPPORTED/FOUND/MISSING list |
-| `reset_fee_anchor` | — | re-anchors per-cycle fee (fee→0); fire after baseline change |
-
-**Critical reply details (carry these over — they cost real debugging time in the reference):**
-- `deal_pnl` matches **strictly by `position_id` (ticket) + `DEAL_ENTRY_OUT`**, never symbol+latest.
-  Use `to_dt = UTC-now + 1 day` for the deal-history window — MT5 `deal.time` is **server-tz, not UTC**.
-  If the exit deal hasn't surfaced, return `found=False` (caller shows `(est.)`, not a wrong number).
-- `equity` fee scan (`want_fee=True` only): `trading_fee = (balance − Σ all deal.profit) − fee_anchor`.
-  Same `now + 1 day` server-tz window. Gated to `/equity` only, never the 30s poll.
-
----
-
-## 4. `config/personal_config.json` (the single source of truth)
-
+## 4. `config/personal_config.json`
 ```jsonc
 {
-  "personal_baseline": 0.0,            // SGD; immutable risk anchor; Telegram-set; NEVER live equity
-  "active_mode": "conservative",
-  "modes": {
-    "conservative": { "risk_pct": 0.01 },   // CONFIRM with Warren
-    "aggressive":   { "risk_pct": 0.02 }     // CONFIRM with Warren
+  // --- MTProto reader (the prop link) ---
+  "mtproto": {
+    "api_id": 0,                       // from my.telegram.org   (CP-0)
+    "api_hash": "",                    // from my.telegram.org   (CP-0)
+    "session_path": "secrets/personal_reader.session",
+    "group_chat_id": null,             // shared group both systems sit in   (CP-0)
+    "prop_bot_username": null          // only act on this sender             (CP-0)
   },
-  "max_lots": 0.0,                     // 0 = uncapped (mirror of reference max_prop_lots guard)
-  "max_open_positions": 2,             // counts PERSONAL open positions
-  "daily_dd_pct": 4.0,                 // CONFIRM — daily DD halt (resets each session)
-  "overall_dd_pct": 8.0,               // CONFIRM — permanent overall DD halt
-  "day_roll": "11:00",                 // SGT HH:MM session reset
-  "trading_window": { "current": null, "next": null },  // SGT HH:MM strings or null
+  // --- following ---
+  "follow_enabled": true,              // master follow on/off (/follow)
+  "phase_multipliers": { "1": 0.20, "2": 0.70 },   // CONFIRM (matches the original)
+  "max_open_positions": 2,             // personal positions
+  "parse": {                           // keyword fallback if the structured line is absent
+    "open_keywords": ["Trade Opened", "OPEN"],
+    "close_keywords": ["Position Closed", "CLOSE"],
+    "kill_keywords": { "K1":["KILL 1","Daily Loss"], "K2":["KILL 2","Overall"],
+                       "K3":["KILL 3","Daily Profit Cap"], "K4":["KILL 4","Profit Target"],
+                       "K5":["KILL 5","Consistency"], "FORCE":["FORCE_CLOSE","HALT"] }
+  },
+  "kill_action": {                     // CONFIRM at CP-1
+    "pair_scope": "close_pair",
+    "account_permanent": "close_all_and_halt",   // K2/K4/K5
+    "account_daily": "close_all"                 // K1/K3
+  },
+  // --- ops ---
+  "day_roll": "11:00",                 // SGT
   "active": true,                      // master on/off (/start /stop)
   "permanently_halted": false,
   "daily_halted": false,
-  "daily_halted_date": null,
-  "soft_kill_override_day": null,      // set by /resume; suppresses daily halt for the rest of the day
-  "day_start_equity": 0.0,             // snapshotted at the day roll
-  "day_start_date_utc": null,
-  "deposit": 0.0,                      // actual capital; reporting/% only; ZERO effect on sizing
-  "prop_halt_listener": {              // NEW (see 10-prop-halt-listener.md); independent of personal's own halts
-    "enabled": true,
-    "group_chat_id": null,             // shared Telegram group both bots sit in
-    "prop_bot_username": null,         // only act on messages from this sender
-    "keyword_map": {                   // prop alert keyword → kill id (override if prop wording changes)
-      "K1": ["KILL 1", "K1", "Daily Loss"], "K2": ["KILL 2", "K2", "Overall Drawdown"],
-      "K3": ["KILL 3", "K3", "Daily Profit Cap"], "K4": ["KILL 4", "K4", "Profit Target"],
-      "K5": ["KILL 5", "K5", "Consistency"], "FORCE": ["FORCE_CLOSE", "HALT"]
-    },
-    "action": {                        // CONFIRM at CP-1
-      "pair_named": "close_pair",      // close only the named pair's personal position
-      "account_wide_permanent": "close_all_and_halt",  // K2/K4/K5
-      "account_wide_daily": "close_all"                // K1/K3
-    }
-  }
+  // --- optional secondary protection (off by default; personal mainly follows prop) ---
+  "secondary_dd": { "enabled": false, "daily_pct": 0.0, "overall_pct": 0.0, "baseline": 0.0 },
+  "deposit": 0.0                       // reporting/% only
 }
 ```
+`account_currency` is read live from MT5 (not stored). **Personal never sizes from a baseline** — sizing
+comes from `prop_lots × phase_mult` (`02`). `secondary_dd` is an optional own-equity safety net, off by
+default since personal mirrors the prop's halts.
 
-Rules: `personal_baseline` and `risk_pct` drive sizing; **live equity is used only for halts and
-reporting, never sizing**. `account_currency` is NOT stored — it's read live from MT5 (`equity` reply)
-so a broker currency change needs no code/config edit.
-
----
-
-## 5. Worker `.env` (gitignored, `secrets/.env`)
-
-```ini
-MT5_LOGIN=<personal account login>          # hard guard: account_info().login must equal this
-MT5_TERMINAL_PATH=                           # set only if multiple MT5 installs on the VPS
-ZMQ_PULL_BIND=tcp://0.0.0.0:5555
-ZMQ_REP_BIND=tcp://0.0.0.0:5556
-FIREBASE_JOURNAL_ENABLED=true                # MUST be 'true' or the close watcher never starts (silent)
-FIREBASE_JOURNAL_DRY_RUN=false               # 'true' = log payload, skip Firestore write
-GOOGLE_APPLICATION_CREDENTIALS=secrets/firebase-service-account.json
-```
-
-Receiver `.env`:
-```ini
-TELEGRAM_BOT_TOKEN=<token>
-TELEGRAM_CHAT_ID=<chat id>
-ZMQ_PUSH_CONNECT=tcp://<worker_ip>:5555
-ZMQ_REQ_CONNECT=tcp://<worker_ip>:5556
-NEWS_WINDOW=<minutes>                         # high-impact news suppression half-width
-FINNHUB_TOKEN=<token>                         # for ff_calendar news feed
-```
-
-> **Journaling silent-death guard:** on worker startup, log a WARNING if `FIREBASE_JOURNAL_ENABLED`≠`true`
-> or `FIREBASE_JOURNAL_DRY_RUN`=`true`. After any `.env` rebuild these must be re-set or journaling dies
-> silently. (Reference: `_worker_core.py:1739`.)
+## 5. Env (`secrets/.env`)
+**Receiver:** `TELEGRAM_BOT_TOKEN` (control bot), `TELEGRAM_CHAT_ID`, `ZMQ_PUSH_CONNECT`,
+`ZMQ_REQ_CONNECT`. (MTProto `api_id`/`api_hash`/session live in config/secrets.)
+**Worker:** `MT5_LOGIN` (hard guard), `MT5_TERMINAL_PATH` (optional), `ZMQ_PULL_BIND`, `ZMQ_REP_BIND`,
+`FIREBASE_JOURNAL_ENABLED=true`, `FIREBASE_JOURNAL_DRY_RUN=false`,
+`GOOGLE_APPLICATION_CREDENTIALS=secrets/firebase-service-account.json`.
+> Journaling silent-death guard: WARN on worker startup if journaling env is off. Re-set after any rebuild.
