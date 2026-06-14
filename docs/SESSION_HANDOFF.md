@@ -1,71 +1,56 @@
-# Session handoff — planning a standalone personal-leg rebuild
+# Session handoff — Phase-2 risk → 1%, and two-repo split build kits (prop master + personal follower)
 
 > Persistent resume file. Paste into a fresh session (or auto-load via a SessionStart hook).
 > Delta only — project overview, roles, and decisions live in CLAUDE.md & docs (auto-loaded).
 > Full shipped detail / per-session changelog: `docs/SESSION_LOG.md`.
 
-**Role:** Single-agent. Warren intends to **drop this 4-layer cross-hedge project** and have a
-*future* Claude build a **standalone personal-account leg** (personal trades alone, no prop hedge)
-from a written plan + build-prompt. This session was the scoping pass. See memory
-[[personal-leg-standalone-rebuild]].
+**Role:** Single-agent planning session. No live-system code was built this session beyond the Phase-2
+risk tweak; the rest is **planning kits** for a future build agent.
 
-## Status — updated 2026-06-14 (plan WRITTEN)
-- **Master plan now written** at `docs/personal-leg/` (README + 01-master-plan + 02-calculation-parity
-  + 03-build-prompt). NOT built — plan + build-prompt only, by Warren's choice. Couldn't use a repo-root
-  folder (EPERM on new top-level dirs); lives under `docs/`. Also this session: Phase 2 `prop_risk_pct`
-  0.67%→1.0%.
-- **Warren's strategy context (resolved the 4 forks):** (1) sizing = % of a fixed personal baseline,
-  Telegram-set; (2) phases dropped → two-mode toggle differing by **risk % only**, same geometry;
-  (3) geometry = raw signal SL/TP = **the prop's calc logic applied in the reverse (personal) direction**
-  — size native `risk_$ = personal_baseline × risk_pct` over the personal leg's OWN stop `|entry−signal_sl|`,
-  kernel `dollar_per_unit` unchanged; (4) daily + overall DD halt on personal equity (mirror K1/K2);
-  (5) clean greenfield 2-service (Linux Receiver + Windows Worker), reuse Layer 0 Pine/symbol_mapper/
-  journaling/MT5 self-launch/transport.
-- **Still to confirm (in `01-master-plan.md §9`, non-blocking):** the two mode %s (default 1%/2%),
-  daily/overall DD % (suggested 4%/8%), `personal_baseline` value, Receiver host.
-- **Analysis done this session (the value to carry forward):** the personal leg today has **no
-  independent existence** — it's parasitic on the prop math. Verified against
-  `docs/reference/calculations.md` + `layer2/phase1_strategy.py` + `layer2/phase2_strategy.py`:
-  - **Sizing:** `pers_lots = round(prop_lots × phase_mult, 2)` (0.20 P1 / 0.70 P2);
-    `prop_lots` come from `baseline_equity × 0.67%` over the **prop's** stop. No prop ⇒ **no sizing
-    anchor for personal.**
-  - **Phase 1 SL:** `pers_sl = prop_tp` — a *derived* level that moves with the prop stage ladder
-    and live prop equity (`phase1_strategy.py:171`). No prop ⇒ **personal has no SL definition at
-    all in P1.**
-  - **Phase 2:** `pers_sl/pers_tp = signal_sl/signal_tp` (raw signal), but lots still come from prop.
-  - Conclusion: a rebuild is a **genuine re-design of sizing + geometry**, not "delete prop code."
-- **Reusable as-is for the rebuild:** Layer 0 Pine signal (frozen, emits the 14-field webhook —
-  near TP ~1000t, far SL ~3700t), the MT5 self-launch connect rule ([[mt5-python-integration-constraints]]),
-  `layer3/symbol_mapper.py`, the journaling pipeline (`layer3/journal/`), and the
-  webhook→ZMQ→MT5 transport pattern.
+## Status — updated 2026-06-14
+- **SHIPPED (live 4-layer system): Phase-2 `prop_risk_pct` 0.67% → 1.0%** (`config/risk_params.json`).
+  Phase-2-only; lots already dynamic so they scale up automatically; RR unchanged; Phase 1 (`fixed_risk`)
+  and kills untouched. Synced TECHNICAL.md + docs/reference + System_Architecture + the phase2 test
+  (114/114 green) + CLAUDE.md hard-constraint line. **DEPLOY: not yet run** — needs `/update layer2` AND a
+  real Layer-2 process restart (the constant only reloads on restart; `git pull` alone won't).
+- **WROTE two full autonomous build kits (plan-only, nothing built):** Warren is splitting the system into
+  two standalone repos that together reproduce the original hedge:
+  - `docs/prop-leg/` (12 files) — standalone **MASTER**: full prop-firm challenge logic (phases/stage-
+    ladder/K1–K5/consistency/buffers) ported single-account, own breakout-fade Pine (tight-stop/far-target
+    RR≈3.7), currency auto-detect. **Hard naming rule: no personal/inverse/mirror/hedge/flip anywhere in
+    built artifacts.** Emits an `OPEN|CLOSE|KILL` structured audit line in its alerts.
+  - `docs/personal-leg/` (11 files + a superseded stub) — **FOLLOWER**: no own signal; reads the prop
+    bot's Telegram alerts and acts as the exact inverse hedge (`pers_dir=invert(prop)`,
+    `pers_lots=prop_lots×phase_mult {1:0.20,2:0.70}`, `pers_sl=prop_tp`, `pers_tp=prop_sl`).
+- **Design note:** personal was first drafted as Approach A (own signal + halt-listener) then **rewritten
+  to Approach B** (follows prop) when Warren clarified intent. `10-prop-halt-listener.md` is now a redirect
+  stub → `10-prop-follower.md`.
 
 ## Next actions
-1. **Two full build kits written** — `docs/personal-leg/` (11 files) and `docs/prop-leg/` (12 files).
-   Each: open this repo, tell a fresh agent "read `docs/<kit>/03-build-prompt.md` and follow it"; it builds
-   in a sibling repo (`~/Coding Projects/personal-leg-system` / `prop-leg-system`), T0→T14, stopping at
-   checkpoints. Warren confirms open numbers (each kit's §9 / CP-1). Do NOT build from a planning session.
-2. **Prop kit (2026-06-14):** full prop-firm challenge logic (phases, stage ladder, K1–K5, consistency,
-   buffers) ported single-account; own breakout-fade Pine (tight-stop/far-target, RR≈3.7) per `10`;
-   currency auto-detect; **hard naming rule — no personal/inverse/mirror/hedge/flip words anywhere in the
-   built system.**
-3. **Personal kit got a NEW feature (`docs/personal-leg/10-prop-halt-listener.md`, task T8.5):** personal
-   listens to the prop bot's K1–K5 alerts in a shared Telegram group and closes/halts the matching
-   position (one-way; prop untouched/unaware). Also added §11 future-option note (A independent vs B
-   prop-master; recommended A now, B parked).
-4. **Constraint reaffirmed:** original 4-layer system logic is FROZEN — both kits only READ it, never edit.
+1. **Deploy the 1% risk change** when Warren is ready: `/update layer2`, then confirm the Layer-2 process
+   actually restarted (not just pulled).
+2. **To build either kit:** open this repo, tell a fresh agent *"read `docs/<prop-leg|personal-leg>/03-build-prompt.md`
+   and follow it."* It builds in a sibling repo (`~/Coding Projects/prop-leg-system` / `personal-leg-system`),
+   T0→T13/14, stopping at checkpoints. **Build prop FIRST** (personal needs prop's alerts to follow).
+3. Do NOT build from a planning session; do NOT touch the frozen 4-layer code.
 
 ## Running state
 - Background processes: none
 - Dev servers / ports: none
-- Worktrees / branches: none (on `main`)
+- Worktrees / branches: none (on `main`, all work committed + pushed)
 
-## Open items
-- Warren to provide his intended **standalone personal strategy** (how he wants to size, where SL/TP
-  come from, whether he wants any equity-based halts) — the plan blocks on this.
-- Untracked in working tree (pre-existing, not from this session): `.obsidian/`, a stray
-  `layer0/Flipped RSI Divergence Indicator.pine`, `logs/demo_chart_*.png`, `uv.lock`.
+## Open items (await Warren — non-blocking for the code build)
+- **Personal CP-0 (BLOCKING feasibility gate):** Telegram Bot API bots can't read other bots' messages →
+  the prop-alert reader MUST be an **MTProto user client (Telethon)** with a user session
+  (`api_id`+`api_hash`+phone login). Warren must approve this and supply creds + shared `group_chat_id` +
+  `prop_bot_username`. If he won't run a user session, the follow-via-Telegram model isn't buildable as-is.
+- **Personal CP-1:** `phase_multipliers` (default 0.20/0.70), the prop alert parse contract, secondary-DD
+  on/off, control-bot token, personal MT5 login, Firebase creds, Receiver host.
+- **Prop CP-1:** baseline, target/overall-DD/daily-DD/consistency %, min-profit-days, the reward:risk pair,
+  `propfirm_day_roll`, Telegram token, Firebase creds, MT5 login, Receiver host.
+- Untracked in working tree (pre-existing, not this session): `.obsidian/`, `layer0/Flipped RSI
+  Divergence Indicator.pine`, `logs/demo_chart_*.png`, `uv.lock`.
 
 ## Pick up here
-Plan is at `docs/personal-leg/`. If Warren returns the §9 numbers, fold them into `01-master-plan.md`
-and `personal_config.json` defaults. When he's ready to build, open a fresh session and paste
-`docs/personal-leg/03-build-prompt.md`. Do NOT build from a planning session.
+If resuming the live system: run `/update layer2` for the 1% change and confirm the restart. If building:
+start the prop kit via `docs/prop-leg/03-build-prompt.md` (build prop before personal).
