@@ -112,7 +112,22 @@ object with a `query` field (default `equity`) + params; reply is JSON.
   "soft_kill_override_day": null,      // set by /resume; suppresses daily halt for the rest of the day
   "day_start_equity": 0.0,             // snapshotted at the day roll
   "day_start_date_utc": null,
-  "deposit": 0.0                       // actual capital; reporting/% only; ZERO effect on sizing
+  "deposit": 0.0,                      // actual capital; reporting/% only; ZERO effect on sizing
+  "prop_halt_listener": {              // NEW (see 10-prop-halt-listener.md); independent of personal's own halts
+    "enabled": true,
+    "group_chat_id": null,             // shared Telegram group both bots sit in
+    "prop_bot_username": null,         // only act on messages from this sender
+    "keyword_map": {                   // prop alert keyword → kill id (override if prop wording changes)
+      "K1": ["KILL 1", "K1", "Daily Loss"], "K2": ["KILL 2", "K2", "Overall Drawdown"],
+      "K3": ["KILL 3", "K3", "Daily Profit Cap"], "K4": ["KILL 4", "K4", "Profit Target"],
+      "K5": ["KILL 5", "K5", "Consistency"], "FORCE": ["FORCE_CLOSE", "HALT"]
+    },
+    "action": {                        // CONFIRM at CP-1
+      "pair_named": "close_pair",      // close only the named pair's personal position
+      "account_wide_permanent": "close_all_and_halt",  // K2/K4/K5
+      "account_wide_daily": "close_all"                // K1/K3
+    }
+  }
 }
 ```
 

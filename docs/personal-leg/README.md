@@ -26,6 +26,7 @@ and run the task list in **`06-build-tasks.md`** from T0 to T14, stopping only a
 | 07 | [`07-telegram-spec.md`](07-telegram-spec.md) | Every command + message format + currency rules. |
 | 08 | [`08-test-plan.md`](08-test-plan.md) | Every test case with exact expected values (TDD). |
 | 09 | [`09-deploy-runbook.md`](09-deploy-runbook.md) | Demo deploy, MT5 connect, hosting, go-live gates. |
+| 10 | [`10-prop-halt-listener.md`](10-prop-halt-listener.md) | NEW feature — personal listens to the prop bot's K1–K5 Telegram alerts and closes/halts the matching position (one-way, prop untouched). Build task T8.5. |
 
 ## The design in one breath
 Keep the risk kernel **identical** (`lots = risk_$ / (stop × k)`, `dollar_per_unit` unchanged, follow the

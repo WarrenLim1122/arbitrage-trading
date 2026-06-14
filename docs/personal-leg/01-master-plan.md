@@ -123,6 +123,13 @@ Personal had none before — this is new. Evaluated by the Receiver's equity mon
 > **Open — confirm `daily_dd_pct` and `overall_dd_pct`.** Suggested defaults: daily 4%, overall 8%.
 > These are personal-account choices, set via Telegram; the plan does not hardcode them.
 
+### 5a. Prop-halt listener (NEW — additional safety input) → full spec in `10-prop-halt-listener.md`
+Beyond its own DD halts, the personal system **listens to the prop bot's K1–K5 kill/halt alerts** in a
+shared Telegram group and closes/halts the matching position when the prop side stops. One-way, loose
+coupling (the prop system is untouched and unaware) — works exactly like the news filter, but the trigger
+is the prop bot's alert text. Build task **T8.5**. Defaults (CONFIRM at CP-1): pair-named kill → close
+that pair; account-wide kill → close all + halt.
+
 ---
 
 ## 6. Architecture — greenfield 2-service
@@ -234,3 +241,24 @@ helpers; forex prices carry no symbol. [[sgd-usd-account-currency]]
   (fatal exit on mismatch). [[mt5-python-integration-constraints]]
 - **Account currency = whatever MT5 reports** (SGD now); never hardcode `$` on the personal side.
 - Demo-first: ≥7 trading days before live capital.
+
+---
+
+## 11. Future option Warren is weighing — "which approach is better?" (PARKED, not built)
+Warren is considering, later, making personal **follow the prop system's exact entry + calculation but
+opposite direction** (prop as the master, personal mirrors) — i.e. a single signal source instead of two.
+
+- **Approach A (current plan): two independent signal sources.** Personal trades its own Layer-0 signal;
+  prop trades its own fade signal; personal additionally listens to the prop bot's halts (§5a). Cleaner
+  separation, each system testable/deployable alone — matches "independent standalone". *Downside:* the
+  two legs are not guaranteed to be exact opposites at the same instant (different signals/timing), so
+  it's a loose hedge, not a tight one.
+- **Approach B (future): prop master, personal follows inverse.** Personal subscribes to the prop's signal
+  feed and trades the exact opposite with mirrored sizing. Guarantees a tight hedge from one signal
+  source — essentially what the original 4-layer system does, minus the prohibited concealment. *Downside:*
+  re-introduces coupling (personal depends on the prop feed), which is the thing Warren is separating.
+
+**Recommendation:** build **A now** (it's what's specified and keeps the systems clean and independent).
+Keep **B as a documented future toggle**: personal could gain a "follow external prop signal" input mode
+later without re-architecting, since its geometry kernel is unchanged either way. Decision deferred to
+Warren — do not build B unless he asks.

@@ -41,6 +41,7 @@ Projects/` is writable (verified). You never edit, commit to, or delete anything
 | 6 | `07-telegram-spec.md` | Every Telegram command + message format + currency rules. |
 | 7 | `08-test-plan.md` | Every test case with exact expected values. |
 | 8 | `09-deploy-runbook.md` | Demo deploy, MT5 connect, hosting, go-live gates. |
+| 9 | `10-prop-halt-listener.md` | NEW feature (build task T8.5) — personal listens to the prop bot's K1–K5 Telegram alerts and closes/halts the matching position. Read before T8.5. |
 
 ## Reference repo — files you may READ (never edit), with exact paths
 

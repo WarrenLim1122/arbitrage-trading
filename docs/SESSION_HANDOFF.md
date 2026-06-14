@@ -40,9 +40,19 @@ from a written plan + build-prompt. This session was the scoping pass. See memor
   webhook→ZMQ→MT5 transport pattern.
 
 ## Next actions
-1. **Forks resolved + plan written** — see `docs/personal-leg/`. Next: Warren confirms the open numbers
-   in `01-master-plan.md §9`, then a **separate** Claude session runs `docs/personal-leg/03-build-prompt.md`
-   to build it (TDD, demo-first). Do NOT start building from a planning session.
+1. **Two full build kits written** — `docs/personal-leg/` (11 files) and `docs/prop-leg/` (12 files).
+   Each: open this repo, tell a fresh agent "read `docs/<kit>/03-build-prompt.md` and follow it"; it builds
+   in a sibling repo (`~/Coding Projects/personal-leg-system` / `prop-leg-system`), T0→T14, stopping at
+   checkpoints. Warren confirms open numbers (each kit's §9 / CP-1). Do NOT build from a planning session.
+2. **Prop kit (2026-06-14):** full prop-firm challenge logic (phases, stage ladder, K1–K5, consistency,
+   buffers) ported single-account; own breakout-fade Pine (tight-stop/far-target, RR≈3.7) per `10`;
+   currency auto-detect; **hard naming rule — no personal/inverse/mirror/hedge/flip words anywhere in the
+   built system.**
+3. **Personal kit got a NEW feature (`docs/personal-leg/10-prop-halt-listener.md`, task T8.5):** personal
+   listens to the prop bot's K1–K5 alerts in a shared Telegram group and closes/halts the matching
+   position (one-way; prop untouched/unaware). Also added §11 future-option note (A independent vs B
+   prop-master; recommended A now, B parked).
+4. **Constraint reaffirmed:** original 4-layer system logic is FROZEN — both kits only READ it, never edit.
 
 ## Running state
 - Background processes: none

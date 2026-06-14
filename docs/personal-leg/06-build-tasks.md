@@ -180,6 +180,19 @@ Run tests with the project's runner (e.g. `uv run --extra dev pytest` or `pytest
 
 ---
 
+## ▣ T8.5 — Prop-halt listener (TDD) — full spec in `10-prop-halt-listener.md §6`
+- **Goal:** personal closes/halts the matching position when the prop bot posts a K1–K5 kill/halt alert
+  in the shared Telegram group (one-way, loose coupling; the prop system is untouched and unaware).
+- **Spec:** `receiver/prop_halt_listener.py` — filter group messages to the configured prop bot →
+  match kill keywords → extract pair if present → `monitor.close_positions(pair|all)` + apply the action
+  policy (`10 §4`) → `msg_prop_halt_action`. Personal bot must be in the group with BotFather privacy
+  mode OFF. Config block `prop_halt_listener` in `personal_config.json`.
+- **Tests (`tests/test_prop_halt_listener.py`):** per `10 §6` (pair-specific close, account-wide
+  close+halt, non-prop sender ignored, no-keyword ignored, disabled → no-op).
+- **Commit:** `feat: prop-halt listener — close/halt on prop bot's K1–K5 group alerts (personal only)`
+
+---
+
 ## ▣ T9 — Receiver: monitor thread (equity, halts, close detect, day roll)
 - **Goal:** the 30s background loop.
 - **Reference:** `layer2/logic_core.py` `_equity_monitor_loop` / `_run_equity_check`; auto-resume logic.
