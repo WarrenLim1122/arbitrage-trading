@@ -1,30 +1,65 @@
-# Session handoff — journaling re-armed on both workers; new prop account; first entry unverified
+# Session handoff — planning a standalone personal-leg rebuild
 
 > Persistent resume file. Paste into a fresh session (or auto-load via a SessionStart hook).
 > Delta only — project overview, roles, and decisions live in CLAUDE.md & docs (auto-loaded).
 > Full shipped detail / per-session changelog: `docs/SESSION_LOG.md`.
 
-**Role:** Single-agent (Claude). Warren operates the live bot via Telegram and executes all VPS-side steps by hand (Claude cannot reach the Windows VPSes).
+**Role:** Single-agent. Warren intends to **drop this 4-layer cross-hedge project** and have a
+*future* Claude build a **standalone personal-account leg** (personal trades alone, no prop hedge)
+from a written plan + build-prompt. This session was the scoping pass. See memory
+[[personal-leg-standalone-rebuild]].
 
-## Status — updated 2026-06-12
-- Journaling outage from last session is FIXED end-to-end. Warren's hand-typed `.env` edits had 5 errors (wrong `FIREBASE_PROJECT_ID` = user-id pasted in, stray `s` on `FIREBASE_DATABASE_ID`, empty `FIREBASE_STORAGE_BUCKET`, `SCREENSHOT_STORAGE=local` which the uploader doesn't support, stale `JOURNAL_BROKER=MetaQuotes Demo`). Fixed by committing ready-to-paste blocks `layer3/env_journal_personal.txt` + `layer3/env_journal_prop.txt` (commit `959f79c`) which Warren pulled and pasted into each VPS `.env`. Reuse those files for any future account/VPS rebuild — never let the journal block be hand-typed again.
-- Both workers restarted; startup logs verified: "Journal modules started (dry_run=false)" on personal AND prop, sockets bound, retry/pending queues running. Canonical Firebase values verified live from the Mac (Firestore query): project `gen-lang-client-0206326169`, DB `ai-studio-88ba4d0a-7b6e-4d07-a03b-675ed3bc8607`, user `WCzOHPl8C4Q1aa3EDHkOGhdH9To1`, bucket `gen-lang-client-0206326169.firebasestorage.app`.
-- Journal tags: personal = `live`/`FusionMarkets`, prop = `prop`/`FundingPips`. `SCREENSHOT_ONLY_FOR_TP_SL=true` — charts attach only on TP/SL closes.
-- **Prop account changed (again): now `20116670` on FundingPips-SIM1** (was `20047930`). Terminal + `.env` match, worker boots. New account exposes only **9 of 33** registry symbols (majors + XAU/XAG; even USDSGD/USDSEK missing); personal finds 20.
-- Last session's chart-renderer fix (`9d419d8`) is now deployed by these restarts — next journal chart should have correct markers/labels.
+## Status — updated 2026-06-14
+- **Nothing built or changed.** No code edits, no commits, no `personal-rebuild/` folder yet.
+  Warren parked the task: he wants to **supply more strategy context next session before any plan
+  is written**, then hand the plan to a separate Claude to build.
+- **Analysis done this session (the value to carry forward):** the personal leg today has **no
+  independent existence** — it's parasitic on the prop math. Verified against
+  `docs/reference/calculations.md` + `layer2/phase1_strategy.py` + `layer2/phase2_strategy.py`:
+  - **Sizing:** `pers_lots = round(prop_lots × phase_mult, 2)` (0.20 P1 / 0.70 P2);
+    `prop_lots` come from `baseline_equity × 0.67%` over the **prop's** stop. No prop ⇒ **no sizing
+    anchor for personal.**
+  - **Phase 1 SL:** `pers_sl = prop_tp` — a *derived* level that moves with the prop stage ladder
+    and live prop equity (`phase1_strategy.py:171`). No prop ⇒ **personal has no SL definition at
+    all in P1.**
+  - **Phase 2:** `pers_sl/pers_tp = signal_sl/signal_tp` (raw signal), but lots still come from prop.
+  - Conclusion: a rebuild is a **genuine re-design of sizing + geometry**, not "delete prop code."
+- **Reusable as-is for the rebuild:** Layer 0 Pine signal (frozen, emits the 14-field webhook —
+  near TP ~1000t, far SL ~3700t), the MT5 self-launch connect rule ([[mt5-python-integration-constraints]]),
+  `layer3/symbol_mapper.py`, the journaling pipeline (`layer3/journal/`), and the
+  webhook→ZMQ→MT5 transport pattern.
 
 ## Next actions
-1. After the next TP/SL trade close, verify the first post-fix journal entry: query Firestore from the Mac (recipe in memory [[firestore-journal-verification]]) — expect a doc under `users/WCzOHPl8C4Q1aa3EDHkOGhdH9To1/trades` with a populated chart URL, and the entry visible at warrenlimzf.com/journal.
+1. **Wait for Warren's strategy context** for the standalone personal system, then resolve the 4
+   open design forks below (he rejected answering them mid-session — collect them fresh with his new
+   context). Only after that, write the plan + build-prompt into a new `personal-rebuild/` folder.
+
+## The 4 open design forks (resolve BEFORE writing the plan)
+1. **Sizing anchor** — % of live personal equity per trade (recommended; auto-scales) · % of a
+   fixed baseline (stable $/trade, set via Telegram) · flat fixed-$ per trade.
+   All: `lots = risk_$ / (SL_distance × k)`, `k` from `dollar_per_unit` (`strategy_common.py:13`).
+2. **SL/TP geometry** — raw signal SL+TP (RR ≈ 0.27, near-TP/far-SL → needs high win-rate) ·
+   signal SL + fixed target-RR TP · signal TP + tightened SL to a target RR. (Phase 1's old
+   reward-targeting scheme can't be reused — it depended on prop equity/stages.)
+3. **Risk halts** — personal has **none** today. Options: daily + overall DD halt (mirror prop
+   K1/K2) · daily-loss-only · none.
+4. **Architecture** — clean greenfield 2-service (Receiver on Linux: webhook + news/time filter +
+   sizing + Telegram + ZMQ push; Worker on Windows: MT5 execute + position watch + journal) vs
+   strip the existing 4-layer repo. (Min 2 processes regardless: public HTTPS receiver + Windows MT5
+   worker.)
 
 ## Running state
 - Background processes: none
 - Dev servers / ports: none
-- Worktrees / branches: main, all session work pushed through `959f79c`
+- Worktrees / branches: none (on `main`)
 
 ## Open items
-- Warren was told to run `/checksymbols` to confirm all 7 armed TradingView pairs are FOUND on the new prop account (only 9 symbols exist there) — not yet confirmed done.
-- Baseline check after the prop account switch (`/changepropfirm` or `/setbaseline` if the new account's starting equity differs) — flagged to Warren, not confirmed done.
-- Pre-existing: deploy runtime-config proper fix (untrack `config/*.json` + `.example` seeding) still PENDING Warren's go ([[deploy-runtime-config-conflict]]).
+- Warren to provide his intended **standalone personal strategy** (how he wants to size, where SL/TP
+  come from, whether he wants any equity-based halts) — the plan blocks on this.
+- Untracked in working tree (pre-existing, not from this session): `.obsidian/`, a stray
+  `layer0/Flipped RSI Divergence Indicator.pine`, `logs/demo_chart_*.png`, `uv.lock`.
 
 ## Pick up here
-Ask Warren whether a trade has closed since 2026-06-12 02:46 SGT; if yes, run the Firestore last-entry query to confirm journaling + chart upload are alive, then check off the `/checksymbols` and baseline open items.
+Ask Warren for his standalone-personal strategy details, walk the 4 forks above with his answers,
+then scaffold `personal-rebuild/` with the design doc + a self-contained build-prompt for a fresh
+Claude. Do NOT start building the system itself — only the plan + prompt.
