@@ -1,33 +1,46 @@
-# personal-leg/ — Standalone Personal-Account Rebuild (master plan)
+# personal-leg/ — Standalone Personal-Account Rebuild (full build kit)
 
-> **What this is:** the complete plan to rebuild the **personal account leg** as a
-> **standalone single-leg trading system** — personal trades alone, no prop/FundingPips hedge.
-> Nothing is built yet. These are planning + build-handoff documents only.
+> **What this is:** a complete, self-contained kit for an autonomous agent to **rebuild the personal
+> account leg as a standalone single-leg trading system** (personal trades alone, no prop hedge) in a
+> **new repo**, using the `arbitrage-trading` repo as reference. Plan + exact contracts + a rigid
+> ordered task runbook + tests + deploy. Nothing is built yet.
 >
-> **Why it's here and not at repo root:** this repo's filesystem blocks creating new top-level
-> directories (EPERM). `docs/personal-leg/` is the single named folder holding the master plan.
+> **Why here, not repo root:** this repo's filesystem blocks new top-level dirs (EPERM). The *new build*
+> happens in a separate repo (greenfield, no such limit).
 
-## Files
+## How to use this kit
+Hand an agent the kickoff in **`03-build-prompt.md`**. It tells the agent to open **`00-AGENT-START-HERE.md`**
+and run the task list in **`06-build-tasks.md`** from T0 to T14, stopping only at the labelled checkpoints.
 
-| File | Purpose |
-|---|---|
-| [`01-master-plan.md`](01-master-plan.md) | The master plan: scope, the 6 resolved design decisions, native sizing/geometry math, two-mode toggle, risk halts, architecture, config + Telegram surface, build phases, open numbers to confirm. |
-| [`02-calculation-parity.md`](02-calculation-parity.md) | **The heart of Warren's instruction.** Runs the current 2-leg system end to end (code-accurate), shows exactly how each personal number is derived from prop today, then derives the standalone "prop logic, reversed" native math with worked numbers. Proves the kernel is unchanged. |
-| [`03-build-prompt.md`](03-build-prompt.md) | A self-contained prompt to hand a **fresh Claude session** that will actually build the system. Names the exact files to reuse from this repo (no tree-scanning) and the exact files to write. |
+## Files (read in this order)
 
-## One-line summary of the design
+| # | File | Role |
+|---|---|---|
+| 00 | [`00-AGENT-START-HERE.md`](00-AGENT-START-HERE.md) | **Entry point.** Operating rules, the read-order, reference-file map, the checkpoint protocol. |
+| 01 | [`01-master-plan.md`](01-master-plan.md) | The "why": 6 locked decisions, native math, two-mode toggle, halts, architecture, open numbers. |
+| 02 | [`02-calculation-parity.md`](02-calculation-parity.md) | The math proof — current 2-leg trace → "prop logic, reversed" native formula, worked numbers. |
+| 03 | [`03-build-prompt.md`](03-build-prompt.md) | The one-paste kickoff prompt for a fresh Claude session. |
+| 04 | [`04-system-architecture.md`](04-system-architecture.md) | Exact target repo layout, process model, every file to create, old→new mapping. |
+| 05 | [`05-data-contracts.md`](05-data-contracts.md) | Exact schemas: 14-field webhook, ZMQ ticket, REP queries, `personal_config.json`, env. |
+| 06 | [`06-build-tasks.md`](06-build-tasks.md) | **The runbook** — numbered tasks T0→T14, each with reference/spec/tests/acceptance/commit + checkpoints. |
+| 07 | [`07-telegram-spec.md`](07-telegram-spec.md) | Every command + message format + currency rules. |
+| 08 | [`08-test-plan.md`](08-test-plan.md) | Every test case with exact expected values (TDD). |
+| 09 | [`09-deploy-runbook.md`](09-deploy-runbook.md) | Demo deploy, MT5 connect, hosting, go-live gates. |
 
-Keep the existing risk kernel **identical** (`lots = risk_$ / (stop_distance × k)`, `k` from
-`dollar_per_unit`, direction = follow the signal, SL/TP = raw signal levels). Replace the **prop
-dependency** with a **native personal anchor**: `risk_$ = personal_baseline × risk_pct`, sized over
-the **personal leg's own stop** (`|entry − signal_sl|`). This is the prop's own sizing method applied
-in the reverse (signal-following) direction — the opposite end of the same SL/TP box.
+## The design in one breath
+Keep the risk kernel **identical** (`lots = risk_$ / (stop × k)`, `dollar_per_unit` unchanged, follow the
+signal, raw signal SL/TP). Replace the prop dependency with a native anchor: `risk_$ = personal_baseline
+× risk_pct`, sized over the personal leg's **own** stop (`|entry − signal_sl|`) — the prop's own method
+applied in the reverse (personal) direction. Result: a **constant** per-trade risk, no prop needed.
 
 ## Decisions locked with Warren (2026-06-14)
+1. Sizing = % of a **fixed personal baseline** (Telegram-set, immutable).
+2. Phases dropped → **two-mode toggle** differing by **risk % only**, identical geometry.
+3. Geometry = **raw signal SL/TP** = the prop's calc logic in the reverse (personal) direction.
+4. **Daily + overall DD halt** on personal equity (mirror K1/K2).
+5. Clean **greenfield 2-service** (Linux Receiver + Windows Worker); reuse Pine, symbol mapper, journaling, MT5 self-launch, transport.
+6. Build is run by a **separate** Claude session from `03-build-prompt.md`; plan-only here.
 
-1. **Sizing anchor:** % of a **fixed personal baseline** set via Telegram (immutable like today's prop anchor).
-2. **Phases:** dropped. **Two-mode toggle** instead — modes differ by **risk % only**, identical geometry.
-3. **Geometry:** **raw signal SL + TP**, computed exactly as the prop's logic but in the reverse (personal) direction.
-4. **Risk halts:** **daily + overall drawdown halt** on personal equity (mirror of prop K1/K2 logic).
-5. **Architecture:** clean **greenfield 2-service** (Linux Receiver + Windows MT5 Worker); reuse Layer 0 Pine, symbol mapper, journaling, MT5 self-launch rule, webhook→ZMQ→MT5 transport.
-6. **Build discipline:** plan + build-prompt only here; a separate Claude session builds from `03-build-prompt.md`.
+## Open numbers Warren still confirms (at CP-1; non-blocking for the code build)
+Mode `risk_pct` values (default 1% / 2%) · `daily_dd_pct` / `overall_dd_pct` (suggested 4% / 8%) ·
+`personal_baseline` (SGD) · Receiver host · Telegram token + Firebase creds + MT5 access.
