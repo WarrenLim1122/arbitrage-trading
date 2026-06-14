@@ -36,5 +36,5 @@ re-reading every code file**. Consult it first, then open the exact file:line it
 Single sources of truth worth memorizing:
 - **Symbols:** `config/symbols.json` (canonical = TradingView names). 33 today.
 - **Risk anchor:** `baseline_equity` in `config/propfirm_config.json` — drives sizing AND all kills.
-- **Risk %:** `prop_risk_pct = 0.0067` and `phase_multipliers {1:0.20, 2:0.70}` in `config/risk_params.json`.
+- **Risk %:** `prop_risk_pct = 0.01` (Phase 2 sizing) and `phase_multipliers {1:0.20, 2:0.70}` in `config/risk_params.json`.
 - **All Telegram text:** `msg_*()` functions in `layer2/telegram_handlers.py` (logic_core is pure orchestration).

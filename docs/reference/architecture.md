@@ -106,7 +106,7 @@ Layer 3 has its own threads: PULL (execution, main), REP (query responder), stat
 | File | Owns | Notes |
 |---|---|---|
 | `symbols.json` | canonical pair registry (TradingView names) | single source of truth; 33 pairs |
-| `risk_params.json` | `prop_risk_pct` (0.0067), `phase_multipliers`, ZMQ addresses, pip decimals | sizing constants |
+| `risk_params.json` | `prop_risk_pct` (0.01), `phase_multipliers`, ZMQ addresses, pip decimals | sizing constants |
 | `propfirm_config.json` | `baseline_equity` (risk anchor), DD %s, targets, `day_start_equity`, `day_start_date_utc` | written by `/changepropfirm`, `/phase2`, `/setbaseline` |
 | `phase_config.json` | `phase`, `active`, `last_signal_ts`, nested `phase1` block (stages/ratchet/profitable_days) | the `phase1` block is owned solely by `_phase1_*` in `state.py` — see the `_save_phase(owns_phase1=…)` guard |
 | `consistency_log.json` | per-day profits (Phase 2 K5) | reset each Phase 2 cycle |

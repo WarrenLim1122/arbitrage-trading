@@ -1,6 +1,6 @@
 {
-  "prop_risk_pct": 0.0067,
-  "_note_risk": "0.67% of static baseline_equity locked in propfirm_config.json at phase start. Never uses live MT5 balance for sizing.",
+  "prop_risk_pct": 0.01,
+  "_note_risk": "1.0% of static baseline_equity locked in propfirm_config.json at phase start (raised from 0.67% on 2026-06-14 for faster turnover — Phase 2 sizing only; Phase 1 uses phase_config fixed_risk, kills use their own dd%). Never uses live MT5 balance for sizing.",
 
   "phase_multipliers": {
     "1": 0.20,

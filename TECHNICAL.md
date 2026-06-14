@@ -24,7 +24,7 @@ hardcoded: `k` (dollar-per-unit) is live MT5 contract data; risk + ratio come fr
 ### Phase 2 — uses ALL signal levels (SL, entry, TP); prop is the exact inverse
 
 ```
-prop_dollar_risk = baseline_equity × 0.0067            # 0.67% of static baseline
+prop_dollar_risk = baseline_equity × 0.01              # 1.0% of static baseline (raised from 0.67% 2026-06-14)
 tp_distance      = abs(payload.tp − entry)             # funded SL distance
 prop_lots        = prop_dollar_risk / (tp_distance × k_prop)   # k from dollar_per_unit
 pers_lots        = prop_lots × 0.70

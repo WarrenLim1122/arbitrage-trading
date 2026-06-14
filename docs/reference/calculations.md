@@ -22,7 +22,7 @@ Risk constants live in `config/risk_params.json`; the risk anchor + DD/target se
   equity-% reporting and the fee reconciliation in `/equity`. **Zero** effect on sizing or kills.
 - **The personal account has no kills and no risk baseline.** Its lots are purely
   `prop_lots × phase_multiplier`.
-- **Constants** (`config/risk_params.json`): `prop_risk_pct = 0.0067` (0.67%);
+- **Constants** (`config/risk_params.json`): `prop_risk_pct = 0.01` (1.0% — raised from 0.67% 2026-06-14, Phase 2 only);
   `phase_multipliers = {1: 0.20, 2: 0.70}`.
 
 ## `dollar_per_unit` — the lot-sizing kernel (`strategy_common.py:13`)
@@ -50,7 +50,7 @@ the ZMQ equity query — so the math generalizes to any pair without code change
 Both personal SL and TP are **fixed from the signal**. Prop is the mirror hedge.
 
 ```
-prop_dollar_risk = baseline_equity × prop_risk_pct          # = baseline × 0.67%
+prop_dollar_risk = baseline_equity × prop_risk_pct          # = baseline × 1.0%
 sl_distance      = |entry − signal_sl|                       # personal SL distance
 tp_distance      = |signal_tp − entry|                       # = prop (funded) SL distance
                                                              # reject if tp_distance ≤ 0
@@ -69,7 +69,7 @@ pers_sl = signal_sl ; pers_tp = signal_tp
 prop_signal = invert(signal) ; pers_signal = signal
 ```
 
-Intuition: prop risks exactly `baseline × 0.67%` sized against the **tight** (signal-TP) distance;
+Intuition: prop risks exactly `baseline × 1.0%` sized against the **tight** (signal-TP) distance;
 when the signal's SL is hit, the prop wins big (wide leg). Personal is the smaller mirror at 70%.
 
 ## Phase 1 geometry (`phase1_strategy.compute_geometry`) — FIXED-LOT, moving-TP (rewritten 2026-06-07)

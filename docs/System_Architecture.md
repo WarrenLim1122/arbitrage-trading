@@ -142,7 +142,7 @@ Layer 2 receives clean signal
         ▼
 Compute lot sizes
         │
-        ├── prop_lot = (baseline_equity × 0.0067) / contract_risk
+        ├── prop_lot = (baseline_equity × 0.01) / contract_risk
         └── hedge_lot = computed independently
         │
         ▼
