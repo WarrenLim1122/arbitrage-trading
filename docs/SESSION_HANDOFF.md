@@ -9,10 +9,20 @@
 from a written plan + build-prompt. This session was the scoping pass. See memory
 [[personal-leg-standalone-rebuild]].
 
-## Status — updated 2026-06-14
-- **Nothing built or changed.** No code edits, no commits, no `personal-rebuild/` folder yet.
-  Warren parked the task: he wants to **supply more strategy context next session before any plan
-  is written**, then hand the plan to a separate Claude to build.
+## Status — updated 2026-06-14 (plan WRITTEN)
+- **Master plan now written** at `docs/personal-leg/` (README + 01-master-plan + 02-calculation-parity
+  + 03-build-prompt). NOT built — plan + build-prompt only, by Warren's choice. Couldn't use a repo-root
+  folder (EPERM on new top-level dirs); lives under `docs/`. Also this session: Phase 2 `prop_risk_pct`
+  0.67%→1.0%.
+- **Warren's strategy context (resolved the 4 forks):** (1) sizing = % of a fixed personal baseline,
+  Telegram-set; (2) phases dropped → two-mode toggle differing by **risk % only**, same geometry;
+  (3) geometry = raw signal SL/TP = **the prop's calc logic applied in the reverse (personal) direction**
+  — size native `risk_$ = personal_baseline × risk_pct` over the personal leg's OWN stop `|entry−signal_sl|`,
+  kernel `dollar_per_unit` unchanged; (4) daily + overall DD halt on personal equity (mirror K1/K2);
+  (5) clean greenfield 2-service (Linux Receiver + Windows Worker), reuse Layer 0 Pine/symbol_mapper/
+  journaling/MT5 self-launch/transport.
+- **Still to confirm (in `01-master-plan.md §9`, non-blocking):** the two mode %s (default 1%/2%),
+  daily/overall DD % (suggested 4%/8%), `personal_baseline` value, Receiver host.
 - **Analysis done this session (the value to carry forward):** the personal leg today has **no
   independent existence** — it's parasitic on the prop math. Verified against
   `docs/reference/calculations.md` + `layer2/phase1_strategy.py` + `layer2/phase2_strategy.py`:
@@ -30,23 +40,9 @@ from a written plan + build-prompt. This session was the scoping pass. See memor
   webhook→ZMQ→MT5 transport pattern.
 
 ## Next actions
-1. **Wait for Warren's strategy context** for the standalone personal system, then resolve the 4
-   open design forks below (he rejected answering them mid-session — collect them fresh with his new
-   context). Only after that, write the plan + build-prompt into a new `personal-rebuild/` folder.
-
-## The 4 open design forks (resolve BEFORE writing the plan)
-1. **Sizing anchor** — % of live personal equity per trade (recommended; auto-scales) · % of a
-   fixed baseline (stable $/trade, set via Telegram) · flat fixed-$ per trade.
-   All: `lots = risk_$ / (SL_distance × k)`, `k` from `dollar_per_unit` (`strategy_common.py:13`).
-2. **SL/TP geometry** — raw signal SL+TP (RR ≈ 0.27, near-TP/far-SL → needs high win-rate) ·
-   signal SL + fixed target-RR TP · signal TP + tightened SL to a target RR. (Phase 1's old
-   reward-targeting scheme can't be reused — it depended on prop equity/stages.)
-3. **Risk halts** — personal has **none** today. Options: daily + overall DD halt (mirror prop
-   K1/K2) · daily-loss-only · none.
-4. **Architecture** — clean greenfield 2-service (Receiver on Linux: webhook + news/time filter +
-   sizing + Telegram + ZMQ push; Worker on Windows: MT5 execute + position watch + journal) vs
-   strip the existing 4-layer repo. (Min 2 processes regardless: public HTTPS receiver + Windows MT5
-   worker.)
+1. **Forks resolved + plan written** — see `docs/personal-leg/`. Next: Warren confirms the open numbers
+   in `01-master-plan.md §9`, then a **separate** Claude session runs `docs/personal-leg/03-build-prompt.md`
+   to build it (TDD, demo-first). Do NOT start building from a planning session.
 
 ## Running state
 - Background processes: none
@@ -60,6 +56,6 @@ from a written plan + build-prompt. This session was the scoping pass. See memor
   `layer0/Flipped RSI Divergence Indicator.pine`, `logs/demo_chart_*.png`, `uv.lock`.
 
 ## Pick up here
-Ask Warren for his standalone-personal strategy details, walk the 4 forks above with his answers,
-then scaffold `personal-rebuild/` with the design doc + a self-contained build-prompt for a fresh
-Claude. Do NOT start building the system itself — only the plan + prompt.
+Plan is at `docs/personal-leg/`. If Warren returns the §9 numbers, fold them into `01-master-plan.md`
+and `personal_config.json` defaults. When he's ready to build, open a fresh session and paste
+`docs/personal-leg/03-build-prompt.md`. Do NOT build from a planning session.
