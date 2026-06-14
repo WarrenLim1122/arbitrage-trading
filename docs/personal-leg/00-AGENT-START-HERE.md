@@ -1,14 +1,20 @@
 # 00 — AGENT START HERE (read this first, in full)
 
-You are an autonomous build agent. Your job: **build a brand-new standalone single-leg personal
-trading system** in a **new repository**, using the existing `arbitrage-trading` repo **only as a
-reference**. This folder (`docs/personal-leg/`) is your complete specification. Read every file listed
-below before writing any code. Do not improvise structure or contracts — they are all specified here.
+You are an autonomous build agent. **You are running INSIDE the `arbitrage-trading` repo** — that repo
+is your **read-only reference**. Your job: **build a brand-new standalone single-leg personal trading
+system** in a **separate sibling folder** (its own new git repo), at
+`~/Coding Projects/personal-leg-system/` (name confirmed at CP-0). This folder (`docs/personal-leg/`)
+is your complete specification. Read every file listed below before writing any code. Do not improvise
+structure or contracts — they are all specified here.
+
+**Read-from-here, write-over-there:** you READ this `arbitrage-trading` repo (the kit + the reference
+source files) and you WRITE only to the new sibling folder. Both are on the same machine; `~/Coding
+Projects/` is writable (verified). You never edit, commit to, or delete anything in `arbitrage-trading`.
 
 ## The golden rules (violating any of these is a failure)
 
-1. **Build in a NEW repo, separate from `arbitrage-trading`.** You only ever READ the reference repo;
-   you never edit it. Target path is confirmed at **CHECKPOINT CP-0** below.
+1. **Build in a NEW repo at a SIBLING folder** (`~/Coding Projects/personal-leg-system/`), separate from
+   `arbitrage-trading`. You only ever READ the reference repo; you never edit it. Path confirmed at **CP-0**.
 2. **TDD always.** For every pure-logic module, write the tests (from `08-test-plan.md`) FIRST, watch
    them fail, then implement until green. Never write logic before its test.
 3. **The math is fixed.** `compute_personal_geometry` and `dollar_per_unit` must match
